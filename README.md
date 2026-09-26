@@ -69,6 +69,11 @@ A movie is added straight from its TMDB id; a TV show's TMDB id is converted to 
 needs via TMDB's `external_ids` (cached, same as everything else). Sample data never touches
 Radarr/Sonarr - the button doesn't even appear until you're on your own library.
 
+The dialog is its own page (`/add-dialog`), not inline on the Recommended list, specifically so
+quality profiles are only ever fetched when you actually open it - viewing or refreshing the
+Recommended list never touches Radarr/Sonarr just to pre-populate a dropdown you might not use.
+Whichever list Radarr/Sonarr gave that day is also cached for 10 minutes either way.
+
 ## Deploy with Docker / Portainer
 1. Build the image `whatsnext:latest` on the Docker host (`docker build -t whatsnext:latest .`) or via
    Portainer -> Images -> Build a new image.

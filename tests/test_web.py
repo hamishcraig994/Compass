@@ -163,28 +163,19 @@ class TestWeb(unittest.TestCase):
         finally:
             config.RADARR_URL, config.RADARR_API_KEY, config.SONARR_URL, config.SONARR_API_KEY = old
 
-    def test_add_to_library_opens_a_modal_with_the_chosen_profiles(self):
+    def test_add_to_library_links_to_the_dialog_page_not_an_inline_modal(self):
         old = (config.RADARR_URL, config.RADARR_API_KEY)
         try:
             config.RADARR_URL = config.RADARR_API_KEY = "x"
-            card = web._card(MOVIE_ITEM, "/recommended", True, radarr_profiles=[(4, "HD-1080p"), (7, "4K")])
+            card = web._card(MOVIE_ITEM, "/recommended?type=all", True)
         finally:
             config.RADARR_URL, config.RADARR_API_KEY = old
-        self.assertIn('href="#add-movie-1"', card)
-        self.assertIn('id="add-movie-1"', card)
-        self.assertIn('<option value="4">HD-1080p</option>', card)
-        self.assertIn('<option value="7">4K</option>', card)
-        self.assertIn('name="search"', card)
-        self.assertIn("checked", card)  # search-immediately defaults on
-
-    def test_modal_offers_just_the_default_when_no_profiles_were_fetched(self):
-        old = (config.RADARR_URL, config.RADARR_API_KEY)
-        try:
-            config.RADARR_URL = config.RADARR_API_KEY = "x"
-            card = web._card(MOVIE_ITEM, "/recommended", True, radarr_profiles=None)
-        finally:
-            config.RADARR_URL, config.RADARR_API_KEY = old
-        self.assertIn("Default (from Settings)", card)
+        self.assertIn("/add-dialog?", card)
+        self.assertIn("type=movie", card)
+        self.assertIn("id=1", card)
+        # no inline dialog markup on the card itself - that only exists on /add-dialog now
+        self.assertNotIn("quality_profile_id", card)
+        self.assertNotIn("Search and download", card)
 
     def test_titles_are_html_escaped(self):
         card = web._card({"media_type": "movie", "tmdb_id": 1, "title": "<b>x</b>", "year": 2020, "match": 50,
@@ -196,7 +187,7 @@ class TestWeb(unittest.TestCase):
         self.assertNotIn("javascript:", card)
 
 
-class TestProfilesFetchedOncePerPage(unittest.TestCase):
+class TestAddDialogIsLazy(unittest.TestCase):
     """Forces sample=False by hand, same as TestAddRecordsToLibrary, since this file's shared
     server always runs in sample mode."""
 
@@ -212,11 +203,35 @@ class TestProfilesFetchedOncePerPage(unittest.TestCase):
         self.addCleanup(lambda: setattr(config, "RADARR_URL", self._old_config[0]))
         self.addCleanup(lambda: setattr(config, "RADARR_API_KEY", self._old_config[1]))
 
-    def test_quality_profiles_fetched_once_not_per_card(self):
+    def test_viewing_the_recommended_list_never_fetches_profiles(self):
         with mock.patch("radarr.RadarrClient.quality_profiles", return_value=[{"id": 1, "name": "HD"}]) as qp:
-            html = web.render_recommended("all")
-        self.assertEqual(qp.call_count, 1)
-        self.assertEqual(html.count('<option value="1">HD</option>'), 2)  # once per card, same fetched list
+            web.render_recommended("all")
+        qp.assert_not_called()
+
+    def test_opening_the_add_dialog_fetches_profiles_exactly_once(self):
+        with mock.patch("radarr.RadarrClient.quality_profiles", return_value=[{"id": 1, "name": "HD"}]) as qp:
+            html = web.render_add_dialog("movie", 1, "/recommended?type=all")
+        qp.assert_called_once()
+        self.assertIn('<option value="1">HD</option>', html)
+        self.assertIn("Search and download immediately", html)
+
+    def test_unknown_item_shows_a_safe_message_instead_of_a_dialog(self):
+        html = web.render_add_dialog("movie", 999999, "/recommended?type=all")
+        self.assertIn("isn't available to add", html)
+        self.assertNotIn("quality_profile_id", html)
+
+    def test_sample_mode_refuses_the_dialog_even_with_valid_looking_ids(self):
+        web._state["result"]["sample"] = True
+        html = web.render_add_dialog("movie", 1, "/recommended?type=all")
+        self.assertNotIn("quality_profile_id", html)
+
+    def test_cancel_link_returns_to_where_the_dialog_was_opened_from(self):
+        html = web.render_add_dialog("movie", 1, "/recommended?type=tv")
+        self.assertIn('href="/recommended?type=tv" class="btn-ghost"', html)
+
+    def test_return_to_is_sanitized_even_for_the_dialog_page(self):
+        html = web.render_add_dialog("movie", 1, "https://evil.example/")
+        self.assertNotIn("https://evil.example", html)
 
 
 class TestSafePath(unittest.TestCase):
