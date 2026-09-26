@@ -237,6 +237,15 @@ class TestRunTest(unittest.TestCase):
         self.assertEqual(result["app"], "radarr")
         self.assertTrue(result["ok"])
 
+    def test_ai_is_testable_with_submitted_values(self):
+        import ai
+        with mock.patch.object(ai, "AiClient") as MockClient:
+            MockClient.return_value.test_connection.return_value = (True, "Connected - gpt-4o-mini responded")
+            result = settings_page.run_test("ai", {"AI_TOKEN": ["sk-test"], "AI_PROVIDER_URL": ["http://x"],
+                                                   "AI_MODEL": ["gpt-4o-mini"]})
+        MockClient.assert_called_once_with("sk-test", "http://x", "gpt-4o-mini")
+        self.assertEqual(result, {"app": "ai", "ok": True, "message": "Connected - gpt-4o-mini responded"})
+
     def test_unknown_app_fails_gracefully(self):
         result = settings_page.run_test("not-a-real-app", {})
         self.assertFalse(result["ok"])

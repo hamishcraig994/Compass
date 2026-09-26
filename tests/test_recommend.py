@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import recommend
@@ -162,6 +163,118 @@ class TestBuzzScore(unittest.TestCase):
         self.assertLess(recommend.release_age_days({"release_date": "2026-10-01"}, date(2026, 9, 21)), 0)
         self.assertIsNone(recommend.release_age_days({"release_date": None}, date(2026, 9, 21)))
         self.assertIsNone(recommend.release_age_days({"release_date": "garbage"}, date(2026, 9, 21)))
+
+
+def _details(media_type, tmdb_id, title, genres=(), vote_count=500, vote_average=8.0,
+            release_date="2020-06-15", recs=()):
+    return {"media_type": media_type, "tmdb_id": tmdb_id, "title": title,
+           "year": int(release_date[:4]), "release_date": release_date, "overview": "",
+           "poster_url": None, "url": None, "genres": list(genres), "keywords": [], "directors": [],
+           "cast": [], "vote_average": vote_average, "vote_count": vote_count, "recommendations": list(recs)}
+
+
+class FakeTmdb:
+    """Deliberately not sample.py's shared catalogue, so these tests don't have to reason about
+    cross-path leakage from it - full control over exactly what's reachable and how."""
+
+    def __init__(self, catalogue, search_results=None):
+        self.catalogue = catalogue  # {(media_type, id): details}
+        self.search_results = search_results or {}  # {(media_type, title, year): id_or_None}
+
+    def details(self, media_type, tmdb_id):
+        return self.catalogue[(media_type, tmdb_id)]
+
+    def discover(self, media_type, genre_name):
+        return []
+
+    def trending(self, media_type):
+        return []
+
+    def new_releases(self, media_type, genre_name, since, until):
+        return []
+
+    def search(self, media_type, title, year=None):
+        return self.search_results.get((media_type, title, year))
+
+
+WATCHED = [{"media_type": "movie", "tmdb_id": 1, "title": "Watched Movie", "last_viewed": None,
+           "user_rating": None, "view_count": 1, "progress": None}]
+
+
+class TestAiIntegration(unittest.TestCase):
+    def _catalogue(self, extra=None):
+        return {("movie", 1): _details("movie", 1, "Watched Movie", genres=["Science Fiction"]), **(extra or {})}
+
+    def test_resolved_suggestion_appears_with_its_own_reason(self):
+        catalogue = self._catalogue({("movie", 2): _details("movie", 2, "AI Movie", genres=["Science Fiction"])})
+        tmdb = FakeTmdb(catalogue, {("movie", "AI Movie", 2020): 2})
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = [{"title": "AI Movie", "year": 2020, "media_type": "movie",
+                                          "reason": "great pacing"}]
+        result = recommend.recommend(WATCHED, set(), tmdb, ai=ai_client)
+        items = {i["title"]: i for i in result["items"]}
+        self.assertIn("AI Movie", items)
+        self.assertEqual(items["AI Movie"]["reason"], "AI pick: great pacing")
+
+    def test_missing_reason_falls_back_to_a_generic_one(self):
+        catalogue = self._catalogue({("movie", 2): _details("movie", 2, "AI Movie", genres=["Science Fiction"])})
+        tmdb = FakeTmdb(catalogue, {("movie", "AI Movie", 2020): 2})
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = [{"title": "AI Movie", "year": 2020, "media_type": "movie"}]
+        result = recommend.recommend(WATCHED, set(), tmdb, ai=ai_client)
+        items = {i["title"]: i for i in result["items"]}
+        self.assertEqual(items["AI Movie"]["reason"], "AI pick based on your taste profile")
+
+    def test_unresolvable_title_is_skipped_not_a_crash(self):
+        tmdb = FakeTmdb(self._catalogue(), search_results={})  # search() returns None for anything
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = [{"title": "Nonexistent Movie", "year": 2020, "media_type": "movie"}]
+        result = recommend.recommend(WATCHED, set(), tmdb, ai=ai_client)
+        self.assertNotIn("Nonexistent Movie", [i["title"] for i in result["items"]])
+
+    def test_already_owned_or_watched_suggestion_is_excluded(self):
+        catalogue = self._catalogue({("movie", 2): _details("movie", 2, "AI Movie", genres=["Science Fiction"])})
+        tmdb = FakeTmdb(catalogue, {("movie", "AI Movie", 2020): 2})
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = [{"title": "AI Movie", "year": 2020, "media_type": "movie"}]
+        result = recommend.recommend(WATCHED, {("movie", 2)}, tmdb, ai=ai_client)
+        self.assertNotIn("AI Movie", [i["title"] for i in result["items"]])
+
+    def test_ai_failure_is_a_note_not_a_crash(self):
+        tmdb = FakeTmdb(self._catalogue())
+        ai_client = mock.Mock()
+        ai_client.suggest.side_effect = RuntimeError("API down")
+        result = recommend.recommend(WATCHED, set(), tmdb, ai=ai_client)
+        self.assertTrue(any("AI" in n for n in result["notes"]))
+
+    def test_low_vote_ai_suggestion_is_still_filtered_by_min_votes(self):
+        catalogue = self._catalogue({("movie", 2): _details("movie", 2, "Obscure AI Movie",
+                                                            genres=["Science Fiction"], vote_count=3)})
+        tmdb = FakeTmdb(catalogue, {("movie", "Obscure AI Movie", 2020): 2})
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = [{"title": "Obscure AI Movie", "year": 2020, "media_type": "movie"}]
+        result = recommend.recommend(WATCHED, set(), tmdb, ai=ai_client)
+        self.assertNotIn("Obscure AI Movie", [i["title"] for i in result["items"]])
+
+    def test_duplicate_suggestions_are_not_added_twice(self):
+        catalogue = self._catalogue({("movie", 2): _details("movie", 2, "AI Movie", genres=["Science Fiction"])})
+        tmdb = FakeTmdb(catalogue, {("movie", "AI Movie", 2020): 2})
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = [{"title": "AI Movie", "year": 2020, "media_type": "movie"}] * 2
+        result = recommend.recommend(WATCHED, set(), tmdb, ai=ai_client)
+        self.assertEqual([i["title"] for i in result["items"]].count("AI Movie"), 1)
+
+    def test_invalid_media_type_from_the_ai_is_skipped(self):
+        tmdb = FakeTmdb(self._catalogue())
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = [{"title": "Some Podcast", "year": 2020, "media_type": "podcast"}]
+        result = recommend.recommend(WATCHED, set(), tmdb, ai=ai_client)  # must not raise
+        self.assertNotIn("Some Podcast", [i["title"] for i in result["items"]])
+
+    def test_no_ai_client_never_calls_anything_ai_related(self):
+        tmdb = FakeTmdb(self._catalogue())
+        result = recommend.recommend(WATCHED, set(), tmdb)  # ai=None by default
+        self.assertEqual(result["notes"], [])
 
 
 class TestScoring(unittest.TestCase):

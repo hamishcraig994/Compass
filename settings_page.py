@@ -5,6 +5,7 @@ overwritten if you type a new value. Radarr/Sonarr's quality profile and root fo
 live and offered as dropdowns instead of free text, when that app is reachable."""
 from html import escape
 
+import ai
 import config
 import plex
 import radarr
@@ -12,7 +13,8 @@ import sonarr
 import tautulli
 import tmdb
 
-SECTIONS = [("plex", "Plex"), ("tautulli", "Watch history"), ("tmdb", "TMDB"), ("arr", "Radarr & Sonarr")]
+SECTIONS = [("plex", "Plex"), ("tautulli", "Watch history"), ("tmdb", "TMDB"), ("arr", "Radarr & Sonarr"),
+           ("ai", "AI")]
 DEFAULT_SECTION = "plex"
 
 # name, label, kind ("text"/"secret"/"select"), extra (placeholder text, or option list for "select")
@@ -30,12 +32,17 @@ PLAIN_FIELDS = {
     "tmdb": [
         ("TMDB_TOKEN", "TMDB token", "secret", None),
     ],
+    "ai": [
+        ("AI_PROVIDER_URL", "Provider URL", "text", "https://api.openai.com/v1"),
+        ("AI_TOKEN", "API key", "secret", None),
+        ("AI_MODEL", "Model", "text", "gpt-4o-mini"),
+    ],
 }
 ARR_FIELD_NAMES = ("RADARR_URL", "RADARR_API_KEY", "RADARR_QUALITY_PROFILE_ID", "RADARR_ROOT_FOLDER",
                   "SONARR_URL", "SONARR_API_KEY", "SONARR_QUALITY_PROFILE_ID", "SONARR_ROOT_FOLDER")
-SECRET_NAMES = {"PLEX_TOKEN", "TAUTULLI_API_KEY", "TMDB_TOKEN", "RADARR_API_KEY", "SONARR_API_KEY"}
+SECRET_NAMES = {"PLEX_TOKEN", "TAUTULLI_API_KEY", "TMDB_TOKEN", "RADARR_API_KEY", "SONARR_API_KEY", "AI_TOKEN"}
 TEST_LABELS = {"plex": "Test Plex connection", "tautulli": "Test Tautulli connection", "tmdb": "Test TMDB connection",
-              "radarr": "Test Radarr connection", "sonarr": "Test Sonarr connection"}
+              "radarr": "Test Radarr connection", "sonarr": "Test Sonarr connection", "ai": "Test AI connection"}
 
 
 def _field_names(section):
@@ -187,6 +194,9 @@ def run_test(app_key, form):
         client = radarr.RadarrClient(_submitted_or_saved(form, "RADARR_URL"), _submitted_or_saved(form, "RADARR_API_KEY"))
     elif app_key == "sonarr":
         client = sonarr.SonarrClient(_submitted_or_saved(form, "SONARR_URL"), _submitted_or_saved(form, "SONARR_API_KEY"))
+    elif app_key == "ai":
+        client = ai.AiClient(_submitted_or_saved(form, "AI_TOKEN"), _submitted_or_saved(form, "AI_PROVIDER_URL"),
+                             _submitted_or_saved(form, "AI_MODEL"))
     else:
         return {"app": app_key, "ok": False, "message": f"Unknown app {app_key!r}"}
     ok, message = client.test_connection()

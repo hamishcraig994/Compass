@@ -198,6 +198,15 @@ class SampleTmdb:
                  and since <= _details(i, self.now)["release_date"] <= until and i in _RELEASED_DAYS_AGO]
         return found
 
+    def search(self, media_type, title, year=None):
+        matches = [i for i, e in _CATALOGUE.items() if e[0] == media_type and e[1].lower() == title.strip().lower()]
+        if not matches:
+            return None
+        if year is None:
+            return matches[0]
+        close = [i for i in matches if abs(_CATALOGUE[i][2] - year) <= 1]
+        return max(close, key=lambda i: _CATALOGUE[i][8]) if close else None
+
 
 def load(now=None):
     """Returns (watched, library_keys) shaped like plex.PlexClient.load()."""

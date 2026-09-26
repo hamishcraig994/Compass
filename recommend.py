@@ -5,12 +5,16 @@ How a suggestion is found and scored:
      Anything in your Plex library (or that you've dismissed) is thrown away.
   2. Add well-rated titles from your favourite genres, this week's trending titles, and recent releases
      in your favourite genres. Trending and new titles must fit your taste to be shown at all.
-  3. Score each candidate:  50% content match (genres, themes, director, actors vs your profile)
+  3. If an AI is configured, ask it for more ideas grounded in your taste profile. Every suggestion
+     names a title, never a trusted id - it's looked up on TMDB ourselves (matching by year) before
+     being treated as real, and it's scored by the exact same formula as everything else here, with
+     no bonus for having come from the AI.
+  4. Score each candidate:  50% content match (genres, themes, director, actors vs your profile)
                             28% how many of your favourites TMDB links it to
                             12% general quality (TMDB rating, shrunk towards average when few votes)
                             10% buzz (trending now, or recently released)
      Taste dominates: a trending title that doesn't fit you can't outrank a strong match.
-  4. Titles that are trending or came out in the last 6 months are flagged, for the "New & trending" tab."""
+  5. Titles that are trending or came out in the last 6 months are flagged, for the "New & trending" tab."""
 import math
 from datetime import date, datetime, timedelta, timezone
 
@@ -23,6 +27,8 @@ MIN_VOTES_NEW = 25                     # ...but brand-new and trending titles ha
 PRIOR_VOTES, PRIOR_RATING = 100, 6.5   # ratings with few votes are pulled towards this
 DISCOVER_GENRES = 2                    # how many top genres to add "popular in" and "new in" titles from
 MAX_DISCOVER, MAX_TRENDING, MAX_NEW = 20, 30, 30
+MAX_AI_REQUESTED = 15                  # how many ideas to ask the AI for; expect some not to resolve on TMDB
+MAX_AI = 15                            # how many resolved AI candidates to actually consider
 NEW_DAYS = 180                         # released within this many days = "New"
 FRESH_SPAN_DAYS = 730                  # the recency boost fades to nothing over two years
 MIN_TASTE_FOR_BUZZ = 0.10              # trending/new titles need at least this much content match
@@ -80,9 +86,10 @@ def _details_or_none(tmdb, media_type, tmdb_id):
 
 
 def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
-              max_profile_items=100, max_sources=40, max_candidates=150):
+              max_profile_items=100, max_sources=40, max_candidates=150, ai=None):
     """watched: items from plex.py; library_keys: {(media_type, id)} of everything you already have;
-    tmdb: object with details(), discover(), trending() and new_releases() (see tmdb.TmdbClient).
+    tmdb: object with details(), discover(), trending(), new_releases() and search() (see tmdb.TmdbClient).
+    ai: optional object with suggest() (see ai.AiClient) - skipped entirely if not given.
     Returns {"items": [...best first...], "profile": {...}, "notes": [...]}."""
     now = now or datetime.now(timezone.utc)
     today = now.date()
@@ -126,7 +133,7 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
     # 2b. Candidates: well-rated titles in your favourite genres, what's trending, and what's new.
     top_genres = sorted(features["genre"], key=features["genre"].get, reverse=True)[:DISCOVER_GENRES]
     since = (today - timedelta(days=NEW_DAYS)).isoformat()
-    by_origin = {"genre": [], "trending": [], "new": []}
+    by_origin = {"genre": [], "trending": [], "new": [], "ai": []}
 
     def gather(origin, media_type, description, fetch, genre=None):
         try:
@@ -150,9 +157,35 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
             gather("new", media_type, f"new {genre} {media_type} titles",
                    lambda: tmdb.new_releases(media_type, genre, since, today.isoformat()), genre)
 
+    # 2c. Candidates: an AI's own ideas, if one is configured. Never trust a title/id it names -
+    # look it up on TMDB ourselves (matching by year) before treating it as real.
+    if ai is not None:
+        try:
+            watched_titles = [item["title"] for item, _ in pairs]
+            for raw in ai.suggest(profile.summary(features), watched_titles, count=MAX_AI_REQUESTED):
+                media_type = raw.get("media_type")
+                if media_type not in ("movie", "tv"):
+                    continue
+                try:
+                    tmdb_id = tmdb.search(media_type, raw["title"], raw.get("year"))
+                except Exception:
+                    tmdb_id = None
+                if not tmdb_id:
+                    continue
+                key = (media_type, tmdb_id)
+                if key in exclude:
+                    continue
+                c = candidate(key, "ai")
+                if raw.get("reason") and not c.get("ai_reason"):
+                    c["ai_reason"] = raw["reason"]
+                if key not in by_origin["ai"]:
+                    by_origin["ai"].append(key)
+        except Exception:
+            notes.append("Couldn't get AI suggestions.")
+
     pool, seen = [], set()
     for keys in (linked, by_origin["genre"][:MAX_DISCOVER], by_origin["trending"][:MAX_TRENDING],
-                 by_origin["new"][:MAX_NEW]):
+                 by_origin["new"][:MAX_NEW], by_origin["ai"][:MAX_AI]):
         for key in keys:
             if key not in seen:
                 seen.add(key)
@@ -186,6 +219,8 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
             reason = "Trending this week, and fits your taste"
         elif is_new:
             reason = "New release that fits your taste"
+        elif "ai" in c["origin"]:
+            reason = f"AI pick: {c['ai_reason']}" if c.get("ai_reason") else "AI pick based on your taste profile"
         else:
             reason = f"Highly rated in {c['genre']}, one of your favourite genres"
         scored.append((final, {**details, "reason": reason, "matches": matches(features, details),

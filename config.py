@@ -44,6 +44,7 @@ def _apply():
     global PLEX_URL, PLEX_TOKEN, TMDB_TOKEN, HISTORY_SOURCE, TAUTULLI_URL, TAUTULLI_API_KEY, TAUTULLI_USER
     global RADARR_URL, RADARR_API_KEY, RADARR_QUALITY_PROFILE_ID, RADARR_ROOT_FOLDER
     global SONARR_URL, SONARR_API_KEY, SONARR_QUALITY_PROFILE_ID, SONARR_ROOT_FOLDER
+    global AI_PROVIDER_URL, AI_TOKEN, AI_MODEL
 
     PLEX_URL = _resolve("PLEX_URL", "http://192.168.1.102:32400").rstrip("/")
     PLEX_TOKEN = _resolve("PLEX_TOKEN")
@@ -70,6 +71,14 @@ def _apply():
     SONARR_QUALITY_PROFILE_ID = _resolve_int("SONARR_QUALITY_PROFILE_ID")
     SONARR_ROOT_FOLDER = _resolve("SONARR_ROOT_FOLDER")
 
+    # AI: optional. When set, an LLM adds a handful more candidates to every recommendation run,
+    # grounded in your taste profile - see ai.py and recommend.py for how those are verified
+    # against real TMDB data before being trusted, and scored like everything else. Any
+    # OpenAI-compatible endpoint works, not just OpenAI itself - change AI_PROVIDER_URL for one.
+    AI_PROVIDER_URL = _resolve("AI_PROVIDER_URL", "https://api.openai.com/v1").rstrip("/")
+    AI_TOKEN = _resolve("AI_TOKEN")
+    AI_MODEL = _resolve("AI_MODEL", "gpt-4o-mini")
+
 
 _apply()
 
@@ -90,6 +99,10 @@ def radarr_configured():
 
 def sonarr_configured():
     return bool(SONARR_URL and SONARR_API_KEY)
+
+
+def ai_configured():
+    return bool(AI_TOKEN)
 
 
 def live_configured():

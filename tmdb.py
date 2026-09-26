@@ -108,6 +108,32 @@ class TmdbClient:
         db.cache_put(key, result)
         return result
 
+    def search(self, media_type, title, year=None):
+        """Finds a real TMDB id for a title by name - the only way an AI-suggested title (which
+        names a title, never a trustworthy id) becomes an actual candidate in recommend.py. Prefers
+        a result whose year is within 1 of the one given (release years sometimes differ by a year
+        across regions/sources); returns None rather than guessing if nothing matches closely -
+        letting the wrong movie through silently is worse than skipping one."""
+        key = f"search:{media_type}:{title.strip().lower()}:{year or ''}"
+        cached = db.cache_get(key, DETAILS_MAX_AGE)
+        if cached is not None:
+            return cached.get("tmdb_id")
+        results = self._get(f"/search/{media_type}", {"query": title}).get("results", [])
+        result = None
+        if year:
+            field = "release_date" if media_type == "movie" else "first_air_date"
+            close = []
+            for r in results:
+                date = r.get(field) or ""
+                if date[:4].isdigit() and abs(int(date[:4]) - year) <= 1:
+                    close.append(r)
+            if close:
+                result = max(close, key=lambda r: r.get("vote_count", 0))
+        elif results:
+            result = results[0]
+        db.cache_put(key, {"tmdb_id": result["id"] if result else None})
+        return result["id"] if result else None
+
     def trending(self, media_type):
         """IDs of what's trending on TMDB this week (all genres; we filter by your taste later)."""
         found = self._get(f"/trending/{media_type}/week")

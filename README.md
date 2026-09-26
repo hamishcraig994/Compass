@@ -12,13 +12,17 @@ Suggests movies and TV shows you *don't* have yet, based on what you've watched 
 3. Finds candidates from TMDB: what's linked to your favourites ("people who liked this also liked..."),
    well-rated titles in your top genres, this week's trending titles, and releases from the last 6 months in
    your top genres. Anything already in your Plex library is dropped, and so is anything not out yet.
-4. Ranks candidates: 50% fit with your profile, 28% how many of your favourites link to it, 12% general
+4. If an AI is configured, asks it for a handful more ideas grounded in your taste profile. Every
+   suggestion names a title, never a trusted id - it's looked up on TMDB ourselves (matching by
+   year, not just taking the first search result) before being treated as real, and it's scored by
+   the exact same formula as everything else below, with no bonus for coming from the AI.
+5. Ranks candidates: 50% fit with your profile, 28% how many of your favourites link to it, 12% general
    quality, 10% buzz (trending, or recently released). Taste dominates: trending or new titles that don't fit
    your profile are left out entirely, and can't outrank a strong match. "Match %" is relative to the best
    suggestion in the batch, not a probability.
-5. Anything trending or released in the last 6 months gets a badge and also appears on the
+6. Anything trending or released in the last 6 months gets a badge and also appears on the
    "New & trending" tab (`python3 cli.py --type new`), as well as in the main list.
-6. If Radarr/Sonarr are configured, movie/TV cards get an "Add to library" button - opening a
+7. If Radarr/Sonarr are configured, movie/TV cards get an "Add to library" button - opening a
    dialog to pick a quality profile and whether to search immediately - and anything already
    tracked there is excluded from recommendations too, not just what's already in Plex.
 
@@ -73,6 +77,21 @@ The dialog is its own page (`/add-dialog`), not inline on the Recommended list, 
 quality profiles are only ever fetched when you actually open it - viewing or refreshing the
 Recommended list never touches Radarr/Sonarr just to pre-populate a dropdown you might not use.
 Whichever list Radarr/Sonarr gave that day is also cached for 10 minutes either way.
+
+### AI-assisted suggestions
+Set it up in Settings -> AI (or `AI_PROVIDER_URL`/`AI_TOKEN`/`AI_MODEL` in `.env`). Any
+OpenAI-compatible endpoint works - OpenAI itself, a self-hosted server, OpenRouter, etc. - not just
+OpenAI, so change the provider URL for anything else.
+
+This is optional and additive: without it, nothing changes. With it, the AI is given your taste
+profile (top genres/themes/directors/actors) and asked for more ideas. Two rules keep this from
+being a black box or a liability:
+- **Nothing the AI says is trusted outright.** It names a title and year; that gets looked up on
+  TMDB ourselves (preferring a result within a year of the one given, over just the first search
+  hit) before it's treated as a real candidate. If nothing matches closely, the suggestion is
+  dropped rather than guessed at.
+- **No special scoring bonus.** An AI-sourced candidate is scored by the exact same formula as
+  everything else in this list - it competes on fit and quality, not on where it came from.
 
 ## Deploy with Docker / Portainer
 1. Build the image `whatsnext:latest` on the Docker host (`docker build -t whatsnext:latest .`) or via

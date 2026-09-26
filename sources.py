@@ -1,5 +1,6 @@
 """Picks where data comes from (real Plex/Tautulli + TMDB, or the built-in sample) and runs the
 recommender on it."""
+import ai
 import config
 import db
 import plex
@@ -58,6 +59,10 @@ def _load_live():
     return watched, library_keys, notes
 
 
+def ai_client():
+    return ai.AiClient(config.AI_TOKEN, config.AI_PROVIDER_URL, config.AI_MODEL) if config.ai_configured() else None
+
+
 def run(sample_mode, limit=200):
     """Returns the recommender's result dict, plus 'sample' (bool) telling which data was used."""
     if sample_mode:
@@ -67,7 +72,7 @@ def run(sample_mode, limit=200):
     else:
         watched, library_keys, notes = _load_live()
         result = recommend.recommend(watched, library_keys, tmdb.TmdbClient(config.TMDB_TOKEN),
-                                     dismissed=db.dismissed(), limit=limit)
+                                     dismissed=db.dismissed(), limit=limit, ai=ai_client())
     result["notes"] = notes + result["notes"]
     result["sample"] = sample_mode
     result["watched_count"] = len(watched)

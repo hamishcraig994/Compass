@@ -153,5 +153,66 @@ class TestTmdb(unittest.TestCase):
         self.assertEqual(calls[1][1]["with_genres"], 10765)
 
 
+class TestSearch(unittest.TestCase):
+    """search() is what stands between an AI-suggested title (a name, never a trustworthy id) and
+    treating it as a real candidate - it has to pick the right movie, not just the first result."""
+
+    def setUp(self):
+        self._old = db.DB_PATH
+        db.DB_PATH = os.path.join(tempfile.mkdtemp(), "t.db")
+        self.addCleanup(setattr, db, "DB_PATH", self._old)
+        self.client = tmdb.TmdbClient("k" * 32)
+
+    def test_picks_the_result_matching_the_given_year(self):
+        results = {"results": [{"id": 1, "release_date": "2001-01-01"}, {"id": 2, "release_date": "2016-11-10"}]}
+        with mock.patch.object(tmdb, "get_json", return_value=results):
+            self.assertEqual(self.client.search("movie", "Arrival", 2016), 2)
+
+    def test_accepts_a_result_one_year_off(self):
+        results = {"results": [{"id": 1, "release_date": "2017-01-01"}]}
+        with mock.patch.object(tmdb, "get_json", return_value=results):
+            self.assertEqual(self.client.search("movie", "Arrival", 2016), 1)
+
+    def test_refuses_a_result_more_than_a_year_off_rather_than_guessing(self):
+        results = {"results": [{"id": 1, "release_date": "2001-01-01"}]}
+        with mock.patch.object(tmdb, "get_json", return_value=results):
+            self.assertIsNone(self.client.search("movie", "Arrival", 2016))
+
+    def test_picks_the_most_voted_among_several_close_years(self):
+        results = {"results": [{"id": 1, "release_date": "2016-01-01", "vote_count": 10},
+                               {"id": 2, "release_date": "2017-01-01", "vote_count": 500}]}
+        with mock.patch.object(tmdb, "get_json", return_value=results):
+            self.assertEqual(self.client.search("movie", "Arrival", 2016), 2)
+
+    def test_uses_first_air_date_for_tv(self):
+        results = {"results": [{"id": 9, "first_air_date": "2022-02-18"}]}
+        with mock.patch.object(tmdb, "get_json", return_value=results):
+            self.assertEqual(self.client.search("tv", "Severance", 2022), 9)
+
+    def test_no_year_given_takes_the_first_result(self):
+        results = {"results": [{"id": 3}, {"id": 4}]}
+        with mock.patch.object(tmdb, "get_json", return_value=results):
+            self.assertEqual(self.client.search("movie", "Arrival"), 3)
+
+    def test_no_results_at_all_returns_none(self):
+        with mock.patch.object(tmdb, "get_json", return_value={"results": []}):
+            self.assertIsNone(self.client.search("movie", "Not A Real Movie", 2016))
+
+    def test_results_are_cached_including_a_no_match(self):
+        with mock.patch.object(tmdb, "get_json", return_value={"results": []}) as get:
+            self.client.search("movie", "Not A Real Movie", 2016)
+            result = self.client.search("movie", "Not A Real Movie", 2016)
+        self.assertIsNone(result)
+        self.assertEqual(get.call_count, 1)  # the "no match" itself was cached, not just misses retried
+
+    def test_a_match_is_also_cached(self):
+        results = {"results": [{"id": 2, "release_date": "2016-11-10"}]}
+        with mock.patch.object(tmdb, "get_json", return_value=results) as get:
+            first = self.client.search("movie", "Arrival", 2016)
+            second = self.client.search("movie", "Arrival", 2016)
+        self.assertEqual((first, second), (2, 2))
+        self.assertEqual(get.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
