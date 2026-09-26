@@ -1,7 +1,9 @@
+import io
 import json
 import os
 import sys
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -42,6 +44,30 @@ class TestChatFallback(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.client._chat([{"role": "user", "content": "hi"}], max_tokens=50)
         self.assertEqual(post.call_count, 1)
+
+
+class TestChatFallbackEndToEnd(unittest.TestCase):
+    """The layers above (this class's siblings, and test_http_util.py) each mock one boundary -
+    this one mocks only urllib.request.urlopen, the real bottom, to prove ai.py's fallback and
+    http_util.py's error-body surfacing actually compose correctly. This is the exact failure this
+    was written to catch: without http_util.py surfacing the response body, ai.py's fallback check
+    (which greps the error text for "max_tokens") had nothing to match against - a real model
+    rejecting max_tokens would have surfaced as a bare "HTTP Error 400: Bad Request" instead of
+    quietly retrying with the right parameter name."""
+
+    def test_real_400_body_triggers_the_fallback_and_recovers(self):
+        rejection_body = (b'{"error": {"message": "Unsupported parameter: \'max_tokens\' is not supported '
+                          b'with this model. Use \'max_completion_tokens\' instead.", "code": "unsupported_parameter"}}')
+
+        def fake_urlopen(request, timeout=None):
+            if b'"max_tokens"' in request.data:
+                raise urllib.error.HTTPError("http://x", 400, "Bad Request", {}, io.BytesIO(rejection_body))
+            return io.BytesIO(json.dumps(chat_response("OK")).encode())
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            ok, msg = AiClient("key", model="o1-mini").test_connection()
+        self.assertTrue(ok)
+        self.assertIn("o1-mini", msg)
 
 
 class TestTestConnection(unittest.TestCase):
