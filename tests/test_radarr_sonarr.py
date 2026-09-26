@@ -1,9 +1,11 @@
 import os
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import db
 import radarr
 import sonarr
 from radarr import RadarrClient
@@ -12,12 +14,37 @@ from sonarr import SonarrClient
 
 class TestRadarrClient(unittest.TestCase):
     def setUp(self):
+        self._old_db = db.DB_PATH
+        db.DB_PATH = os.path.join(tempfile.mkdtemp(), "t.db")
+        self.addCleanup(setattr, db, "DB_PATH", self._old_db)
         self.client = RadarrClient("http://arr:7878", "key123")
 
     def test_existing_tmdb_ids_ignores_movies_without_one(self):
         movies = [{"tmdbId": 1}, {"tmdbId": 2}, {"title": "no id"}]
         with mock.patch.object(radarr, "get_json", return_value=movies):
             self.assertEqual(self.client.existing_tmdb_ids(), {1, 2})
+
+    def test_quality_profiles_are_cached_across_calls(self):
+        with mock.patch.object(radarr, "get_json", return_value=[{"id": 1, "name": "HD"}]) as get:
+            first = self.client.quality_profiles()
+            second = self.client.quality_profiles()
+        self.assertEqual(first, second)
+        self.assertEqual(get.call_count, 1)  # the second call was a page render, not a network round-trip
+
+    def test_root_folders_are_cached_across_calls(self):
+        with mock.patch.object(radarr, "get_json", return_value=[{"path": "/data/movies"}]) as get:
+            self.client.root_folders()
+            self.client.root_folders()
+        self.assertEqual(get.call_count, 1)
+
+    def test_quality_profile_cache_is_shared_across_separate_client_instances(self):
+        """sources.radarr_client() builds a fresh RadarrClient on every page render - the cache
+        has to be keyed by URL, not tied to one Python object, or every render pays the network
+        cost again anyway."""
+        with mock.patch.object(radarr, "get_json", return_value=[{"id": 1, "name": "HD"}]) as get:
+            RadarrClient("http://arr:7878", "key123").quality_profiles()
+            RadarrClient("http://arr:7878", "key123").quality_profiles()
+        self.assertEqual(get.call_count, 1)
 
     def test_add_refuses_if_already_present(self):
         with mock.patch.object(radarr, "get_json", return_value=[{"tmdbId": 5}]):
@@ -104,12 +131,27 @@ class TestRadarrClient(unittest.TestCase):
 
 class TestSonarrClient(unittest.TestCase):
     def setUp(self):
+        self._old_db = db.DB_PATH
+        db.DB_PATH = os.path.join(tempfile.mkdtemp(), "t.db")
+        self.addCleanup(setattr, db, "DB_PATH", self._old_db)
         self.client = SonarrClient("http://arr:8989", "key456")
 
     def test_existing_tmdb_ids_only_counts_shows_sonarr_has_matched(self):
         series = [{"tvdbId": 1, "tmdbId": 100}, {"tvdbId": 2}, {"tvdbId": 3, "tmdbId": 300}]
         with mock.patch.object(sonarr, "get_json", return_value=series):
             self.assertEqual(self.client.existing_tmdb_ids(), {100, 300})
+
+    def test_quality_profiles_are_cached_across_calls(self):
+        with mock.patch.object(sonarr, "get_json", return_value=[{"id": 1, "name": "WEB-1080p"}]) as get:
+            self.client.quality_profiles()
+            self.client.quality_profiles()
+        self.assertEqual(get.call_count, 1)
+
+    def test_root_folders_are_cached_across_calls(self):
+        with mock.patch.object(sonarr, "get_json", return_value=[{"path": "/data/tv"}]) as get:
+            self.client.root_folders()
+            self.client.root_folders()
+        self.assertEqual(get.call_count, 1)
 
     def test_add_refuses_if_already_present_by_tvdb_id(self):
         with mock.patch.object(sonarr, "get_json", return_value=[{"tvdbId": 55}]):

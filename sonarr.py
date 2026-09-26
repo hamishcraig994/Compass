@@ -2,7 +2,10 @@
 in Sonarr and (by default) starts a search for missing episodes right away.
 
 Sonarr's own primary key for a show is its TVDB id, not TMDB's - see tmdb.py's external_ids()."""
+import db
 from http_util import get_json, post_json
+
+PROFILES_MAX_AGE = 600  # quality profiles/root folders rarely change; see radarr.py's PROFILES_MAX_AGE
 
 
 class SonarrClient:
@@ -25,10 +28,22 @@ class SonarrClient:
             return False, str(e)
 
     def quality_profiles(self):
-        return self._get("/api/v3/qualityprofile")
+        key = f"sonarr_profiles:{self.base_url}"
+        cached = db.cache_get(key, PROFILES_MAX_AGE)
+        if cached is not None:
+            return cached
+        result = self._get("/api/v3/qualityprofile")
+        db.cache_put(key, result)
+        return result
 
     def root_folders(self):
-        return self._get("/api/v3/rootfolder")
+        key = f"sonarr_folders:{self.base_url}"
+        cached = db.cache_get(key, PROFILES_MAX_AGE)
+        if cached is not None:
+            return cached
+        result = self._get("/api/v3/rootfolder")
+        db.cache_put(key, result)
+        return result
 
     def _resolved_quality_profile_id(self):
         if self._quality_profile_id is not None:

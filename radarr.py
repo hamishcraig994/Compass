@@ -1,6 +1,11 @@
 """Adds movies to Radarr. Unlike everything else in this app, this writes: adding a movie creates
 it in Radarr and (by default) starts a search for it right away."""
+import db
 from http_util import get_json, post_json
+
+PROFILES_MAX_AGE = 600  # quality profiles/root folders rarely change; this is what stood between a
+# page nav and a live Radarr round-trip before - fetched on every Recommended/Settings render for
+# the "Add to library" dropdown, whether or not you were actually adding anything.
 
 
 class RadarrClient:
@@ -23,10 +28,22 @@ class RadarrClient:
             return False, str(e)
 
     def quality_profiles(self):
-        return self._get("/api/v3/qualityprofile")
+        key = f"radarr_profiles:{self.base_url}"
+        cached = db.cache_get(key, PROFILES_MAX_AGE)
+        if cached is not None:
+            return cached
+        result = self._get("/api/v3/qualityprofile")
+        db.cache_put(key, result)
+        return result
 
     def root_folders(self):
-        return self._get("/api/v3/rootfolder")
+        key = f"radarr_folders:{self.base_url}"
+        cached = db.cache_get(key, PROFILES_MAX_AGE)
+        if cached is not None:
+            return cached
+        result = self._get("/api/v3/rootfolder")
+        db.cache_put(key, result)
+        return result
 
     def _resolved_quality_profile_id(self):
         """Your configured profile if you set one, else whichever one Radarr lists first."""
