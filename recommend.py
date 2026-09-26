@@ -86,10 +86,13 @@ def _details_or_none(tmdb, media_type, tmdb_id):
 
 
 def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
-              max_profile_items=100, max_sources=40, max_candidates=150, ai=None):
+              max_profile_items=100, max_sources=40, max_candidates=150, ai=None, ai_only=False):
     """watched: items from plex.py; library_keys: {(media_type, id)} of everything you already have;
     tmdb: object with details(), discover(), trending(), new_releases() and search() (see tmdb.TmdbClient).
     ai: optional object with suggest() (see ai.AiClient) - skipped entirely if not given.
+    ai_only: skip the TMDB-linked/genre/trending/new-release candidates entirely and consider only
+    the AI's own ideas - for a deliberate, separate "generate AI recommendations" action (each call
+    costs a real AI request, unlike everything else here, which is why it isn't automatic).
     Returns {"items": [...best first...], "profile": {...}, "notes": [...]}."""
     now = now or datetime.now(timezone.utc)
     today = now.date()
@@ -121,41 +124,43 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
         c["origin"].add(origin)
         return c
 
-    for w, item, details in sources:
-        for rec_id in details["recommendations"]:
-            key = (item["media_type"], rec_id)
-            if key not in exclude:
-                c = candidate(key, "linked")
-                c["sources"].append((w, item["title"]))
-                c["collab"] += w
-    linked = sorted(candidates, key=lambda k: -candidates[k]["collab"])[:max_candidates]
-
-    # 2b. Candidates: well-rated titles in your favourite genres, what's trending, and what's new.
-    top_genres = sorted(features["genre"], key=features["genre"].get, reverse=True)[:DISCOVER_GENRES]
-    since = (today - timedelta(days=NEW_DAYS)).isoformat()
+    linked = []
     by_origin = {"genre": [], "trending": [], "new": [], "ai": []}
+    if not ai_only:
+        for w, item, details in sources:
+            for rec_id in details["recommendations"]:
+                key = (item["media_type"], rec_id)
+                if key not in exclude:
+                    c = candidate(key, "linked")
+                    c["sources"].append((w, item["title"]))
+                    c["collab"] += w
+        linked = sorted(candidates, key=lambda k: -candidates[k]["collab"])[:max_candidates]
 
-    def gather(origin, media_type, description, fetch, genre=None):
-        try:
-            ids = fetch()
-        except Exception:
-            notes.append(f"Couldn't fetch {description}.")
-            return
-        for tmdb_id in ids:
-            key = (media_type, tmdb_id)
-            if key not in exclude:
-                c = candidate(key, origin)
-                c["genre"] = c["genre"] or genre
-                if key not in by_origin[origin]:
-                    by_origin[origin].append(key)
+        # 2b. Candidates: well-rated titles in your favourite genres, what's trending, and what's new.
+        top_genres = sorted(features["genre"], key=features["genre"].get, reverse=True)[:DISCOVER_GENRES]
+        since = (today - timedelta(days=NEW_DAYS)).isoformat()
 
-    for media_type in ("movie", "tv"):
-        gather("trending", media_type, f"trending {media_type} titles", lambda: tmdb.trending(media_type))
-        for genre in top_genres:
-            gather("genre", media_type, f"popular {genre} {media_type} titles",
-                   lambda: tmdb.discover(media_type, genre), genre)
-            gather("new", media_type, f"new {genre} {media_type} titles",
-                   lambda: tmdb.new_releases(media_type, genre, since, today.isoformat()), genre)
+        def gather(origin, media_type, description, fetch, genre=None):
+            try:
+                ids = fetch()
+            except Exception:
+                notes.append(f"Couldn't fetch {description}.")
+                return
+            for tmdb_id in ids:
+                key = (media_type, tmdb_id)
+                if key not in exclude:
+                    c = candidate(key, origin)
+                    c["genre"] = c["genre"] or genre
+                    if key not in by_origin[origin]:
+                        by_origin[origin].append(key)
+
+        for media_type in ("movie", "tv"):
+            gather("trending", media_type, f"trending {media_type} titles", lambda: tmdb.trending(media_type))
+            for genre in top_genres:
+                gather("genre", media_type, f"popular {genre} {media_type} titles",
+                       lambda: tmdb.discover(media_type, genre), genre)
+                gather("new", media_type, f"new {genre} {media_type} titles",
+                       lambda: tmdb.new_releases(media_type, genre, since, today.isoformat()), genre)
 
     # 2c. Candidates: an AI's own ideas, if one is configured. Never trust a title/id it names -
     # look it up on TMDB ourselves (matching by year) before treating it as real.

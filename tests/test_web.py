@@ -188,8 +188,10 @@ class TestWeb(unittest.TestCase):
 
 
 class TestAddDialogIsLazy(unittest.TestCase):
-    """Forces sample=False by hand, same as TestAddRecordsToLibrary, since this file's shared
-    server always runs in sample mode."""
+    """Forces sample mode off by patching sources.use_sample - same as TestAddRecordsToLibrary,
+    since this file's shared server always runs in sample mode. _is_sample() is checked fresh
+    each call rather than trusting a flag on the cached result, so patching it here (not the
+    cached item) is what actually simulates "the app is live"."""
 
     def setUp(self):
         self._old_state = dict(web._state)
@@ -202,6 +204,9 @@ class TestAddDialogIsLazy(unittest.TestCase):
         config.RADARR_URL = config.RADARR_API_KEY = "x"
         self.addCleanup(lambda: setattr(config, "RADARR_URL", self._old_config[0]))
         self.addCleanup(lambda: setattr(config, "RADARR_API_KEY", self._old_config[1]))
+        self._sample_patch = mock.patch.object(sources, "use_sample", return_value=False)
+        self._sample_patch.start()
+        self.addCleanup(self._sample_patch.stop)
 
     def test_viewing_the_recommended_list_never_fetches_profiles(self):
         with mock.patch("radarr.RadarrClient.quality_profiles", return_value=[{"id": 1, "name": "HD"}]) as qp:
@@ -221,8 +226,10 @@ class TestAddDialogIsLazy(unittest.TestCase):
         self.assertNotIn("quality_profile_id", html)
 
     def test_sample_mode_refuses_the_dialog_even_with_valid_looking_ids(self):
-        web._state["result"]["sample"] = True
-        html = web.render_add_dialog("movie", 1, "/recommended?type=all")
+        self._sample_patch.stop()
+        with mock.patch.object(sources, "use_sample", return_value=True):
+            html = web.render_add_dialog("movie", 1, "/recommended?type=all")
+        self._sample_patch.start()
         self.assertNotIn("quality_profile_id", html)
 
     def test_cancel_link_returns_to_where_the_dialog_was_opened_from(self):
@@ -312,8 +319,9 @@ class TestSettingsRoute(unittest.TestCase):
 
 
 class TestAddRecordsToLibrary(unittest.TestCase):
-    """The /add success path, forced out of sample mode by hand since the shared test server
-    (this whole file) always runs in sample mode, which deliberately blocks real writes."""
+    """The /add success path, forced out of sample mode by patching sources.use_sample, since the
+    shared test server (this whole file) always runs in sample mode, which deliberately blocks
+    real writes."""
 
     def setUp(self):
         self._old_db = db.DB_PATH
@@ -322,6 +330,9 @@ class TestAddRecordsToLibrary(unittest.TestCase):
         self._old_state = dict(web._state)
         self.addCleanup(web._state.update, self._old_state)
         web._state["result"] = {"sample": False, "items": [dict(MOVIE_ITEM)]}
+        sample_patch = mock.patch.object(sources, "use_sample", return_value=False)
+        sample_patch.start()
+        self.addCleanup(sample_patch.stop)
         self.server = web.make_server("127.0.0.1", 0)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -370,6 +381,107 @@ class TestAddRecordsToLibrary(unittest.TestCase):
         with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")) as add:
             self.post_add("movie", 1, "&quality_profile_id=&search=1")
         add.assert_called_once_with("movie", 1, search=True, quality_profile_id=None)
+
+
+class TestAiPage(unittest.TestCase):
+    """Manual-only: the AI page never computes anything by itself, only shows what the last
+    Generate click produced. Its own server/cache, separate from TestWeb's shared sample-mode
+    one, so config.AI_TOKEN and web._ai_state can be freely swapped here."""
+
+    def setUp(self):
+        self._old_db = db.DB_PATH
+        db.DB_PATH = os.path.join(tempfile.mkdtemp(), "t.db")
+        self.addCleanup(setattr, db, "DB_PATH", self._old_db)
+        self._old_ai_state = dict(web._ai_state)
+        self.addCleanup(web._ai_state.update, self._old_ai_state)
+        self._old_ai_token = config.AI_TOKEN
+        self.addCleanup(lambda: setattr(config, "AI_TOKEN", self._old_ai_token))
+        self.server = web.make_server("127.0.0.1", 0)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.shutdown)
+        self.addCleanup(self.server.server_close)
+
+    def get(self, path):
+        with urllib.request.urlopen(self.base + path) as r:
+            return r.status, r.read().decode()
+
+    def post(self, path, data=""):
+        opener = urllib.request.build_opener(NoRedirect)
+        try:
+            resp = opener.open(urllib.request.Request(self.base + path, data=data.encode(), method="POST"))
+            return resp.status, resp.headers.get("Location")
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Location")
+
+    def test_not_configured_points_to_settings_and_has_no_generate_button(self):
+        config.AI_TOKEN = ""
+        web._ai_state["result"] = None
+        _, html = self.get("/ai")
+        self.assertIn("AI isn't configured", html)
+        self.assertIn('href="/settings?section=ai"', html)
+        self.assertNotIn("Generate<", html)
+
+    def test_configured_but_never_generated_shows_a_generate_button(self):
+        config.AI_TOKEN = "sk-x"
+        web._ai_state["result"] = None
+        _, html = self.get("/ai")
+        self.assertIn(">Generate<", html)
+        self.assertNotIn("Generate again", html)
+
+    def test_populated_state_shows_cards_and_a_generate_again_button(self):
+        config.AI_TOKEN = "sk-x"
+        web._ai_state["result"] = {"items": [dict(MOVIE_ITEM)], "notes": [], "sample": False, "watched_count": 5}
+        web._ai_state["time"] = __import__("time").time()
+        _, html = self.get("/ai")
+        self.assertIn("M (2020)", html)
+        self.assertIn("Generate again", html)
+        self.assertIn("Generated just now", html)
+
+    def test_ai_nav_item_is_active_on_the_ai_page(self):
+        config.AI_TOKEN = "sk-x"
+        web._ai_state["result"] = None
+        _, html = self.get("/ai")
+        self.assertEqual(html.count('class="nav-item active" href="/ai"'), 2)
+
+    def test_generate_populates_state_and_redirects_back(self):
+        config.AI_TOKEN = "sk-x"
+        web._ai_state["result"] = None
+        fake_result = {"items": [dict(MOVIE_ITEM)], "notes": [], "sample": False, "watched_count": 3}
+        with mock.patch.object(sources, "use_sample", return_value=False), \
+             mock.patch.object(sources, "generate_ai_recommendations", return_value=fake_result) as gen:
+            status, location = self.post("/ai/generate", "return_to=/ai")
+        gen.assert_called_once()
+        self.assertEqual(status, 303)
+        self.assertEqual(location, "/ai")
+        self.assertEqual(web._ai_state["result"], fake_result)
+
+    def test_generate_is_blocked_in_sample_mode(self):
+        web._ai_state["result"] = None
+        with mock.patch.object(sources, "use_sample", return_value=True), \
+             mock.patch.object(sources, "generate_ai_recommendations") as gen:
+            self.post("/ai/generate", "return_to=/ai")
+        gen.assert_not_called()
+        self.assertIsNone(web._ai_state["result"])
+
+    def test_add_works_on_an_item_that_only_exists_in_the_ai_cache(self):
+        """Regression check: 'Add to library' clicked from the AI page must resolve via
+        _find_item(), not just the main Recommended cache."""
+        config.AI_TOKEN = "sk-x"
+        web._ai_state["result"] = {"items": [dict(MOVIE_ITEM)], "notes": [], "sample": False, "watched_count": 1}
+        with mock.patch.object(sources, "use_sample", return_value=False), \
+             mock.patch.object(sources, "add_to_library", return_value=(True, "Added")):
+            self.post("/add", "type=movie&id=1&return_to=/ai")
+        self.assertEqual(len(db.added_items()), 1)
+        self.assertEqual(web._ai_state["result"]["items"], [])
+
+    def test_dismiss_works_on_an_item_that_only_exists_in_the_ai_cache(self):
+        config.AI_TOKEN = "sk-x"
+        web._ai_state["result"] = {"items": [dict(MOVIE_ITEM)], "notes": [], "sample": False, "watched_count": 1}
+        with mock.patch.object(sources, "use_sample", return_value=False):
+            self.post("/dismiss", "type=movie&id=1&return_to=/ai")
+        self.assertIn(("movie", 1), db.dismissed())
+        self.assertEqual(web._ai_state["result"]["items"], [])
 
 
 if __name__ == "__main__":

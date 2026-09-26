@@ -64,7 +64,9 @@ def ai_client():
 
 
 def run(sample_mode, limit=200):
-    """Returns the recommender's result dict, plus 'sample' (bool) telling which data was used."""
+    """Returns the recommender's result dict, plus 'sample' (bool) telling which data was used.
+    Never uses AI - that's a separate, deliberate action (see generate_ai_recommendations()),
+    since every AI request has a real cost and this runs automatically on every cache refresh."""
     if sample_mode:
         watched, library_keys = sample.load()
         result = recommend.recommend(watched, library_keys, sample.SampleTmdb(), limit=limit)
@@ -72,9 +74,27 @@ def run(sample_mode, limit=200):
     else:
         watched, library_keys, notes = _load_live()
         result = recommend.recommend(watched, library_keys, tmdb.TmdbClient(config.TMDB_TOKEN),
-                                     dismissed=db.dismissed(), limit=limit, ai=ai_client())
+                                     dismissed=db.dismissed(), limit=limit)
     result["notes"] = notes + result["notes"]
     result["sample"] = sample_mode
+    result["watched_count"] = len(watched)
+    return result
+
+
+def generate_ai_recommendations(limit=50):
+    """Runs the recommender in AI-only mode: just the AI's own ideas, verified against real TMDB
+    data and scored the normal way - none of the TMDB-linked/genre/trending/new-release candidates
+    the main Recommended list also has. Meant to be triggered deliberately (the AI page's Generate
+    button) - unlike run(), every call here costs a real AI request. Never runs in sample mode."""
+    empty_profile = {c: {} for c in ("genre", "keyword", "director", "actor")}
+    if not config.ai_configured():
+        return {"items": [], "profile": empty_profile, "notes": ["AI isn't configured - add a token in "
+                "Settings -> AI first."], "sample": False, "watched_count": 0}
+    watched, library_keys, notes = _load_live()
+    result = recommend.recommend(watched, library_keys, tmdb.TmdbClient(config.TMDB_TOKEN),
+                                 dismissed=db.dismissed(), limit=limit, ai=ai_client(), ai_only=True)
+    result["notes"] = notes + result["notes"]
+    result["sample"] = False
     result["watched_count"] = len(watched)
     return result
 

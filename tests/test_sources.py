@@ -19,7 +19,8 @@ WATCHED_PLEX = [{"media_type": "movie", "tmdb_id": 2, "title": "B", "year": 2021
 
 CONFIG_KEYS = ("HISTORY_SOURCE", "PLEX_TOKEN", "TAUTULLI_URL", "TAUTULLI_API_KEY",
               "RADARR_URL", "RADARR_API_KEY", "RADARR_QUALITY_PROFILE_ID", "RADARR_ROOT_FOLDER",
-              "SONARR_URL", "SONARR_API_KEY", "SONARR_QUALITY_PROFILE_ID", "SONARR_ROOT_FOLDER")
+              "SONARR_URL", "SONARR_API_KEY", "SONARR_QUALITY_PROFILE_ID", "SONARR_ROOT_FOLDER",
+              "AI_PROVIDER_URL", "AI_TOKEN", "AI_MODEL")
 
 
 class TestLoadLive(unittest.TestCase):
@@ -125,6 +126,63 @@ class TestAddToLibrary(unittest.TestCase):
         config.SONARR_URL = ""
         ok, msg = sources.add_to_library("tv", 5)
         self.assertEqual((ok, msg), (False, "Sonarr isn't configured"))
+
+
+class TestRunNeverUsesAi(unittest.TestCase):
+    """AI is manual-only (the Generate button) - locking in that run(), used for every automatic
+    cache refresh, never triggers it, so it can never rack up API calls just from someone visiting
+    the page or the cache expiring."""
+
+    def setUp(self):
+        self._old = {k: getattr(config, k) for k in CONFIG_KEYS}
+        self.addCleanup(lambda: [setattr(config, k, v) for k, v in self._old.items()])
+        config.HISTORY_SOURCE, config.PLEX_TOKEN = "plex", "t"
+        config.AI_TOKEN = "sk-configured"  # AI IS configured - run() must still never touch it
+
+    def test_run_never_calls_ai_suggest(self):
+        import ai
+        with mock.patch.object(plex.PlexClient, "load", return_value=([], set(), 0)), \
+             mock.patch.object(ai.AiClient, "suggest") as suggest:
+            sources.run(sample_mode=False)
+        suggest.assert_not_called()
+
+    def test_sample_mode_never_calls_ai_suggest_either(self):
+        import ai
+        with mock.patch.object(ai.AiClient, "suggest") as suggest:
+            sources.run(sample_mode=True)
+        suggest.assert_not_called()
+
+
+class TestGenerateAiRecommendations(unittest.TestCase):
+    def setUp(self):
+        self._old = {k: getattr(config, k) for k in CONFIG_KEYS + ("TMDB_TOKEN",)}
+        self.addCleanup(lambda: [setattr(config, k, v) for k, v in self._old.items()])
+        config.HISTORY_SOURCE, config.PLEX_TOKEN, config.TMDB_TOKEN = "plex", "t", "t" * 32
+
+    def test_refuses_cleanly_when_ai_is_not_configured(self):
+        config.AI_TOKEN = ""
+        result = sources.generate_ai_recommendations()
+        self.assertEqual(result["items"], [])
+        self.assertFalse(result["sample"])
+        self.assertTrue(any("AI isn't configured" in n for n in result["notes"]))
+
+    def test_uses_ai_only_mode_when_configured(self):
+        config.AI_TOKEN = "sk-configured"
+        with mock.patch.object(plex.PlexClient, "load", return_value=([], set(), 0)), \
+             mock.patch("recommend.recommend") as recommend_fn:
+            recommend_fn.return_value = {"items": [], "profile": {}, "notes": []}
+            sources.generate_ai_recommendations(limit=10)
+        self.assertTrue(recommend_fn.call_args.kwargs["ai_only"])
+        self.assertIsNotNone(recommend_fn.call_args.kwargs["ai"])
+        self.assertEqual(recommend_fn.call_args.kwargs["limit"], 10)
+
+    def test_result_is_never_marked_as_sample(self):
+        import ai
+        config.AI_TOKEN = "sk-configured"
+        with mock.patch.object(plex.PlexClient, "load", return_value=([], set(), 0)), \
+             mock.patch.object(ai.AiClient, "suggest", return_value=[]):
+            result = sources.generate_ai_recommendations()
+        self.assertFalse(result["sample"])
 
 
 if __name__ == "__main__":

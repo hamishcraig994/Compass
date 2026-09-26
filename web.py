@@ -22,9 +22,10 @@ REFRESH_MIN_SECONDS = 600  # "Refresh" is ignored if the data is newer than this
 SUBTABS = (("all", "All"), ("new", "New & trending"), ("movie", "Movies"), ("tv", "TV shows"))
 # The sidebar/bottom-nav's top-level sections. "recommended" covers all four SUBTABS above.
 NAV_SECTIONS = (("home", "Home", "/"), ("recommended", "Recommended", "/recommended"),
-                ("library", "Library", "/library"), ("settings", "Settings", "/settings"))
+                ("library", "Library", "/library"), ("ai", "AI", "/ai"), ("settings", "Settings", "/settings"))
 compute_lock = threading.Lock()  # one recompute at a time
 _state = {"time": 0.0, "result": None}
+_ai_state = {"time": 0.0, "result": None}  # separate from _state - AI only ever runs when asked to
 
 CSS = """
 :root { --bg:#f6f7f9; --card:#fff; --text:#1c2430; --muted:#65707f; --line:#e2e6eb; --accent:#5b4bd6; --accent-bg:#ecebfa; --warn:#a35a00; --warn-bg:#fdf1de; }
@@ -102,16 +103,33 @@ def get_result(refresh=False):
         return _state["result"], age
 
 
+def _find_item(media_type, tmdb_id):
+    """Checks both the main Recommended cache and the AI page's - an action (add/dismiss) can come
+    from either."""
+    for state in (_state, _ai_state):
+        result = state["result"]
+        if not result:
+            continue
+        for item in result["items"]:
+            if (item["media_type"], item["tmdb_id"]) == (media_type, tmdb_id):
+                return item
+    return None
+
+
 def forget(media_type, tmdb_id):
-    """Remove one suggestion from the cached result (after 'Not interested' or 'Add to library')."""
+    """Remove one suggestion from whichever cache currently has it (after 'Not interested' or
+    'Add to library')."""
     with compute_lock:
-        if _state["result"]:
-            _state["result"]["items"] = [i for i in _state["result"]["items"]
-                                         if (i["media_type"], i["tmdb_id"]) != (media_type, tmdb_id)]
+        for state in (_state, _ai_state):
+            if state["result"]:
+                state["result"]["items"] = [i for i in state["result"]["items"]
+                                            if (i["media_type"], i["tmdb_id"]) != (media_type, tmdb_id)]
 
 
 def invalidate_cache():
-    """Forces the next page load to recompute from scratch (after a settings change)."""
+    """Forces the next page load to recompute from scratch (after a settings change). Doesn't
+    touch the AI cache - that's never automatic, so a settings change doesn't invalidate a batch
+    you deliberately generated; Generate again picks up the new settings regardless."""
     with compute_lock:
         _state["result"], _state["time"] = None, 0.0
 
@@ -224,14 +242,18 @@ def render_recommended(tab="all", refresh=False, msg=""):
     return _shell(body, "recommended", subtitle, show_refresh=True, return_to=return_to)
 
 
+def _is_sample():
+    return sources.use_sample(os.environ.get("SAMPLE") == "1" or None)
+
+
 def render_add_dialog(media_type, tmdb_id, return_to):
     """A dedicated page, not an inline modal: quality profiles are fetched here and only here, so
-    viewing the Recommended list never pays for a Radarr/Sonarr round-trip you might not need."""
+    viewing the Recommended or AI list never pays for a Radarr/Sonarr round-trip you might not need.
+    Looks in both caches (_find_item) rather than forcing a recompute - this can be reached from
+    either the Recommended or the AI page."""
     return_to = _safe_path(return_to)
-    result, _ = get_result()
-    item = next((i for i in result.get("items", [])
-                if (i["media_type"], i["tmdb_id"]) == (media_type, tmdb_id)), None)
-    if result.get("sample") or item is None:
+    item = _find_item(media_type, tmdb_id) if not _is_sample() else None
+    if item is None:
         body = (f'<p class="note">That title isn\'t available to add right now.</p>'
                f'<p><a class="btn-ghost" href="{escape(return_to)}">Back</a></p>')
         return _shell(body, "recommended", show_refresh=False)
@@ -285,6 +307,36 @@ def render_library():
     count = len(items)
     subtitle = f"{count} title{'s' if count != 1 else ''} added"
     return _shell(body, "library", subtitle, show_refresh=False)
+
+
+def render_ai_page():
+    """Unlike Recommended/Home, this never computes anything on its own - it only ever shows what
+    the last Generate click produced (or nothing, if there hasn't been one yet)."""
+    if not config.ai_configured():
+        body = ('<p class="note">AI isn\'t configured yet - add a provider and API key in '
+               '<a href="/settings?section=ai">Settings -> AI</a> first.</p>')
+        return _shell(body, "ai", show_refresh=False)
+
+    result = _ai_state["result"]
+    action_label = "Generate again" if result else "Generate"
+    generate_form = (f'<form class="inline" method="post" action="/ai/generate">'
+                     f'<input type="hidden" name="return_to" value="/ai">'
+                     f'<button type="submit" class="btn-add">{action_label}</button></form>')
+
+    if result is None:
+        body = ('<p class="muted">Ask your AI for a batch of ideas grounded in your taste profile - '
+               'these are separate from the main Recommended list, and each click is a real request '
+               f'to your configured provider.</p><div class="card-actions">{generate_form}</div>')
+        return _shell(body, "ai", show_refresh=False)
+
+    items = result["items"][:SHOW]
+    notes = "".join(f'<p class="note">{escape(n)}</p>' for n in result["notes"])
+    cards = "".join(_card(i, "/ai", True) for i in items)
+    grid = f'<div class="grid">{cards}</div>' if items else '<p class="muted">No suggestions this time - try again.</p>'
+    body = f'<div class="card-actions">{generate_form}</div>{notes}{grid}'
+    minutes = int((time.time() - _ai_state["time"]) // 60)
+    subtitle = f"Generated {'just now' if minutes < 1 else f'{minutes} min ago'}"
+    return _shell(body, "ai", subtitle, show_refresh=False)
 
 
 def _nav_html(section):
@@ -351,6 +403,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, render_recommended(tab if tab in dict(SUBTABS) else "all", msg=msg))
         if url.path == "/library":
             return self._send(200, render_library())
+        if url.path == "/ai":
+            return self._send(200, render_ai_page())
         if url.path == "/add-dialog":
             query = parse_qs(url.query)
             media_type, raw_id = query.get("type", [""])[0], query.get("id", [""])[0]
@@ -375,9 +429,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect(return_to)
         if path == "/dismiss":
             media_type, raw_id = form.get("type", [""])[0], form.get("id", [""])[0]
-            if media_type in ("movie", "tv") and raw_id.isdigit() and not (_state["result"] or {}).get("sample"):
+            if media_type in ("movie", "tv") and raw_id.isdigit() and not _is_sample():
                 db.dismiss(media_type, int(raw_id))
                 forget(media_type, int(raw_id))
+            return self._redirect(return_to)
+        if path == "/ai/generate":
+            if not _is_sample():
+                with compute_lock:
+                    _ai_state["result"] = sources.generate_ai_recommendations()
+                    _ai_state["time"] = time.time()
             return self._redirect(return_to)
         if path == "/settings":
             section = parse_qs(urlparse(self.path).query).get("section", [settings_page.DEFAULT_SECTION])[0]
@@ -395,10 +455,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/add":
             media_type, raw_id = form.get("type", [""])[0], form.get("id", [""])[0]
             msg = None
-            if media_type in ("movie", "tv") and raw_id.isdigit() and not (_state["result"] or {}).get("sample"):
+            if media_type in ("movie", "tv") and raw_id.isdigit() and not _is_sample():
                 tmdb_id = int(raw_id)
-                item = next((i for i in (_state["result"] or {}).get("items", [])
-                            if (i["media_type"], i["tmdb_id"]) == (media_type, tmdb_id)), None)
+                item = _find_item(media_type, tmdb_id)
                 qp_raw = form.get("quality_profile_id", [""])[0]
                 quality_profile_id = int(qp_raw) if qp_raw.isdigit() else None
                 search = form.get("search", [""])[0] == "1"

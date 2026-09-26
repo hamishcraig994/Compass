@@ -277,6 +277,59 @@ class TestAiIntegration(unittest.TestCase):
         self.assertEqual(result["notes"], [])
 
 
+class StrictFakeTmdb(FakeTmdb):
+    """Raises if any TMDB-discovery method is called - proves ai_only=True doesn't touch them at
+    all (not just that they return nothing), since every one of those calls has a real cost."""
+
+    def discover(self, media_type, genre_name):
+        raise AssertionError("ai_only must not call discover()")
+
+    def trending(self, media_type):
+        raise AssertionError("ai_only must not call trending()")
+
+    def new_releases(self, media_type, genre_name, since, until):
+        raise AssertionError("ai_only must not call new_releases()")
+
+
+class TestAiOnly(unittest.TestCase):
+    def _catalogue(self, extra=None):
+        return {("movie", 1): _details("movie", 1, "Watched Movie", genres=["Science Fiction"]), **(extra or {})}
+
+    def test_ai_only_never_calls_tmdb_discovery_methods(self):
+        catalogue = self._catalogue({("movie", 2): _details("movie", 2, "AI Movie", genres=["Science Fiction"])})
+        tmdb = StrictFakeTmdb(catalogue, {("movie", "AI Movie", 2020): 2})
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = [{"title": "AI Movie", "year": 2020, "media_type": "movie", "reason": "x"}]
+        result = recommend.recommend(WATCHED, set(), tmdb, ai=ai_client, ai_only=True)  # must not raise
+        self.assertIn("AI Movie", [i["title"] for i in result["items"]])
+
+    def test_ai_only_with_no_ai_client_returns_nothing(self):
+        tmdb = StrictFakeTmdb(self._catalogue())
+        result = recommend.recommend(WATCHED, set(), tmdb, ai_only=True)  # ai=None
+        self.assertEqual(result["items"], [])
+
+    def test_ai_only_still_applies_the_same_scoring_and_min_votes(self):
+        catalogue = self._catalogue({("movie", 2): _details("movie", 2, "Obscure", genres=["Science Fiction"],
+                                                            vote_count=3)})
+        tmdb = StrictFakeTmdb(catalogue, {("movie", "Obscure", 2020): 2})
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = [{"title": "Obscure", "year": 2020, "media_type": "movie"}]
+        result = recommend.recommend(WATCHED, set(), tmdb, ai=ai_client, ai_only=True)
+        self.assertNotIn("Obscure", [i["title"] for i in result["items"]])
+
+    def test_ai_only_excludes_linked_and_genre_candidates_even_though_ai_found_nothing(self):
+        # Without ai_only, this catalogue's recommendations link would normally surface "Linked
+        # Movie" - ai_only must not include it, since that's a non-AI candidate source.
+        catalogue = self._catalogue({("movie", 2): _details("movie", 2, "Linked Movie",
+                                                            genres=["Science Fiction"])})
+        catalogue[("movie", 1)] = {**catalogue[("movie", 1)], "recommendations": [2]}
+        tmdb = FakeTmdb(catalogue)
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = []
+        result = recommend.recommend(WATCHED, set(), tmdb, ai=ai_client, ai_only=True)
+        self.assertEqual(result["items"], [])
+
+
 class TestScoring(unittest.TestCase):
     FEATURES = {"genre": {"Sci-Fi": 1.0}, "keyword": {"time loop": 1.0}, "director": {"D": 1.0}, "actor": {"A": 1.0}}
     BLANK = {"genres": [], "keywords": [], "directors": [], "cast": []}

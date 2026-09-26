@@ -12,10 +12,12 @@ Suggests movies and TV shows you *don't* have yet, based on what you've watched 
 3. Finds candidates from TMDB: what's linked to your favourites ("people who liked this also liked..."),
    well-rated titles in your top genres, this week's trending titles, and releases from the last 6 months in
    your top genres. Anything already in your Plex library is dropped, and so is anything not out yet.
-4. If an AI is configured, asks it for a handful more ideas grounded in your taste profile. Every
-   suggestion names a title, never a trusted id - it's looked up on TMDB ourselves (matching by
-   year, not just taking the first search result) before being treated as real, and it's scored by
-   the exact same formula as everything else below, with no bonus for coming from the AI.
+4. If an AI is configured, its own dedicated **AI** page (sidebar) can, on request, ask it for a
+   batch of ideas grounded in your taste profile - see "AI-assisted suggestions" below. This never
+   happens automatically as part of the list above; every suggestion names a title, never a trusted
+   id, so it's looked up on TMDB ourselves (matching by year, not just taking the first search
+   result) before being treated as real, and it's scored by the exact same formula as everything
+   else below, with no bonus for coming from the AI.
 5. Ranks candidates: 50% fit with your profile, 28% how many of your favourites link to it, 12% general
    quality, 10% buzz (trending, or recently released). Taste dominates: trending or new titles that don't fit
    your profile are left out entirely, and can't outrank a strong match. "Match %" is relative to the best
@@ -83,9 +85,15 @@ Set it up in Settings -> AI (or `AI_PROVIDER_URL`/`AI_TOKEN`/`AI_MODEL` in `.env
 OpenAI-compatible endpoint works - OpenAI itself, a self-hosted server, OpenRouter, etc. - not just
 OpenAI, so change the provider URL for anything else.
 
-This is optional and additive: without it, nothing changes. With it, the AI is given your taste
-profile (top genres/themes/directors/actors) and asked for more ideas. Two rules keep this from
-being a black box or a liability:
+**Manual only, by design.** Once configured, a new **AI** section appears in the sidebar with its
+own **Generate** button. Clicking it is the only thing that ever triggers an AI request - it never
+runs as part of the automatic Recommended list, its hourly refresh, or Home's stats. That's
+deliberate: every click is a real request (and, depending on your provider, a real cost), so it
+should only ever happen because you asked. The AI page shows whatever your last Generate produced
+until you generate again; "Add to library" and "Not interested" work the same as they do on the
+main Recommended list.
+
+Two rules keep this from being a black box or a liability:
 - **Nothing the AI says is trusted outright.** It names a title and year; that gets looked up on
   TMDB ourselves (preferring a result within a year of the one given, over just the first search
   hit) before it's treated as a real candidate. If nothing matches closely, the suggestion is
