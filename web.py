@@ -28,13 +28,29 @@ CSS = """
 @media (prefers-color-scheme: dark) { :root { --bg:#14181d; --card:#1d232b; --text:#e6e9ee; --muted:#9aa5b4; --line:#2c3540; --accent:#a99bff; --accent-bg:#2a2650; --warn:#f0b35c; --warn-bg:#3a2d16; } }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; }
-main { max-width:1000px; margin:0 auto; padding:24px 16px 48px; }
-h1 { font-size:1.5rem; margin:0 0 4px; } .sub, .muted { color:var(--muted); } .muted { font-size:.9rem; }
-.top { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
-.tabs { display:flex; gap:6px; margin:18px 0; flex-wrap:wrap; }
-.tabs a { padding:6px 14px; border:1px solid var(--line); border-radius:99px; color:var(--text); text-decoration:none; background:var(--card); }
-.tabs a.on { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+h2 { font-size:1.4rem; margin:0 0 4px; } .sub, .muted { color:var(--muted); } .muted { font-size:.9rem; }
+.top { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:18px; }
 button { padding:6px 14px; font:inherit; color:var(--text); background:transparent; border:1px solid var(--line); border-radius:8px; cursor:pointer; }
+.app-shell { display:grid; grid-template-columns:220px minmax(0,1fr); min-height:100vh; }
+.app-sidebar { position:sticky; top:0; align-self:start; height:100vh; padding:24px 16px; border-right:1px solid var(--line); background:var(--card); display:flex; flex-direction:column; }
+.brand-lockup { display:flex; align-items:center; gap:12px; margin-bottom:24px; }
+.brand-mark { width:40px; height:40px; border-radius:12px; flex:none; display:grid; place-items:center; background:var(--accent); color:#fff; font-weight:800; font-size:1.1rem; }
+.brand-lockup h1 { margin:0; font-size:1.05rem; }
+.brand-lockup p { margin:2px 0 0; font-size:.78rem; color:var(--muted); }
+.nav-list { display:grid; gap:4px; }
+.nav-item { display:flex; align-items:center; min-height:40px; padding:0 12px; border-radius:8px; color:var(--muted); text-decoration:none; font-weight:600; font-size:.92rem; }
+.nav-item:hover { background:var(--accent-bg); color:var(--text); }
+.nav-item.active { background:var(--accent); color:#fff; }
+.app-main { padding:24px 24px 96px; max-width:900px; }
+.bottom-nav { display:none; }
+@media (max-width:820px) {
+  .app-shell { grid-template-columns:1fr; }
+  .app-sidebar { display:none; }
+  .app-main { padding:16px 16px 88px; }
+  .bottom-nav { display:flex; position:fixed; left:10px; right:10px; bottom:10px; z-index:40; gap:4px; padding:8px;
+    border-radius:16px; border:1px solid var(--line); background:var(--card); box-shadow:0 8px 24px rgba(0,0,0,.15); overflow-x:auto; }
+  .bottom-nav .nav-item { flex:none; padding:8px 12px; font-size:.78rem; border-radius:10px; }
+}
 .note { background:var(--warn-bg); color:var(--warn); border-radius:8px; padding:8px 12px; margin:0 0 8px; font-size:.9rem; }
 .taste { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-bottom:18px; font-size:.92rem; }
 .taste b { display:inline-block; min-width:76px; }
@@ -53,7 +69,6 @@ form.inline { margin:0; }
 .card-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:4px; }
 .btn-add { color:#fff; background:var(--accent); border-color:var(--accent); font-weight:600; }
 .note.success { background:var(--accent-bg); color:var(--accent); }
-.settings-link { color:var(--text); text-decoration:none; padding:6px 14px; border:1px solid var(--line); border-radius:8px; }
 fieldset { display:grid; gap:12px; border:1px solid var(--line); border-radius:10px; padding:16px; margin:0 0 16px; }
 legend { padding:0 6px; font-weight:600; }
 fieldset label { display:grid; gap:4px; font-size:.9rem; color:var(--text-soft, var(--muted)); }
@@ -156,21 +171,34 @@ def render_page(tab="all", refresh=False, msg=""):
                               f"{'just now' if minutes < 1 else f'{minutes} min ago'}")
 
 
-def _shell(body, tab, subtitle="", recommendation_nav=True):
-    top_actions = f'<a class="settings-link" href="/settings">Settings</a>'
-    nav = ""
-    if recommendation_nav:
-        tabs = "".join(f'<a href="/?{urlencode({"type": key})}"{" class=on" if key == tab else ""}>{escape(label)}</a>'
-                       for key, label in TABS)
-        top_actions = (f'<form class="inline" method="post" action="/refresh">'
-                      f'<input type="hidden" name="tab" value="{escape(tab)}">'
-                      f'<button type="submit">Refresh</button></form>{top_actions}')
-        nav = f'<nav class="tabs">{tabs}</nav>'
+def _nav_html(active):
+    """Shared between the sidebar and the mobile bottom nav."""
+    items = "".join(
+        f'<a class="nav-item{" active" if key == active else ""}" href="/?{urlencode({"type": key})}">{escape(label)}</a>'
+        for key, label in TABS)
+    items += f'<a class="nav-item{" active" if active == "settings" else ""}" href="/settings">Settings</a>'
+    return items
+
+
+def _shell(body, tab, subtitle="", show_refresh=True):
+    heading = "Settings" if tab == "settings" else dict(TABS).get(tab, "What's Next")
+    nav_html = _nav_html(tab)
+    refresh = ""
+    if show_refresh:
+        refresh = (f'<form class="inline" method="post" action="/refresh">'
+                  f'<input type="hidden" name="tab" value="{escape(tab)}">'
+                  f'<button type="submit">Refresh</button></form>')
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>What&#39;s Next</title>'
-            f'<meta name="viewport" content="width=device-width,initial-scale=1"><style>{CSS}</style></head><body><main>'
-            f'<div class="top"><div><h1>What&#39;s Next</h1><p class="sub">{escape(subtitle)}</p></div>'
-            f'<div class="card-actions">{top_actions}</div></div>'
-            f'{nav}{body}</main></body></html>')
+            f'<meta name="viewport" content="width=device-width,initial-scale=1"><style>{CSS}</style></head><body>'
+            f'<div class="app-shell">'
+            f'<aside class="app-sidebar"><div class="brand-lockup"><span class="brand-mark">W</span>'
+            f'<div><h1>What&#39;s Next</h1><p>Movies &amp; TV, just for you</p></div></div>'
+            f'<nav class="nav-list">{nav_html}</nav></aside>'
+            f'<main class="app-main">'
+            f'<div class="top"><div><h2>{escape(heading)}</h2><p class="sub">{escape(subtitle)}</p></div>{refresh}</div>'
+            f'{body}</main></div>'
+            f'<nav class="bottom-nav">{nav_html}</nav>'
+            f'</body></html>')
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -195,7 +223,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, "ok", "text/plain")
         if url.path == "/settings":
             saved = parse_qs(url.query).get("saved", ["0"])[0] == "1"
-            body = _shell(settings_page.render(saved), "settings", "Settings", recommendation_nav=False)
+            body = _shell(settings_page.render(saved), "settings", show_refresh=False)
             return self._send(200, body)
         if url.path != "/":
             return self._send(404, "Not found", "text/plain")

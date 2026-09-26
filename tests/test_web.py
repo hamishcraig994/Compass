@@ -107,6 +107,16 @@ class TestWeb(unittest.TestCase):
             self.get("/nope")
         self.assertEqual(ctx.exception.code, 404)
 
+    def test_sidebar_and_bottom_nav_highlight_the_active_tab(self):
+        _, html = self.get("/?type=movie")
+        self.assertEqual(html.count('class="nav-item active" href="/?type=movie"'), 2)  # sidebar + bottom nav
+        self.assertNotIn('class="nav-item active" href="/?type=all"', html)
+
+    def test_settings_page_highlights_settings_in_nav(self):
+        _, html = self.get("/settings")
+        self.assertEqual(html.count('class="nav-item active" href="/settings"'), 2)
+        self.assertIn("brand-lockup", html)
+
     def test_add_button_shown_only_when_dismissable_and_the_matching_arr_is_configured(self):
         old = (config.RADARR_URL, config.RADARR_API_KEY, config.SONARR_URL, config.SONARR_API_KEY)
         try:
