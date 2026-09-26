@@ -79,6 +79,8 @@ class TestRadarrClient(unittest.TestCase):
         self.assertEqual(post.call_args.kwargs["body"]["qualityProfileId"], 3)
         self.assertEqual(post.call_args.kwargs["body"]["rootFolderPath"], "/data/hd")
         self.assertFalse(post.call_args.kwargs["body"]["addOptions"]["searchForMovie"])
+        self.assertFalse(post.call_args.kwargs["body"]["monitored"])  # search=False also skips monitoring -
+        # otherwise Radarr's own automatic search cycle would grab it shortly after anyway
         self.assertFalse(any("qualityprofile" in c or "rootfolder" in c for c in calls))
 
     def test_add_fails_cleanly_with_no_profiles_or_folders_available(self):
@@ -141,6 +143,30 @@ class TestSonarrClient(unittest.TestCase):
         self.assertTrue(url.endswith("/api/v3/series"))
         self.assertEqual((body["qualityProfileId"], body["rootFolderPath"]), (4, "/data/tv"))
         self.assertTrue(body["addOptions"]["searchForMissingEpisodes"])
+        self.assertTrue(body["monitored"])
+
+    def test_add_with_search_false_also_leaves_it_unmonitored(self):
+        show = {"title": "Severance", "tvdbId": 77}
+
+        def fake_get(url, headers=None, params=None):
+            if url.endswith("/api/v3/series") and params is None:
+                return []
+            if url.endswith("/lookup"):
+                return [dict(show)]
+            if url.endswith("/qualityprofile"):
+                return [{"id": 4}]
+            if url.endswith("/rootfolder"):
+                return [{"path": "/data/tv"}]
+            raise AssertionError(f"unexpected GET {url} {params}")
+
+        with mock.patch.object(sonarr, "get_json", side_effect=fake_get), \
+             mock.patch.object(sonarr, "post_json") as post:
+            ok, _ = self.client.add(77, search=False)
+
+        self.assertTrue(ok)
+        self.assertFalse(post.call_args.kwargs["body"]["monitored"])  # otherwise Sonarr's own
+        # automatic search cycle would grab it shortly after, regardless of the choice made here
+        self.assertFalse(post.call_args.kwargs["body"]["addOptions"]["searchForMissingEpisodes"])
 
     def test_add_fails_cleanly_when_sonarr_cant_find_it(self):
         with mock.patch.object(sonarr, "get_json", side_effect=[[], []]):

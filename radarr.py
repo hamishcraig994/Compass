@@ -66,8 +66,11 @@ class RadarrClient:
             root_folder = self._resolved_root_folder()
             if quality_profile_id is None or root_folder is None:
                 return False, "Radarr has no quality profile or root folder to add into"
+            # monitored tracks search: unmonitored means Radarr's own automatic search/RSS cycle
+            # would also grab it shortly after, regardless of the "search now" choice - so "don't
+            # search yet" has to mean "don't monitor yet" too, or it wouldn't actually be honored.
             movie.update({"qualityProfileId": quality_profile_id, "rootFolderPath": root_folder,
-                         "monitored": True, "addOptions": {"searchForMovie": search}})
+                         "monitored": search, "addOptions": {"searchForMovie": search}})
             self._post("/api/v3/movie", movie)
             return True, f"Added \"{movie.get('title', 'the movie')}\" to Radarr"
         except Exception as e:

@@ -70,8 +70,11 @@ class SonarrClient:
             root_folder = self._resolved_root_folder()
             if quality_profile_id is None or root_folder is None:
                 return False, "Sonarr has no quality profile or root folder to add into"
+            # monitored tracks search: unmonitored means Sonarr's own automatic search/RSS cycle
+            # would also grab it shortly after, regardless of the "search now" choice - so "don't
+            # search yet" has to mean "don't monitor yet" too, or it wouldn't actually be honored.
             show.update({"qualityProfileId": quality_profile_id, "rootFolderPath": root_folder,
-                        "monitored": True, "addOptions": {"searchForMissingEpisodes": search}})
+                        "monitored": search, "addOptions": {"searchForMissingEpisodes": search}})
             self._post("/api/v3/series", show)
             return True, f"Added \"{show.get('title', 'the show')}\" to Sonarr"
         except Exception as e:

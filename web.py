@@ -78,7 +78,8 @@ button { padding:6px 14px; font:inherit; color:var(--text); background:transpare
 .blurb { font-size:.85rem; color:var(--muted); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
 form.inline { margin:0; }
 .card-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:4px; }
-.btn-add { color:#fff; background:var(--accent); border-color:var(--accent); font-weight:600; }
+.btn-add { display:inline-block; padding:6px 14px; font:inherit; font-weight:600; text-decoration:none; text-align:center;
+  cursor:pointer; border:1px solid var(--accent); border-radius:8px; color:#fff; background:var(--accent); }
 fieldset { display:grid; gap:12px; border:1px solid var(--line); border-radius:10px; padding:16px; margin:0 0 16px; }
 legend { padding:0 6px; font-weight:600; }
 fieldset label { display:grid; gap:4px; font-size:.9rem; color:var(--text-soft, var(--muted)); }
@@ -144,6 +145,8 @@ def _add_modal(item, return_to, profiles):
             f'<label>Quality profile<select name="quality_profile_id">{options}</select></label>'
             f'<label class="checkbox-label"><input type="checkbox" name="search" value="1" checked> '
             f'Search and download immediately</label>'
+            f'<p class="muted">Unchecked, it\'s added but left unmonitored - Radarr/Sonarr won\'t '
+            f'grab it on their own either, until you turn monitoring on there yourself.</p>'
             f'<div class="modal-actions"><a href="#" class="btn-ghost">Cancel</a>'
             f'<button type="submit" class="btn-add">Add</button></div></form></div></div>')
 
