@@ -18,8 +18,9 @@ Suggests movies and TV shows you *don't* have yet, based on what you've watched 
    suggestion in the batch, not a probability.
 5. Anything trending or released in the last 6 months gets a badge and also appears on the
    "New & trending" tab (`python3 cli.py --type new`), as well as in the main list.
-6. If Radarr/Sonarr are configured, movie/TV cards get an "Add to library" button, and anything
-   already tracked there is excluded from recommendations too - not just what's already in Plex.
+6. If Radarr/Sonarr are configured, movie/TV cards get an "Add to library" button - opening a
+   dialog to pick a quality profile and whether to search immediately - and anything already
+   tracked there is excluded from recommendations too, not just what's already in Plex.
 
 Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gentle on TMDB.
 
@@ -29,8 +30,11 @@ Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gent
     python3 -m unittest discover -s tests
 
 ## Use your own library
-Easiest: `python3 web.py`, then open the page and go to **Settings** - fill in Plex and TMDB
-there and save. Nothing to restart; it applies immediately.
+Easiest: `python3 web.py`, then open the page and go to **Settings** - one tab per app (Plex,
+Watch history, TMDB, Radarr & Sonarr). Fill a tab in, hit **Test connection** to check it before
+saving (it tests whatever's in the form, not necessarily what's already saved), then **Save**.
+Nothing to restart; it applies immediately. Radarr/Sonarr's quality profile and root folder become
+dropdowns, pulled live from your instance, once that tab's URL/API key are reachable.
 
 Or, without the web UI: copy `.env.example` to `.env` and fill in `PLEX_TOKEN` and `TMDB_TOKEN`,
 then `python3 cli.py --profile`. A setting saved through the Settings page always wins over its
@@ -56,12 +60,14 @@ Limits worth knowing:
 - No login - keep it on the home network.
 
 ### Adding to Radarr/Sonarr
-Set `RADARR_URL`/`RADARR_API_KEY` and/or `SONARR_URL`/`SONARR_API_KEY` in `.env` (see
-`.env.example`). "Add to library" adds the title and starts a search for it immediately - there's
-no separate confirm step. A movie is added straight from its TMDB id; a TV show's TMDB id is
-converted to the TVDB id Sonarr needs via TMDB's `external_ids` (cached, same as everything else).
-Sample data never touches Radarr/Sonarr - the button doesn't even appear until you're on your own
-library.
+Set them up in Settings -> Radarr & Sonarr (or `RADARR_URL`/`RADARR_API_KEY` and/or
+`SONARR_URL`/`SONARR_API_KEY` in `.env` - see `.env.example`). "Add to library" opens a dialog to
+pick a quality profile for that title (defaulting to whichever's configured in Settings) and
+whether to search for it immediately; leaving the profile on "Default" uses Settings' choice, and
+whichever root folder is configured there is always used (there's no per-title override for that).
+A movie is added straight from its TMDB id; a TV show's TMDB id is converted to the TVDB id Sonarr
+needs via TMDB's `external_ids` (cached, same as everything else). Sample data never touches
+Radarr/Sonarr - the button doesn't even appear until you're on your own library.
 
 ## Deploy with Docker / Portainer
 1. Build the image `whatsnext:latest` on the Docker host (`docker build -t whatsnext:latest .`) or via

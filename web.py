@@ -83,6 +83,15 @@ fieldset { display:grid; gap:12px; border:1px solid var(--line); border-radius:1
 legend { padding:0 6px; font-weight:600; }
 fieldset label { display:grid; gap:4px; font-size:.9rem; color:var(--text-soft, var(--muted)); }
 fieldset input, fieldset select { padding:8px 10px; font:inherit; color:var(--text); background:var(--card); border:1px solid var(--line); border-radius:8px; }
+.btn-ghost { text-decoration:none; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 14px; display:inline-block; background:transparent; font:inherit; cursor:pointer; }
+.modal-overlay { display:none; position:fixed; inset:0; background:rgba(20,24,29,.6); align-items:center; justify-content:center; z-index:60; padding:16px; }
+.modal-overlay:target { display:flex; }
+.modal { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; max-width:360px; width:100%; display:grid; gap:12px; }
+.modal h3 { margin:0; font-size:1.05rem; }
+.modal label { display:grid; gap:4px; font-size:.9rem; }
+.modal select { padding:8px 10px; font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:8px; }
+.modal .checkbox-label { display:flex; flex-direction:row; align-items:center; gap:8px; }
+.modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:4px; }
 """
 
 
@@ -123,7 +132,23 @@ def _hidden_fields(item, return_to):
             f'<input type="hidden" name="return_to" value="{escape(return_to)}">')
 
 
-def _card(item, return_to, can_dismiss):
+def _add_modal(item, return_to, profiles):
+    """A JS-free dialog (CSS :target) for choosing a quality profile and whether to search
+    immediately, opened by the card's "Add to library" link and submitting straight to /add."""
+    modal_id = f"add-{item['media_type']}-{item['tmdb_id']}"
+    options = '<option value="">Default (from Settings)</option>' + "".join(
+        f'<option value="{p_id}">{escape(p_name)}</option>' for p_id, p_name in (profiles or []))
+    return (f'<div id="{modal_id}" class="modal-overlay">'
+            f'<div class="modal"><h3>Add &quot;{escape(item["title"])}&quot; to library</h3>'
+            f'<form method="post" action="/add">{_hidden_fields(item, return_to)}'
+            f'<label>Quality profile<select name="quality_profile_id">{options}</select></label>'
+            f'<label class="checkbox-label"><input type="checkbox" name="search" value="1" checked> '
+            f'Search and download immediately</label>'
+            f'<div class="modal-actions"><a href="#" class="btn-ghost">Cancel</a>'
+            f'<button type="submit" class="btn-add">Add</button></div></form></div></div>')
+
+
+def _card(item, return_to, can_dismiss, radarr_profiles=None, sonarr_profiles=None):
     poster_url, link = _web_url(item.get("poster_url")), _web_url(item.get("url"))
     poster = (f'<img class="poster" src="{escape(poster_url, quote=True)}" alt="" loading="lazy">'
               if poster_url else '<div class="poster"></div>')
@@ -137,10 +162,14 @@ def _card(item, return_to, can_dismiss):
 
     can_add = can_dismiss and ((item["media_type"] == "movie" and config.radarr_configured())
                                or (item["media_type"] == "tv" and config.sonarr_configured()))
-    actions = ""
+    actions, modal = "", ""
     if can_dismiss:
-        add_button = (f'<form class="inline" method="post" action="/add">{_hidden_fields(item, return_to)}'
-                      f'<button type="submit" class="btn-add">Add to library</button></form>') if can_add else ""
+        add_button = ""
+        if can_add:
+            modal_id = f"add-{item['media_type']}-{item['tmdb_id']}"
+            profiles = radarr_profiles if item["media_type"] == "movie" else sonarr_profiles
+            add_button = f'<a class="btn-add" href="#{modal_id}">Add to library</a>'
+            modal = _add_modal(item, return_to, profiles)
         actions = (f'<div class="card-actions">{add_button}'
                   f'<form class="inline" method="post" action="/dismiss">{_hidden_fields(item, return_to)}'
                   f'<button type="submit">Not interested</button></form></div>')
@@ -149,7 +178,7 @@ def _card(item, return_to, can_dismiss):
             f'<div><span class="match">{int(item["match"])}% match</span></div>'
             f'<div class="reason">{escape(item["reason"])}</div>'
             f'<div class="chips">{chips}</div>'
-            f'<div class="blurb">{escape(item["overview"])}</div>{actions}</div></div>')
+            f'<div class="blurb">{escape(item["overview"])}</div>{actions}</div></div>{modal}')
 
 
 def _library_card(item):
@@ -177,6 +206,19 @@ def _subtabs_html(active):
                    f'{escape(label)}</a>' for key, label in SUBTABS)
 
 
+def _configured_profiles(client_factory):
+    """Fetches quality profiles once per page render (not once per card) - None if not
+    configured, [] if configured but unreachable right now (the modal still works, just
+    without extra choices beyond the configured default)."""
+    client = client_factory()
+    if client is None:
+        return None
+    try:
+        return [(p["id"], p["name"]) for p in client.quality_profiles()]
+    except Exception:
+        return []
+
+
 def render_recommended(tab="all", refresh=False, msg=""):
     try:
         result, age = get_result(refresh)
@@ -193,7 +235,12 @@ def render_recommended(tab="all", refresh=False, msg=""):
         taste = '<div class="taste">' + "<br>".join(
             f'<b>{label}</b> {escape(", ".join(names))}' for label, names in rows if names) + "</div>"
     return_to = f"/recommended?{urlencode({'type': tab})}"
-    cards = "".join(_card(i, return_to, not result["sample"]) for i in items)
+    radarr_profiles = sonarr_profiles = None
+    if not result["sample"] and any(i["media_type"] == "movie" for i in items):
+        radarr_profiles = _configured_profiles(sources.radarr_client)
+    if not result["sample"] and any(i["media_type"] == "tv" for i in items):
+        sonarr_profiles = _configured_profiles(sources.sonarr_client)
+    cards = "".join(_card(i, return_to, not result["sample"], radarr_profiles, sonarr_profiles) for i in items)
     grid = f'<div class="grid">{cards}</div>' if items else '<p class="muted">No recommendations found.</p>'
     body = f'<div class="subtabs">{_subtabs_html(tab)}</div>{notes}{taste}{grid}'
     minutes = int(age // 60)
@@ -300,8 +347,10 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/library":
             return self._send(200, render_library())
         if url.path == "/settings":
-            saved = parse_qs(url.query).get("saved", ["0"])[0] == "1"
-            return self._send(200, _shell(settings_page.render(saved), "settings"))
+            query = parse_qs(url.query)
+            section = query.get("section", [settings_page.DEFAULT_SECTION])[0]
+            saved = query.get("saved", ["0"])[0] == "1"
+            return self._send(200, _shell(settings_page.render(section, saved), "settings"))
         return self._send(404, "Not found", "text/plain")
 
     def do_POST(self):
@@ -319,9 +368,18 @@ class Handler(BaseHTTPRequestHandler):
                 forget(media_type, int(raw_id))
             return self._redirect(return_to)
         if path == "/settings":
-            settings_page.apply_form(form)
-            invalidate_cache()
-            return self._send(303, "", headers={"Location": "/settings?saved=1"})
+            section = parse_qs(urlparse(self.path).query).get("section", [settings_page.DEFAULT_SECTION])[0]
+            action = form.get("action", [""])[0]
+            if action == "save":
+                settings_page.apply_form(section, form)
+                invalidate_cache()
+                return self._send(303, "", headers={"Location": f"/settings?section={section}&saved=1"})
+            if action.startswith("test_"):
+                test_result = settings_page.run_test(action[len("test_"):], form)
+                overrides = settings_page.form_overrides(section, form)
+                body = settings_page.render(section, test_result=test_result, overrides=overrides)
+                return self._send(200, _shell(body, "settings"))
+            return self._redirect(f"/settings?section={section}")
         if path == "/add":
             media_type, raw_id = form.get("type", [""])[0], form.get("id", [""])[0]
             msg = None
@@ -329,7 +387,10 @@ class Handler(BaseHTTPRequestHandler):
                 tmdb_id = int(raw_id)
                 item = next((i for i in (_state["result"] or {}).get("items", [])
                             if (i["media_type"], i["tmdb_id"]) == (media_type, tmdb_id)), None)
-                ok, msg = sources.add_to_library(media_type, tmdb_id)
+                qp_raw = form.get("quality_profile_id", [""])[0]
+                quality_profile_id = int(qp_raw) if qp_raw.isdigit() else None
+                search = form.get("search", [""])[0] == "1"
+                ok, msg = sources.add_to_library(media_type, tmdb_id, search=search, quality_profile_id=quality_profile_id)
                 if ok:
                     if item:
                         db.record_added(item)

@@ -14,6 +14,14 @@ class RadarrClient:
     def _post(self, path, body):
         return post_json(self.base_url + path, headers={"X-Api-Key": self.api_key}, body=body)
 
+    def test_connection(self):
+        """Returns (ok, message) - never raises, so the Settings page can show it either way."""
+        try:
+            status = self._get("/api/v3/system/status")
+            return True, f"Connected to Radarr v{status.get('version', '?')}"
+        except Exception as e:
+            return False, str(e)
+
     def quality_profiles(self):
         return self._get("/api/v3/qualityprofile")
 

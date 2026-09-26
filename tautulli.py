@@ -53,6 +53,14 @@ class TautulliClient:
             raise RuntimeError(f"Tautulli {cmd} failed: {response.get('message')}")
         return response["data"]
 
+    def test_connection(self):
+        """Returns (ok, message) - never raises, so the Settings page can show it either way."""
+        try:
+            self._call("get_history", length=1)
+            return True, "Connected to Tautulli"
+        except Exception as e:
+            return False, str(e)
+
     def raw_probe(self):
         """One page of history plus one metadata lookup, unprocessed - for checking Tautulli's
         actual field names before trusting load(). Not used by the recommender itself."""

@@ -163,6 +163,29 @@ class TestWeb(unittest.TestCase):
         finally:
             config.RADARR_URL, config.RADARR_API_KEY, config.SONARR_URL, config.SONARR_API_KEY = old
 
+    def test_add_to_library_opens_a_modal_with_the_chosen_profiles(self):
+        old = (config.RADARR_URL, config.RADARR_API_KEY)
+        try:
+            config.RADARR_URL = config.RADARR_API_KEY = "x"
+            card = web._card(MOVIE_ITEM, "/recommended", True, radarr_profiles=[(4, "HD-1080p"), (7, "4K")])
+        finally:
+            config.RADARR_URL, config.RADARR_API_KEY = old
+        self.assertIn('href="#add-movie-1"', card)
+        self.assertIn('id="add-movie-1"', card)
+        self.assertIn('<option value="4">HD-1080p</option>', card)
+        self.assertIn('<option value="7">4K</option>', card)
+        self.assertIn('name="search"', card)
+        self.assertIn("checked", card)  # search-immediately defaults on
+
+    def test_modal_offers_just_the_default_when_no_profiles_were_fetched(self):
+        old = (config.RADARR_URL, config.RADARR_API_KEY)
+        try:
+            config.RADARR_URL = config.RADARR_API_KEY = "x"
+            card = web._card(MOVIE_ITEM, "/recommended", True, radarr_profiles=None)
+        finally:
+            config.RADARR_URL, config.RADARR_API_KEY = old
+        self.assertIn("Default (from Settings)", card)
+
     def test_titles_are_html_escaped(self):
         card = web._card({"media_type": "movie", "tmdb_id": 1, "title": "<b>x</b>", "year": 2020, "match": 50,
                           "reason": "<i>r</i>", "matches": ["<u>"], "overview": "<script>alert(1)</script>",
@@ -171,6 +194,29 @@ class TestWeb(unittest.TestCase):
         self.assertNotIn("<script>", card)
         self.assertNotIn('"onerror="', card)
         self.assertNotIn("javascript:", card)
+
+
+class TestProfilesFetchedOncePerPage(unittest.TestCase):
+    """Forces sample=False by hand, same as TestAddRecordsToLibrary, since this file's shared
+    server always runs in sample mode."""
+
+    def setUp(self):
+        self._old_state = dict(web._state)
+        self.addCleanup(web._state.update, self._old_state)
+        two_movies = [dict(MOVIE_ITEM, tmdb_id=1), dict(MOVIE_ITEM, tmdb_id=2)]
+        web._state["result"] = {"sample": False, "items": two_movies, "profile": {"genre": {}, "keyword": {},
+                                "director": {}, "actor": {}}, "notes": [], "watched_count": 5}
+        web._state["time"] = __import__("time").time()
+        self._old_config = (config.RADARR_URL, config.RADARR_API_KEY)
+        config.RADARR_URL = config.RADARR_API_KEY = "x"
+        self.addCleanup(lambda: setattr(config, "RADARR_URL", self._old_config[0]))
+        self.addCleanup(lambda: setattr(config, "RADARR_API_KEY", self._old_config[1]))
+
+    def test_quality_profiles_fetched_once_not_per_card(self):
+        with mock.patch("radarr.RadarrClient.quality_profiles", return_value=[{"id": 1, "name": "HD"}]) as qp:
+            html = web.render_recommended("all")
+        self.assertEqual(qp.call_count, 1)
+        self.assertEqual(html.count('<option value="1">HD</option>'), 2)  # once per card, same fetched list
 
 
 class TestSafePath(unittest.TestCase):
@@ -200,33 +246,54 @@ class TestSettingsRoute(unittest.TestCase):
         self.addCleanup(setattr, db, "DB_PATH", self._old_db)
         self.addCleanup(config._apply)
 
-    def test_get_settings_shows_the_form(self):
+    def post_settings(self, section, data):
+        opener = urllib.request.build_opener(NoRedirect)
+        try:
+            resp = opener.open(urllib.request.Request(
+                f"{self.base}/settings?section={section}", data=data.encode(), method="POST"))
+            return resp.status, resp.headers.get("Location"), resp.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Location"), e.read().decode()
+
+    def test_get_settings_shows_the_default_section(self):
         with urllib.request.urlopen(self.base + "/settings") as r:
             status, html = r.status, r.read().decode()
         self.assertEqual(status, 200)
         self.assertIn("Plex URL", html)
-        self.assertIn("Radarr", html)
 
-    def test_post_settings_saves_and_redirects_with_saved_flag(self):
-        opener = urllib.request.build_opener(NoRedirect)
-        try:
-            resp = opener.open(urllib.request.Request(
-                self.base + "/settings", data=b"PLEX_URL=http%3A%2F%2Fnewplex%3A32400", method="POST"))
-            location = resp.headers.get("Location")
-        except urllib.error.HTTPError as e:
-            location = e.headers.get("Location")
-        self.assertEqual(location, "/settings?saved=1")
+    def test_get_settings_shows_the_requested_section(self):
+        with urllib.request.urlopen(self.base + "/settings?section=arr") as r:
+            html = r.read().decode()
+        self.assertIn("Radarr", html)
+        self.assertNotIn("Plex URL", html)
+
+    def test_post_settings_save_persists_and_redirects_with_saved_flag(self):
+        status, location, _ = self.post_settings("plex", "action=save&PLEX_URL=http%3A%2F%2Fnewplex%3A32400")
+        self.assertEqual(status, 303)
+        self.assertEqual(location, "/settings?section=plex&saved=1")
         self.assertEqual(config.PLEX_URL, "http://newplex:32400")
 
-    def test_post_settings_invalidates_the_cached_recommendations(self):
+    def test_post_settings_save_invalidates_the_cached_recommendations(self):
         web.get_result()  # populate the cache
         self.assertIsNotNone(web._state["result"])
-        opener = urllib.request.build_opener(NoRedirect)
-        try:
-            opener.open(urllib.request.Request(self.base + "/settings", data=b"PLEX_URL=x", method="POST"))
-        except urllib.error.HTTPError:
-            pass
+        self.post_settings("plex", "action=save&PLEX_URL=x")
         self.assertIsNone(web._state["result"])
+
+    def test_post_settings_test_renders_the_result_without_saving(self):
+        with mock.patch("plex.PlexClient.test_connection", return_value=(True, "Connected to Test Server")):
+            status, location, html = self.post_settings(
+                "plex", "action=test_plex&PLEX_URL=http%3A%2F%2Funsaved%3A32400&PLEX_TOKEN=")
+        self.assertEqual(status, 200)
+        self.assertIsNone(location)  # rendered directly, not a redirect
+        self.assertIn("Connected to Test Server", html)
+        self.assertIn("http://unsaved:32400", html)  # the just-typed value, redisplayed
+        self.assertNotEqual(config.PLEX_URL, "http://unsaved:32400")  # but never saved
+
+    def test_post_settings_test_failure_is_shown_without_a_success_style(self):
+        with mock.patch("plex.PlexClient.test_connection", return_value=(False, "401 Unauthorized")):
+            _, _, html = self.post_settings("plex", "action=test_plex&PLEX_URL=http%3A%2F%2Fx&PLEX_TOKEN=bad")
+        self.assertIn("401 Unauthorized", html)
+        self.assertNotIn('note success">401', html)
 
 
 class TestAddRecordsToLibrary(unittest.TestCase):
@@ -246,11 +313,11 @@ class TestAddRecordsToLibrary(unittest.TestCase):
         self.addCleanup(self.server.shutdown)
         self.addCleanup(self.server.server_close)
 
-    def post_add(self, media_type, tmdb_id):
+    def post_add(self, media_type, tmdb_id, extra=""):
         opener = urllib.request.build_opener(NoRedirect)
+        data = f"type={media_type}&id={tmdb_id}{extra}".encode()
         try:
-            resp = opener.open(urllib.request.Request(
-                self.base + "/add", data=f"type={media_type}&id={tmdb_id}".encode(), method="POST"))
+            resp = opener.open(urllib.request.Request(self.base + "/add", data=data, method="POST"))
             return resp.headers.get("Location")
         except urllib.error.HTTPError as e:
             return e.headers.get("Location")
@@ -273,6 +340,21 @@ class TestAddRecordsToLibrary(unittest.TestCase):
         self.assertIn("Radarr", location)
         self.assertEqual(db.added_items(), [])
         self.assertEqual(len(web._state["result"]["items"]), 1)  # still there, wasn't removed
+
+    def test_chosen_quality_profile_and_search_flag_are_passed_through(self):
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")) as add:
+            self.post_add("movie", 1, "&quality_profile_id=7&search=1")
+        add.assert_called_once_with("movie", 1, search=True, quality_profile_id=7)
+
+    def test_unchecked_search_box_means_dont_search(self):
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")) as add:
+            self.post_add("movie", 1)  # no "search" field at all - an unchecked checkbox isn't submitted
+        add.assert_called_once_with("movie", 1, search=False, quality_profile_id=None)
+
+    def test_blank_quality_profile_means_use_the_configured_default(self):
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")) as add:
+            self.post_add("movie", 1, "&quality_profile_id=&search=1")
+        add.assert_called_once_with("movie", 1, search=True, quality_profile_id=None)
 
 
 if __name__ == "__main__":

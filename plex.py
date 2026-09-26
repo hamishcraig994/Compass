@@ -50,6 +50,14 @@ class PlexClient:
     def _get(self, path, params=None):
         return get_json(self.base_url + path, headers={"X-Plex-Token": self.token}, params=params)["MediaContainer"]
 
+    def test_connection(self):
+        """Returns (ok, message) - never raises, so the Settings page can show it either way."""
+        try:
+            data = self._get("/")
+            return True, f"Connected to {data.get('friendlyName', 'your Plex server')}"
+        except Exception as e:
+            return False, str(e)
+
     def sections(self):
         found = self._get("/library/sections").get("Directory") or []
         return [(s["key"], "movie" if s["type"] == "movie" else "tv") for s in found if s["type"] in ("movie", "show")]

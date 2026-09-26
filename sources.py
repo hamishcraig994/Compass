@@ -74,13 +74,26 @@ def run(sample_mode, limit=200):
     return result
 
 
-def add_to_library(media_type, tmdb_id, search=True):
-    """Adds one recommended title to Radarr or Sonarr. Returns (success, message)."""
+def radarr_client():
+    return radarr.RadarrClient(config.RADARR_URL, config.RADARR_API_KEY, config.RADARR_QUALITY_PROFILE_ID,
+                               config.RADARR_ROOT_FOLDER) if config.radarr_configured() else None
+
+
+def sonarr_client():
+    return sonarr.SonarrClient(config.SONARR_URL, config.SONARR_API_KEY, config.SONARR_QUALITY_PROFILE_ID,
+                               config.SONARR_ROOT_FOLDER) if config.sonarr_configured() else None
+
+
+def add_to_library(media_type, tmdb_id, search=True, quality_profile_id=None):
+    """Adds one recommended title to Radarr or Sonarr. Returns (success, message).
+    quality_profile_id, if given (e.g. chosen in the "Add to library" dialog), overrides the
+    configured default for just this one add."""
     if media_type == "movie":
         if not config.radarr_configured():
             return False, "Radarr isn't configured"
         client = radarr.RadarrClient(config.RADARR_URL, config.RADARR_API_KEY,
-                                     config.RADARR_QUALITY_PROFILE_ID, config.RADARR_ROOT_FOLDER)
+                                     quality_profile_id if quality_profile_id is not None else config.RADARR_QUALITY_PROFILE_ID,
+                                     config.RADARR_ROOT_FOLDER)
         return client.add(tmdb_id, search=search)
 
     if not config.sonarr_configured():
@@ -92,5 +105,6 @@ def add_to_library(media_type, tmdb_id, search=True):
     if not tvdb_id:
         return False, "TMDB has no TVDB id for this show, so Sonarr can't look it up"
     client = sonarr.SonarrClient(config.SONARR_URL, config.SONARR_API_KEY,
-                                 config.SONARR_QUALITY_PROFILE_ID, config.SONARR_ROOT_FOLDER)
+                                 quality_profile_id if quality_profile_id is not None else config.SONARR_QUALITY_PROFILE_ID,
+                                 config.SONARR_ROOT_FOLDER)
     return client.add(tvdb_id, search=search)

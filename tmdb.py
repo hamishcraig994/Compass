@@ -57,6 +57,17 @@ class TmdbClient:
     def _get(self, path, params=None):
         return get_json(BASE + path, headers=self.headers, params={**self.params, **(params or {})})
 
+    def test_connection(self):
+        """Returns (ok, message) - never raises, so the Settings page can show it either way.
+        /authentication is TMDB's own purpose-built credential check."""
+        try:
+            result = self._get("/authentication")
+            if result.get("success"):
+                return True, "TMDB token is valid"
+            return False, result.get("status_message", "TMDB rejected this token")
+        except Exception as e:
+            return False, str(e)
+
     def details(self, media_type, tmdb_id):
         key = f"details:v2:{media_type}:{tmdb_id}"  # v2: added release_date
         cached = db.cache_get(key, DETAILS_MAX_AGE)
