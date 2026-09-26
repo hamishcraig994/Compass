@@ -10,6 +10,7 @@ from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode, urlparse
 
+import config
 import db
 import profile
 import sources
@@ -48,6 +49,8 @@ button { padding:6px 14px; font:inherit; color:var(--text); background:transpare
 .chips { display:flex; gap:4px; flex-wrap:wrap; } .chip { font-size:.75rem; color:var(--muted); border:1px solid var(--line); border-radius:99px; padding:0 8px; }
 .blurb { font-size:.85rem; color:var(--muted); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
 form.inline { margin:0; }
+.card-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:4px; }
+.btn-add { color:#fff; background:var(--accent); border-color:var(--accent); font-weight:600; }
 """
 
 
@@ -76,6 +79,12 @@ def _web_url(url):
     return url if url and url.startswith(("https://", "http://")) else None
 
 
+def _hidden_fields(item, tab):
+    return (f'<input type="hidden" name="type" value="{escape(item["media_type"])}">'
+            f'<input type="hidden" name="id" value="{int(item["tmdb_id"])}">'
+            f'<input type="hidden" name="tab" value="{escape(tab)}">')
+
+
 def _card(item, tab, can_dismiss):
     poster_url, link = _web_url(item.get("poster_url")), _web_url(item.get("url"))
     poster = (f'<img class="poster" src="{escape(poster_url, quote=True)}" alt="" loading="lazy">'
@@ -87,19 +96,22 @@ def _card(item, tab, can_dismiss):
     badges = "".join(f'<span class="badge">{label}</span>'
                      for flag, label in (("new", "New"), ("trending", "Trending")) if item.get(flag))
     chips = "".join(f'<span class="chip">{escape(m)}</span>' for m in item["matches"])
-    dismiss = ""
+
+    can_add = can_dismiss and ((item["media_type"] == "movie" and config.radarr_configured())
+                               or (item["media_type"] == "tv" and config.sonarr_configured()))
+    actions = ""
     if can_dismiss:
-        dismiss = (f'<form class="inline" method="post" action="/dismiss">'
-                   f'<input type="hidden" name="type" value="{escape(item["media_type"])}">'
-                   f'<input type="hidden" name="id" value="{int(item["tmdb_id"])}">'
-                   f'<input type="hidden" name="tab" value="{escape(tab)}">'
-                   f'<button type="submit">Not interested</button></form>')
+        add_button = (f'<form class="inline" method="post" action="/add">{_hidden_fields(item, tab)}'
+                      f'<button type="submit" class="btn-add">Add to library</button></form>') if can_add else ""
+        actions = (f'<div class="card-actions">{add_button}'
+                  f'<form class="inline" method="post" action="/dismiss">{_hidden_fields(item, tab)}'
+                  f'<button type="submit">Not interested</button></form></div>')
     return (f'<div class="card">{poster}<div class="body">'
             f'<div class="title">{title}<span class="kind">{kind}</span>{badges}</div>'
             f'<div><span class="match">{int(item["match"])}% match</span></div>'
             f'<div class="reason">{escape(item["reason"])}</div>'
             f'<div class="chips">{chips}</div>'
-            f'<div class="blurb">{escape(item["overview"])}</div>{dismiss}</div></div>')
+            f'<div class="blurb">{escape(item["overview"])}</div>{actions}</div></div>')
 
 
 def _in_tab(item, tab):
@@ -108,13 +120,15 @@ def _in_tab(item, tab):
     return tab == "all" or item["media_type"] == tab
 
 
-def render_page(tab="all", refresh=False):
+def render_page(tab="all", refresh=False, msg=""):
     try:
         result, age = get_result(refresh)
     except Exception as e:
         return _shell(f'<p class="note">Couldn\'t get recommendations: {escape(str(e))}</p>', tab)
     items = [i for i in result["items"] if _in_tab(i, tab)][:SHOW]
     notes = "".join(f'<p class="note">{escape(n)}</p>' for n in result["notes"])
+    if msg:
+        notes = f'<p class="note">{escape(msg)}</p>' + notes
     taste = ""
     top = profile.summary(result["profile"], 5)
     if any(top.values()):
@@ -151,9 +165,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _redirect(self, tab):
+    def _redirect(self, tab, msg=None):
         tab = tab if tab in dict(TABS) else "all"
-        self._send(303, "", headers={"Location": "/?" + urlencode({"type": tab})})
+        params = {"type": tab, **({"msg": msg} if msg else {})}
+        self._send(303, "", headers={"Location": "/?" + urlencode(params)})
 
     def do_GET(self):
         url = urlparse(self.path)
@@ -161,8 +176,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, "ok", "text/plain")
         if url.path != "/":
             return self._send(404, "Not found", "text/plain")
-        tab = parse_qs(url.query).get("type", ["all"])[0]
-        self._send(200, render_page(tab if tab in dict(TABS) else "all"))
+        query = parse_qs(url.query)
+        tab = query.get("type", ["all"])[0]
+        msg = query.get("msg", [""])[0]
+        self._send(200, render_page(tab if tab in dict(TABS) else "all", msg=msg))
 
     def do_POST(self):
         length = min(int(self.headers.get("Content-Length") or 0), 4096)
@@ -178,6 +195,14 @@ class Handler(BaseHTTPRequestHandler):
                 db.dismiss(media_type, int(raw_id))
                 forget(media_type, int(raw_id))
             return self._redirect(tab)
+        if path == "/add":
+            media_type, raw_id = form.get("type", [""])[0], form.get("id", [""])[0]
+            msg = None
+            if media_type in ("movie", "tv") and raw_id.isdigit() and not (_state["result"] or {}).get("sample"):
+                ok, msg = sources.add_to_library(media_type, int(raw_id))
+                if ok:
+                    forget(media_type, int(raw_id))
+            return self._redirect(tab, msg)
         self._send(404, "Not found", "text/plain")
 
     def log_message(self, fmt, *args):

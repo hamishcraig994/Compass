@@ -37,6 +37,28 @@ def tautulli_configured():
     return bool(TAUTULLI_URL and TAUTULLI_API_KEY)
 
 
+# Radarr/Sonarr: optional. When set, "Add to library" appears on movie/TV cards, and anything
+# already tracked there is excluded from recommendations too (not just what's in Plex). Quality
+# profile/root folder are optional - left blank, whichever one Radarr/Sonarr lists first is used.
+RADARR_URL = os.environ.get("RADARR_URL", "").rstrip("/")
+RADARR_API_KEY = os.environ.get("RADARR_API_KEY", "")
+RADARR_QUALITY_PROFILE_ID = int(os.environ["RADARR_QUALITY_PROFILE_ID"]) if os.environ.get("RADARR_QUALITY_PROFILE_ID") else None
+RADARR_ROOT_FOLDER = os.environ.get("RADARR_ROOT_FOLDER", "")
+
+SONARR_URL = os.environ.get("SONARR_URL", "").rstrip("/")
+SONARR_API_KEY = os.environ.get("SONARR_API_KEY", "")
+SONARR_QUALITY_PROFILE_ID = int(os.environ["SONARR_QUALITY_PROFILE_ID"]) if os.environ.get("SONARR_QUALITY_PROFILE_ID") else None
+SONARR_ROOT_FOLDER = os.environ.get("SONARR_ROOT_FOLDER", "")
+
+
+def radarr_configured():
+    return bool(RADARR_URL and RADARR_API_KEY)
+
+
+def sonarr_configured():
+    return bool(SONARR_URL and SONARR_API_KEY)
+
+
 def live_configured():
     """True when we have what we need to talk to TMDB and to whichever history source is picked."""
     history_ready = tautulli_configured() if HISTORY_SOURCE == "tautulli" else bool(PLEX_TOKEN)

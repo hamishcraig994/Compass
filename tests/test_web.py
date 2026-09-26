@@ -8,8 +8,13 @@ import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["SAMPLE"] = "1"
+import config
 import db
 import web
+
+MOVIE_ITEM = {"media_type": "movie", "tmdb_id": 1, "title": "M", "year": 2020, "match": 50,
+             "reason": "r", "matches": [], "overview": "o", "poster_url": None, "url": None}
+TV_ITEM = {**MOVIE_ITEM, "media_type": "tv"}
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -83,6 +88,17 @@ class TestWeb(unittest.TestCase):
         self.assertEqual(self.post("/dismiss", "type=movie&id=1017&tab=all"), 303)
         self.assertEqual(db.dismissed(), set())  # fake sample ids must never reach the real dismissed list
 
+    def test_sample_mode_has_no_add_button_and_ignores_add_posts(self):
+        _, html = self.get("/")
+        self.assertNotIn("Add to library", html)
+        opener = urllib.request.build_opener(NoRedirect)
+        try:
+            resp = opener.open(urllib.request.Request(self.base + "/add", data=b"type=movie&id=1017&tab=all", method="POST"))
+            location = resp.headers.get("Location")
+        except urllib.error.HTTPError as e:
+            location = e.headers.get("Location")
+        self.assertNotIn("msg=", location)  # blocked before ever calling sources.add_to_library
+
     def test_refresh_redirects_back(self):
         self.assertEqual(self.post("/refresh", "tab=tv"), 303)
 
@@ -90,6 +106,17 @@ class TestWeb(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self.get("/nope")
         self.assertEqual(ctx.exception.code, 404)
+
+    def test_add_button_shown_only_when_dismissable_and_the_matching_arr_is_configured(self):
+        old = (config.RADARR_URL, config.RADARR_API_KEY, config.SONARR_URL, config.SONARR_API_KEY)
+        try:
+            config.RADARR_URL = config.RADARR_API_KEY = "x"
+            config.SONARR_URL = config.SONARR_API_KEY = ""
+            self.assertIn("Add to library", web._card(MOVIE_ITEM, "all", True))
+            self.assertNotIn("Add to library", web._card(TV_ITEM, "all", True))
+            self.assertNotIn("Add to library", web._card(MOVIE_ITEM, "all", False))  # sample mode
+        finally:
+            config.RADARR_URL, config.RADARR_API_KEY, config.SONARR_URL, config.SONARR_API_KEY = old
 
     def test_titles_are_html_escaped(self):
         card = web._card({"media_type": "movie", "tmdb_id": 1, "title": "<b>x</b>", "year": 2020, "match": 50,

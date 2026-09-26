@@ -18,6 +18,8 @@ Suggests movies and TV shows you *don't* have yet, based on what you've watched 
    suggestion in the batch, not a probability.
 5. Anything trending or released in the last 6 months gets a badge and also appears on the
    "New & trending" tab (`python3 cli.py --type new`), as well as in the main list.
+6. If Radarr/Sonarr are configured, movie/TV cards get an "Add to library" button, and anything
+   already tracked there is excluded from recommendations too - not just what's already in Plex.
 
 Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gentle on TMDB.
 
@@ -48,6 +50,14 @@ Limits worth knowing:
 - Titles with no TMDB id (old "Legacy" Plex agents) are skipped; the page tells you how many.
 - "Not interested" is remembered in the database; sample data never writes to it.
 - No login - keep it on the home network.
+
+### Adding to Radarr/Sonarr
+Set `RADARR_URL`/`RADARR_API_KEY` and/or `SONARR_URL`/`SONARR_API_KEY` in `.env` (see
+`.env.example`). "Add to library" adds the title and starts a search for it immediately - there's
+no separate confirm step. A movie is added straight from its TMDB id; a TV show's TMDB id is
+converted to the TVDB id Sonarr needs via TMDB's `external_ids` (cached, same as everything else).
+Sample data never touches Radarr/Sonarr - the button doesn't even appear until you're on your own
+library.
 
 ## Deploy with Docker / Portainer (not deployed yet)
 1. Build the image `whatsnext:latest` on the Docker host (`docker build -t whatsnext:latest .`) or via

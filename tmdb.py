@@ -85,6 +85,18 @@ class TmdbClient:
             "with_genres": genre_id, "sort_by": "vote_average.desc", "vote_count.gte": 1000})
         return [r["id"] for r in found.get("results", [])]
 
+    def external_ids(self, media_type, tmdb_id):
+        """Other databases' ids for one title - currently just TVDB, which Sonarr needs to add a
+        show (Sonarr's own primary key is TVDB, not TMDB)."""
+        key = f"external_ids:{media_type}:{tmdb_id}"
+        cached = db.cache_get(key, DETAILS_MAX_AGE)
+        if cached is not None:
+            return cached
+        raw = self._get(f"/{media_type}/{tmdb_id}/external_ids")
+        result = {"tvdb_id": raw.get("tvdb_id")}
+        db.cache_put(key, result)
+        return result
+
     def trending(self, media_type):
         """IDs of what's trending on TMDB this week (all genres; we filter by your taste later)."""
         found = self._get(f"/trending/{media_type}/week")

@@ -30,3 +30,16 @@ def get_json(url, headers=None, params=None, timeout=20, retries=2):
                 time.sleep(attempt + 1)
                 continue
             raise
+
+
+def post_json(url, headers=None, body=None, timeout=20):
+    """POST a JSON body and return the decoded JSON response. No retries, unlike get_json - this is
+    for write actions (e.g. adding a movie to Radarr), where blindly retrying a failed write is
+    riskier than just surfacing the error and letting the caller decide whether to try again."""
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(url, data=data, method="POST",
+                                     headers={"Accept": "application/json", "Content-Type": "application/json",
+                                             **(headers or {})})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read()
+        return json.loads(raw) if raw else None
