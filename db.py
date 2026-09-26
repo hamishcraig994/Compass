@@ -1,9 +1,11 @@
-"""Small SQLite store: a cache of TMDB answers, the titles you've said "not interested" in, and
-settings saved through the web UI (see config.py, which layers these over environment variables)."""
+"""Small SQLite store: a cache of TMDB answers, the titles you've said "not interested" in, titles
+added to your library, and settings saved through the web UI (see config.py, which layers these
+over environment variables)."""
 import json
 import os
 import sqlite3
 import time
+from datetime import datetime, timezone
 
 DB_PATH = os.path.join(os.environ.get("DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")),
                        "whatsnext.db")
@@ -16,6 +18,9 @@ def _connect():
     conn.execute("CREATE TABLE IF NOT EXISTS dismissed (media_type TEXT NOT NULL, tmdb_id INTEGER NOT NULL, "
                  "PRIMARY KEY (media_type, tmdb_id))")
     conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("CREATE TABLE IF NOT EXISTS added (media_type TEXT NOT NULL, tmdb_id INTEGER NOT NULL, "
+                 "title TEXT NOT NULL, year INTEGER, poster_url TEXT, url TEXT, added_at TEXT NOT NULL, "
+                 "PRIMARY KEY (media_type, tmdb_id))")
     return conn
 
 
@@ -54,6 +59,42 @@ def dismiss(media_type, tmdb_id):
     try:
         with conn:
             conn.execute("INSERT OR IGNORE INTO dismissed (media_type, tmdb_id) VALUES (?, ?)", (media_type, tmdb_id))
+    finally:
+        conn.close()
+
+
+_ADDED_COLUMNS = ("media_type", "tmdb_id", "title", "year", "poster_url", "url", "added_at")
+
+
+def record_added(item):
+    """Logs a title as added to your library (for the Library page) - separate from what actually
+    keeps it out of future recommendations, which is Radarr/Sonarr's own library, re-checked on
+    every refresh (see sources.py). This is purely a display log of what you've approved."""
+    conn = _connect()
+    try:
+        with conn:
+            conn.execute("INSERT OR REPLACE INTO added (media_type, tmdb_id, title, year, poster_url, url, added_at) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         (item["media_type"], item["tmdb_id"], item["title"], item.get("year"),
+                          item.get("poster_url"), item.get("url"), datetime.now(timezone.utc).isoformat()))
+    finally:
+        conn.close()
+
+
+def added_items():
+    """Everything logged as added, most recent first."""
+    conn = _connect()
+    try:
+        rows = conn.execute(f"SELECT {', '.join(_ADDED_COLUMNS)} FROM added ORDER BY added_at DESC").fetchall()
+    finally:
+        conn.close()
+    return [dict(zip(_ADDED_COLUMNS, row)) for row in rows]
+
+
+def added_count():
+    conn = _connect()
+    try:
+        return conn.execute("SELECT COUNT(*) FROM added").fetchone()[0]
     finally:
         conn.close()
 

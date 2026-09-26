@@ -19,7 +19,10 @@ import sources
 SHOW = 24                  # suggestions per page
 CACHE_SECONDS = 3600       # reuse the last result for an hour (finding suggestions takes a while)
 REFRESH_MIN_SECONDS = 600  # "Refresh" is ignored if the data is newer than this, to be gentle on Plex/TMDB
-TABS = (("all", "All"), ("new", "New & trending"), ("movie", "Movies"), ("tv", "TV shows"))
+SUBTABS = (("all", "All"), ("new", "New & trending"), ("movie", "Movies"), ("tv", "TV shows"))
+# The sidebar/bottom-nav's top-level sections. "recommended" covers all four SUBTABS above.
+NAV_SECTIONS = (("home", "Home", "/"), ("recommended", "Recommended", "/recommended"),
+                ("library", "Library", "/library"), ("settings", "Settings", "/settings"))
 compute_lock = threading.Lock()  # one recompute at a time
 _state = {"time": 0.0, "result": None}
 
@@ -51,7 +54,15 @@ button { padding:6px 14px; font:inherit; color:var(--text); background:transpare
     border-radius:16px; border:1px solid var(--line); background:var(--card); box-shadow:0 8px 24px rgba(0,0,0,.15); overflow-x:auto; }
   .bottom-nav .nav-item { flex:none; padding:8px 12px; font-size:.78rem; border-radius:10px; }
 }
+.subtabs { display:flex; gap:6px; margin-bottom:16px; flex-wrap:wrap; }
+.subtab { padding:6px 14px; border:1px solid var(--line); border-radius:99px; color:var(--text); text-decoration:none; background:var(--card); font-size:.9rem; }
+.subtab.on { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:8px; }
+.tile { display:block; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; text-decoration:inherit; color:inherit; }
+.tile-value { font-size:2rem; font-weight:700; color:var(--accent); }
+.tile-label { color:var(--muted); font-size:.85rem; margin-top:4px; }
 .note { background:var(--warn-bg); color:var(--warn); border-radius:8px; padding:8px 12px; margin:0 0 8px; font-size:.9rem; }
+.note.success { background:var(--accent-bg); color:var(--accent); }
 .taste { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-bottom:18px; font-size:.92rem; }
 .taste b { display:inline-block; min-width:76px; }
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
@@ -68,7 +79,6 @@ button { padding:6px 14px; font:inherit; color:var(--text); background:transpare
 form.inline { margin:0; }
 .card-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:4px; }
 .btn-add { color:#fff; background:var(--accent); border-color:var(--accent); font-weight:600; }
-.note.success { background:var(--accent-bg); color:var(--accent); }
 fieldset { display:grid; gap:12px; border:1px solid var(--line); border-radius:10px; padding:16px; margin:0 0 16px; }
 legend { padding:0 6px; font-weight:600; }
 fieldset label { display:grid; gap:4px; font-size:.9rem; color:var(--text-soft, var(--muted)); }
@@ -89,7 +99,7 @@ def get_result(refresh=False):
 
 
 def forget(media_type, tmdb_id):
-    """Remove one suggestion from the cached result (after 'Not interested')."""
+    """Remove one suggestion from the cached result (after 'Not interested' or 'Add to library')."""
     with compute_lock:
         if _state["result"]:
             _state["result"]["items"] = [i for i in _state["result"]["items"]
@@ -107,13 +117,13 @@ def _web_url(url):
     return url if url and url.startswith(("https://", "http://")) else None
 
 
-def _hidden_fields(item, tab):
+def _hidden_fields(item, return_to):
     return (f'<input type="hidden" name="type" value="{escape(item["media_type"])}">'
             f'<input type="hidden" name="id" value="{int(item["tmdb_id"])}">'
-            f'<input type="hidden" name="tab" value="{escape(tab)}">')
+            f'<input type="hidden" name="return_to" value="{escape(return_to)}">')
 
 
-def _card(item, tab, can_dismiss):
+def _card(item, return_to, can_dismiss):
     poster_url, link = _web_url(item.get("poster_url")), _web_url(item.get("url"))
     poster = (f'<img class="poster" src="{escape(poster_url, quote=True)}" alt="" loading="lazy">'
               if poster_url else '<div class="poster"></div>')
@@ -129,10 +139,10 @@ def _card(item, tab, can_dismiss):
                                or (item["media_type"] == "tv" and config.sonarr_configured()))
     actions = ""
     if can_dismiss:
-        add_button = (f'<form class="inline" method="post" action="/add">{_hidden_fields(item, tab)}'
+        add_button = (f'<form class="inline" method="post" action="/add">{_hidden_fields(item, return_to)}'
                       f'<button type="submit" class="btn-add">Add to library</button></form>') if can_add else ""
         actions = (f'<div class="card-actions">{add_button}'
-                  f'<form class="inline" method="post" action="/dismiss">{_hidden_fields(item, tab)}'
+                  f'<form class="inline" method="post" action="/dismiss">{_hidden_fields(item, return_to)}'
                   f'<button type="submit">Not interested</button></form></div>')
     return (f'<div class="card">{poster}<div class="body">'
             f'<div class="title">{title}<span class="kind">{kind}</span>{badges}</div>'
@@ -142,17 +152,36 @@ def _card(item, tab, can_dismiss):
             f'<div class="blurb">{escape(item["overview"])}</div>{actions}</div></div>')
 
 
+def _library_card(item):
+    poster_url, link = _web_url(item.get("poster_url")), _web_url(item.get("url"))
+    poster = (f'<img class="poster" src="{escape(poster_url, quote=True)}" alt="" loading="lazy">'
+              if poster_url else '<div class="poster"></div>')
+    title = escape(item["title"]) + (f' ({item["year"]})' if item.get("year") else "")
+    if link:
+        title = f'<a href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">{title}</a>'
+    kind = "Movie" if item["media_type"] == "movie" else "TV"
+    added_date = (item.get("added_at") or "")[:10] or "unknown date"
+    return (f'<div class="card">{poster}<div class="body">'
+            f'<div class="title">{title}<span class="kind">{kind}</span></div>'
+            f'<div class="muted">Added {escape(added_date)}</div></div></div>')
+
+
 def _in_tab(item, tab):
     if tab == "new":
         return bool(item.get("new") or item.get("trending"))
     return tab == "all" or item["media_type"] == tab
 
 
-def render_page(tab="all", refresh=False, msg=""):
+def _subtabs_html(active):
+    return "".join(f'<a class="subtab{" on" if key == active else ""}" href="/recommended?{urlencode({"type": key})}">'
+                   f'{escape(label)}</a>' for key, label in SUBTABS)
+
+
+def render_recommended(tab="all", refresh=False, msg=""):
     try:
         result, age = get_result(refresh)
     except Exception as e:
-        return _shell(f'<p class="note">Couldn\'t get recommendations: {escape(str(e))}</p>', tab)
+        return _shell(f'<p class="note">Couldn\'t get recommendations: {escape(str(e))}</p>', "recommended")
     items = [i for i in result["items"] if _in_tab(i, tab)][:SHOW]
     notes = "".join(f'<p class="note">{escape(n)}</p>' for n in result["notes"])
     if msg:
@@ -163,30 +192,61 @@ def render_page(tab="all", refresh=False, msg=""):
         rows = [("Genres", top["genre"]), ("Themes", top["keyword"]), ("People", top["director"] + top["actor"][:3])]
         taste = '<div class="taste">' + "<br>".join(
             f'<b>{label}</b> {escape(", ".join(names))}' for label, names in rows if names) + "</div>"
-    cards = "".join(_card(i, tab, not result["sample"]) for i in items)
-    body = (f'{notes}{taste}<div class="grid">{cards}</div>' if items
-            else f'{notes}<p class="muted">No recommendations found.</p>')
+    return_to = f"/recommended?{urlencode({'type': tab})}"
+    cards = "".join(_card(i, return_to, not result["sample"]) for i in items)
+    grid = f'<div class="grid">{cards}</div>' if items else '<p class="muted">No recommendations found.</p>'
+    body = f'<div class="subtabs">{_subtabs_html(tab)}</div>{notes}{taste}{grid}'
     minutes = int(age // 60)
-    return _shell(body, tab, f"Based on {result['watched_count']} watched titles · updated "
-                              f"{'just now' if minutes < 1 else f'{minutes} min ago'}")
+    subtitle = (f"Based on {result['watched_count']} watched titles - updated "
+               f"{'just now' if minutes < 1 else f'{minutes} min ago'}")
+    return _shell(body, "recommended", subtitle, show_refresh=True, return_to=return_to)
 
 
-def _nav_html(active):
-    """Shared between the sidebar and the mobile bottom nav."""
-    items = "".join(
-        f'<a class="nav-item{" active" if key == active else ""}" href="/?{urlencode({"type": key})}">{escape(label)}</a>'
-        for key, label in TABS)
-    items += f'<a class="nav-item{" active" if active == "settings" else ""}" href="/settings">Settings</a>'
-    return items
+def render_home(refresh=False):
+    try:
+        result, age = get_result(refresh)
+    except Exception as e:
+        return _shell(f'<p class="note">Couldn\'t get recommendations: {escape(str(e))}</p>', "home")
+    tiles = [
+        ("Recommended", len(result["items"]), "/recommended"),
+        ("Added to library", db.added_count(), "/library"),
+        ("Not interested", len(db.dismissed()), None),
+        ("Watched titles analyzed", result["watched_count"], None),
+    ]
+    tiles_html = "".join(
+        (f'<a class="tile" href="{href}">' if href else '<div class="tile">')
+        + f'<div class="tile-value">{value}</div><div class="tile-label">{escape(label)}</div>'
+        + ('</a>' if href else '</div>')
+        for label, value, href in tiles)
+    notes = "".join(f'<p class="note">{escape(n)}</p>' for n in result["notes"])
+    minutes = int(age // 60)
+    subtitle = f"Updated {'just now' if minutes < 1 else f'{minutes} min ago'}"
+    return _shell(f'{notes}<div class="tiles">{tiles_html}</div>', "home", subtitle, show_refresh=True, return_to="/")
 
 
-def _shell(body, tab, subtitle="", show_refresh=True):
-    heading = "Settings" if tab == "settings" else dict(TABS).get(tab, "What's Next")
-    nav_html = _nav_html(tab)
+def render_library():
+    items = db.added_items()
+    if items:
+        body = f'<div class="grid">{"".join(_library_card(i) for i in items)}</div>'
+    else:
+        body = '<p class="muted">Nothing added yet - approve a recommendation from the Recommended page and it\'ll show up here.</p>'
+    count = len(items)
+    subtitle = f"{count} title{'s' if count != 1 else ''} added"
+    return _shell(body, "library", subtitle, show_refresh=False)
+
+
+def _nav_html(section):
+    return "".join(f'<a class="nav-item{" active" if key == section else ""}" href="{href}">{escape(label)}</a>'
+                   for key, label, href in NAV_SECTIONS)
+
+
+def _shell(body, section, subtitle="", show_refresh=False, return_to="/"):
+    heading = dict((key, label) for key, label, _ in NAV_SECTIONS).get(section, "What's Next")
+    nav_html = _nav_html(section)
     refresh = ""
     if show_refresh:
         refresh = (f'<form class="inline" method="post" action="/refresh">'
-                  f'<input type="hidden" name="tab" value="{escape(tab)}">'
+                  f'<input type="hidden" name="return_to" value="{escape(return_to)}">'
                   f'<button type="submit">Refresh</button></form>')
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>What&#39;s Next</title>'
             f'<meta name="viewport" content="width=device-width,initial-scale=1"><style>{CSS}</style></head><body>'
@@ -201,6 +261,14 @@ def _shell(body, tab, subtitle="", show_refresh=True):
             f'</body></html>')
 
 
+def _safe_path(path, default="/recommended"):
+    """Only ever redirect within this app - never to another host (an attacker-supplied return_to
+    shouldn't be able to bounce a browser off this page to somewhere else)."""
+    if path and path.startswith("/") and not path.startswith("//") and "://" not in path:
+        return path
+    return default
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, status, body, content_type="text/html; charset=utf-8", headers=None):
         data = body.encode("utf-8")
@@ -212,40 +280,44 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _redirect(self, tab, msg=None):
-        tab = tab if tab in dict(TABS) else "all"
-        params = {"type": tab, **({"msg": msg} if msg else {})}
-        self._send(303, "", headers={"Location": "/?" + urlencode(params)})
+    def _redirect(self, path, msg=None):
+        path = _safe_path(path)
+        if msg:
+            path += ("&" if "?" in path else "?") + urlencode({"msg": msg})
+        self._send(303, "", headers={"Location": path})
 
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/health":
             return self._send(200, "ok", "text/plain")
+        if url.path == "/":
+            return self._send(200, render_home())
+        if url.path == "/recommended":
+            query = parse_qs(url.query)
+            tab = query.get("type", ["all"])[0]
+            msg = query.get("msg", [""])[0]
+            return self._send(200, render_recommended(tab if tab in dict(SUBTABS) else "all", msg=msg))
+        if url.path == "/library":
+            return self._send(200, render_library())
         if url.path == "/settings":
             saved = parse_qs(url.query).get("saved", ["0"])[0] == "1"
-            body = _shell(settings_page.render(saved), "settings", show_refresh=False)
-            return self._send(200, body)
-        if url.path != "/":
-            return self._send(404, "Not found", "text/plain")
-        query = parse_qs(url.query)
-        tab = query.get("type", ["all"])[0]
-        msg = query.get("msg", [""])[0]
-        self._send(200, render_page(tab if tab in dict(TABS) else "all", msg=msg))
+            return self._send(200, _shell(settings_page.render(saved), "settings"))
+        return self._send(404, "Not found", "text/plain")
 
     def do_POST(self):
         length = min(int(self.headers.get("Content-Length") or 0), 4096)
         form = parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
-        tab = form.get("tab", ["all"])[0]
+        return_to = form.get("return_to", ["/recommended"])[0]
         path = urlparse(self.path).path
         if path == "/refresh":
             get_result(refresh=True)
-            return self._redirect(tab)
+            return self._redirect(return_to)
         if path == "/dismiss":
             media_type, raw_id = form.get("type", [""])[0], form.get("id", [""])[0]
             if media_type in ("movie", "tv") and raw_id.isdigit() and not (_state["result"] or {}).get("sample"):
                 db.dismiss(media_type, int(raw_id))
                 forget(media_type, int(raw_id))
-            return self._redirect(tab)
+            return self._redirect(return_to)
         if path == "/settings":
             settings_page.apply_form(form)
             invalidate_cache()
@@ -254,11 +326,16 @@ class Handler(BaseHTTPRequestHandler):
             media_type, raw_id = form.get("type", [""])[0], form.get("id", [""])[0]
             msg = None
             if media_type in ("movie", "tv") and raw_id.isdigit() and not (_state["result"] or {}).get("sample"):
-                ok, msg = sources.add_to_library(media_type, int(raw_id))
+                tmdb_id = int(raw_id)
+                item = next((i for i in (_state["result"] or {}).get("items", [])
+                            if (i["media_type"], i["tmdb_id"]) == (media_type, tmdb_id)), None)
+                ok, msg = sources.add_to_library(media_type, tmdb_id)
                 if ok:
-                    forget(media_type, int(raw_id))
-            return self._redirect(tab, msg)
-        self._send(404, "Not found", "text/plain")
+                    if item:
+                        db.record_added(item)
+                    forget(media_type, tmdb_id)
+            return self._redirect(return_to, msg)
+        return self._send(404, "Not found", "text/plain")
 
     def log_message(self, fmt, *args):
         print(f"{self.address_string()} {fmt % args}")
