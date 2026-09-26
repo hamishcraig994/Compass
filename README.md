@@ -29,8 +29,12 @@ Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gent
     python3 -m unittest discover -s tests
 
 ## Use your own library
-1. Copy `.env.example` to `.env` and fill in `PLEX_TOKEN` and `TMDB_TOKEN` (instructions inside).
-2. `python3 cli.py --profile`  or  `python3 web.py`.
+Easiest: `python3 web.py`, then open the page and go to **Settings** - fill in Plex and TMDB
+there and save. Nothing to restart; it applies immediately.
+
+Or, without the web UI: copy `.env.example` to `.env` and fill in `PLEX_TOKEN` and `TMDB_TOKEN`,
+then `python3 cli.py --profile`. A setting saved through the Settings page always wins over its
+`.env`/environment-variable equivalent, so `.env` is really just the first-boot default.
 
 ### Using Tautulli instead of Plex for history
 Set `HISTORY_SOURCE=tautulli`, `TAUTULLI_URL` and `TAUTULLI_API_KEY` in `.env`. Worth it because
@@ -59,11 +63,12 @@ converted to the TVDB id Sonarr needs via TMDB's `external_ids` (cached, same as
 Sample data never touches Radarr/Sonarr - the button doesn't even appear until you're on your own
 library.
 
-## Deploy with Docker / Portainer (not deployed yet)
+## Deploy with Docker / Portainer
 1. Build the image `whatsnext:latest` on the Docker host (`docker build -t whatsnext:latest .`) or via
    Portainer -> Images -> Build a new image.
-2. Portainer -> Stacks -> Add stack -> Web editor -> paste `docker-compose.yml`.
-   Under "Environment variables" add `PLEX_TOKEN` and `TMDB_TOKEN`. Deploy.
-3. Open http://<arr-vm-ip>:8091
+2. Portainer -> Stacks -> Add stack -> Web editor -> paste `docker-compose.yml`. Deploy.
+3. Open http://<arr-vm-ip>:8091 -> Settings, and fill everything in there (no environment
+   variables needed - though they still work as the first-boot default if you'd rather set them
+   in the Portainer stack instead).
 
 The container needs the LAN (Plex) and the internet (TMDB). It's deliberately not behind the gluetun VPN.

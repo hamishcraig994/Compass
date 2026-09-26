@@ -1,7 +1,9 @@
 # What's Next - paste this into a Portainer stack (Stacks -> Add stack -> Web editor).
 # It uses a pre-built image; see README.md for how to build "whatsnext:latest" first.
-# Set PLEX_TOKEN and TMDB_TOKEN under "Environment variables" in the Portainer stack page, so the
-# secrets are never written into this file.
+# PLEX_TOKEN/TMDB_TOKEN below are optional now - the app has a Settings page (open it, go to
+# Settings) that saves everything into its own database and applies it immediately, no redeploy
+# needed. Leave the environment section out entirely if you'd rather configure it that way; it's
+# kept here only as an optional first-boot default (e.g. if you prefer Portainer's own secrets UI).
 services:
   whatsnext:
     image: whatsnext:latest
