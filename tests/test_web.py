@@ -128,5 +128,48 @@ class TestWeb(unittest.TestCase):
         self.assertNotIn("javascript:", card)
 
 
+class TestSettingsRoute(unittest.TestCase):
+    """Isolated from TestWeb's shared server/state, since these tests actually save settings."""
+
+    def setUp(self):
+        self._old_db = db.DB_PATH
+        db.DB_PATH = os.path.join(tempfile.mkdtemp(), "t.db")
+        self.server = web.make_server("127.0.0.1", 0)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.shutdown)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(setattr, db, "DB_PATH", self._old_db)
+        self.addCleanup(config._apply)
+
+    def test_get_settings_shows_the_form(self):
+        with urllib.request.urlopen(self.base + "/settings") as r:
+            status, html = r.status, r.read().decode()
+        self.assertEqual(status, 200)
+        self.assertIn("Plex URL", html)
+        self.assertIn("Radarr", html)
+
+    def test_post_settings_saves_and_redirects_with_saved_flag(self):
+        opener = urllib.request.build_opener(NoRedirect)
+        try:
+            resp = opener.open(urllib.request.Request(
+                self.base + "/settings", data=b"PLEX_URL=http%3A%2F%2Fnewplex%3A32400", method="POST"))
+            location = resp.headers.get("Location")
+        except urllib.error.HTTPError as e:
+            location = e.headers.get("Location")
+        self.assertEqual(location, "/settings?saved=1")
+        self.assertEqual(config.PLEX_URL, "http://newplex:32400")
+
+    def test_post_settings_invalidates_the_cached_recommendations(self):
+        web.get_result()  # populate the cache
+        self.assertIsNotNone(web._state["result"])
+        opener = urllib.request.build_opener(NoRedirect)
+        try:
+            opener.open(urllib.request.Request(self.base + "/settings", data=b"PLEX_URL=x", method="POST"))
+        except urllib.error.HTTPError:
+            pass
+        self.assertIsNone(web._state["result"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,5 @@
-"""Small SQLite store: a cache of TMDB answers, and the titles you've said "not interested" in."""
+"""Small SQLite store: a cache of TMDB answers, the titles you've said "not interested" in, and
+settings saved through the web UI (see config.py, which layers these over environment variables)."""
 import json
 import os
 import sqlite3
@@ -14,6 +15,7 @@ def _connect():
     conn.execute("CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, fetched_at REAL NOT NULL, body TEXT NOT NULL)")
     conn.execute("CREATE TABLE IF NOT EXISTS dismissed (media_type TEXT NOT NULL, tmdb_id INTEGER NOT NULL, "
                  "PRIMARY KEY (media_type, tmdb_id))")
+    conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     return conn
 
 
@@ -52,5 +54,25 @@ def dismiss(media_type, tmdb_id):
     try:
         with conn:
             conn.execute("INSERT OR IGNORE INTO dismissed (media_type, tmdb_id) VALUES (?, ?)", (media_type, tmdb_id))
+    finally:
+        conn.close()
+
+
+def get_setting(key):
+    """A setting saved through the web UI, or None if it's never been set there (config.py then
+    falls back to an environment variable, then a hardcoded default)."""
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else None
+
+
+def set_setting(key, value):
+    conn = _connect()
+    try:
+        with conn:
+            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
     finally:
         conn.close()

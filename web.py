@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import config
 import db
 import profile
+import settings_page
 import sources
 
 SHOW = 24                  # suggestions per page
@@ -51,6 +52,12 @@ button { padding:6px 14px; font:inherit; color:var(--text); background:transpare
 form.inline { margin:0; }
 .card-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:4px; }
 .btn-add { color:#fff; background:var(--accent); border-color:var(--accent); font-weight:600; }
+.note.success { background:var(--accent-bg); color:var(--accent); }
+.settings-link { color:var(--text); text-decoration:none; padding:6px 14px; border:1px solid var(--line); border-radius:8px; }
+fieldset { display:grid; gap:12px; border:1px solid var(--line); border-radius:10px; padding:16px; margin:0 0 16px; }
+legend { padding:0 6px; font-weight:600; }
+fieldset label { display:grid; gap:4px; font-size:.9rem; color:var(--text-soft, var(--muted)); }
+fieldset input, fieldset select { padding:8px 10px; font:inherit; color:var(--text); background:var(--card); border:1px solid var(--line); border-radius:8px; }
 """
 
 
@@ -72,6 +79,12 @@ def forget(media_type, tmdb_id):
         if _state["result"]:
             _state["result"]["items"] = [i for i in _state["result"]["items"]
                                          if (i["media_type"], i["tmdb_id"]) != (media_type, tmdb_id)]
+
+
+def invalidate_cache():
+    """Forces the next page load to recompute from scratch (after a settings change)."""
+    with compute_lock:
+        _state["result"], _state["time"] = None, 0.0
 
 
 def _web_url(url):
@@ -143,15 +156,21 @@ def render_page(tab="all", refresh=False, msg=""):
                               f"{'just now' if minutes < 1 else f'{minutes} min ago'}")
 
 
-def _shell(body, tab, subtitle=""):
-    tabs = "".join(f'<a href="/?{urlencode({"type": key})}"{" class=on" if key == tab else ""}>{escape(label)}</a>'
-                   for key, label in TABS)
+def _shell(body, tab, subtitle="", recommendation_nav=True):
+    top_actions = f'<a class="settings-link" href="/settings">Settings</a>'
+    nav = ""
+    if recommendation_nav:
+        tabs = "".join(f'<a href="/?{urlencode({"type": key})}"{" class=on" if key == tab else ""}>{escape(label)}</a>'
+                       for key, label in TABS)
+        top_actions = (f'<form class="inline" method="post" action="/refresh">'
+                      f'<input type="hidden" name="tab" value="{escape(tab)}">'
+                      f'<button type="submit">Refresh</button></form>{top_actions}')
+        nav = f'<nav class="tabs">{tabs}</nav>'
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>What&#39;s Next</title>'
             f'<meta name="viewport" content="width=device-width,initial-scale=1"><style>{CSS}</style></head><body><main>'
             f'<div class="top"><div><h1>What&#39;s Next</h1><p class="sub">{escape(subtitle)}</p></div>'
-            f'<form class="inline" method="post" action="/refresh"><input type="hidden" name="tab" value="{escape(tab)}">'
-            f'<button type="submit">Refresh</button></form></div>'
-            f'<nav class="tabs">{tabs}</nav>{body}</main></body></html>')
+            f'<div class="card-actions">{top_actions}</div></div>'
+            f'{nav}{body}</main></body></html>')
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -174,6 +193,10 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if url.path == "/health":
             return self._send(200, "ok", "text/plain")
+        if url.path == "/settings":
+            saved = parse_qs(url.query).get("saved", ["0"])[0] == "1"
+            body = _shell(settings_page.render(saved), "settings", "Settings", recommendation_nav=False)
+            return self._send(200, body)
         if url.path != "/":
             return self._send(404, "Not found", "text/plain")
         query = parse_qs(url.query)
@@ -195,6 +218,10 @@ class Handler(BaseHTTPRequestHandler):
                 db.dismiss(media_type, int(raw_id))
                 forget(media_type, int(raw_id))
             return self._redirect(tab)
+        if path == "/settings":
+            settings_page.apply_form(form)
+            invalidate_cache()
+            return self._send(303, "", headers={"Location": "/settings?saved=1"})
         if path == "/add":
             media_type, raw_id = form.get("type", [""])[0], form.get("id", [""])[0]
             msg = None
