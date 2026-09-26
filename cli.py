@@ -3,13 +3,20 @@
   python3 cli.py --sample            try it with made-up data
   python3 cli.py                     use your Plex + TMDB (needs PLEX_TOKEN and TMDB_TOKEN)
   python3 cli.py --type tv --limit 5      (or --type movie, or --type new for new & trending)
-  python3 cli.py --profile           also show what it thinks your taste is"""
+  python3 cli.py --profile           also show what it thinks your taste is
+
+To use Tautulli instead of Plex for watch history, set HISTORY_SOURCE=tautulli plus
+TAUTULLI_URL and TAUTULLI_API_KEY (see .env.example), then check it against your real
+server before trusting it:
+  python3 cli.py --tautulli-probe    print raw Tautulli data, unprocessed"""
 import argparse
+import json
 import sys
 
 import config
 import profile
 import sources
+import tautulli
 
 
 def main(argv=None):
@@ -18,10 +25,22 @@ def main(argv=None):
     parser.add_argument("--type", choices=["movie", "tv", "new"], help="only movies, only TV shows, or only new & trending")
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--profile", action="store_true", help="show your taste profile")
+    parser.add_argument("--tautulli-probe", action="store_true",
+                        help="print raw Tautulli history/metadata (for checking field names against your server)")
     args = parser.parse_args(argv)
 
+    if args.tautulli_probe:
+        if not config.tautulli_configured():
+            sys.exit("TAUTULLI_URL and TAUTULLI_API_KEY aren't set (see .env.example).")
+        client = tautulli.TautulliClient(config.TAUTULLI_URL, config.TAUTULLI_API_KEY, config.TAUTULLI_USER)
+        try:
+            print(json.dumps(client.raw_probe(), indent=2, default=str))
+        except Exception as e:
+            sys.exit(f"Couldn't reach Tautulli: {e}")
+        return
+
     if not args.sample and not config.live_configured():
-        sys.exit("PLEX_TOKEN and TMDB_TOKEN aren't set (see README.md). Use --sample to try it without them.")
+        sys.exit("Watch-history source and TMDB_TOKEN aren't set (see README.md). Use --sample to try it without them.")
     try:
         result = sources.run(sample_mode=args.sample)
     except Exception as e:

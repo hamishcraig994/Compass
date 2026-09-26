@@ -3,7 +3,10 @@
 Suggests movies and TV shows you *don't* have yet, based on what you've watched in Plex.
 
 ## How it works
-1. Reads your Plex library and watch history (read-only). Recent watches, rewatches and your own Plex
+1. Reads your watch history (read-only) - from Plex directly, or from Tautulli
+   (`HISTORY_SOURCE=tautulli`), which keeps history even for titles you've since deleted from Plex.
+   Either way, Plex (if `PLEX_TOKEN` is set) also supplies everything currently in your library, so
+   owned-but-unwatched titles aren't suggested. Recent watches, rewatches and your own Plex
    ratings count more; abandoned shows and titles you rated 4/10 or lower count less or not at all.
 2. Builds a taste profile: genres, themes (TMDB keywords), directors/creators and actors you keep coming back to.
 3. Finds candidates from TMDB: what's linked to your favourites ("people who liked this also liked..."),
@@ -27,11 +30,22 @@ Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gent
 1. Copy `.env.example` to `.env` and fill in `PLEX_TOKEN` and `TMDB_TOKEN` (instructions inside).
 2. `python3 cli.py --profile`  or  `python3 web.py`.
 
+### Using Tautulli instead of Plex for history
+Set `HISTORY_SOURCE=tautulli`, `TAUTULLI_URL` and `TAUTULLI_API_KEY` in `.env`. Worth it because
+Tautulli keeps a permanent history log, so a title you watched and later deleted from Plex still
+shapes your taste - reading Plex directly loses it the moment it leaves your library.
+
+**Check it before trusting it:** Tautulli's exact field names have shifted across versions and
+this integration hasn't been checked against a live server. Run
+`python3 cli.py --tautulli-probe` first - it prints the raw history/metadata shapes your server
+actually returns, so a field-name mismatch is obvious instead of silently losing watch history.
+
 Limits worth knowing:
-- Watch state is for the Plex account that owns the token (yours). Other household members' history isn't included.
-- Only what's *currently in your Plex library* is read. If you delete shows/movies after watching them, they
-  no longer influence your taste profile. (Fix if it matters: read Plex's history endpoint or Tautulli.)
-- Titles Plex has no TMDB id for (old "Legacy" agents) are skipped; the page tells you how many.
+- Watch state is for one account (yours) - Plex's token, or `TAUTULLI_USER` if set; leave the
+  latter blank to pull every user on the server, which mixes household members' taste together.
+- With Tautulli, unwatched-but-owned titles are only excluded if `PLEX_TOKEN` is *also* set -
+  Tautulli's history alone doesn't know what's currently in your library, only what's been played.
+- Titles with no TMDB id (old "Legacy" Plex agents) are skipped; the page tells you how many.
 - "Not interested" is remembered in the database; sample data never writes to it.
 - No login - keep it on the home network.
 
