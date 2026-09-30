@@ -63,6 +63,17 @@ def dismiss(media_type, tmdb_id):
         conn.close()
 
 
+def undismiss(media_type, tmdb_id):
+    """Takes a title back off the "not interested" list (the Undo after a dismiss). Removing
+    something that isn't there is a no-op, so a double-clicked Undo is harmless."""
+    conn = _connect()
+    try:
+        with conn:
+            conn.execute("DELETE FROM dismissed WHERE media_type = ? AND tmdb_id = ?", (media_type, tmdb_id))
+    finally:
+        conn.close()
+
+
 _ADDED_COLUMNS = ("media_type", "tmdb_id", "title", "year", "poster_url", "url", "added_at")
 
 

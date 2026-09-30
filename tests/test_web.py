@@ -32,6 +32,9 @@ class TestWeb(unittest.TestCase):
         cls.server = web.make_server("127.0.0.1", 0)
         cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        # Pages build in the background now and show a "Finding your recommendations..." screen
+        # until it's done - build the (sample) result up front so these tests see the real pages.
+        web.get_result()
 
     @classmethod
     def tearDownClass(cls):
@@ -451,6 +454,10 @@ class TestAiPage(unittest.TestCase):
         with mock.patch.object(sources, "use_sample", return_value=False), \
              mock.patch.object(sources, "generate_ai_recommendations", return_value=fake_result) as gen:
             status, location = self.post("/ai/generate", "return_to=/ai")
+            # Generate runs in a background thread now - wait for it while the mocks are still on
+            deadline = __import__("time").time() + 5
+            while web._ai_state["building"] and __import__("time").time() < deadline:
+                __import__("time").sleep(0.01)
         gen.assert_called_once()
         self.assertEqual(status, 303)
         self.assertEqual(location, "/ai")

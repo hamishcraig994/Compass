@@ -133,10 +133,10 @@ def render(section=DEFAULT_SECTION, saved=False, test_result=None, overrides=Non
         section = DEFAULT_SECTION
     nav = "".join(f'<a class="subtab{" on" if key == section else ""}" href="/settings?section={key}">{escape(label)}</a>'
                  for key, label in SECTIONS)
-    banner = '<p class="note success">Saved - changes apply immediately, no restart needed.</p>' if saved else ""
+    banner = '<p class="note success" role="status">Saved - changes apply immediately, no restart needed.</p>' if saved else ""
     if test_result:
-        cls = "success" if test_result["ok"] else ""
-        banner += f'<p class="note {cls}">{escape(test_result["message"])}</p>'
+        cls = "success" if test_result["ok"] else "error"
+        banner += f'<p class="note {cls}" role="status">{escape(test_result["message"])}</p>'
 
     if section == "arr":
         content = _render_arr_section(overrides)
@@ -146,10 +146,10 @@ def render(section=DEFAULT_SECTION, saved=False, test_result=None, overrides=Non
                   f'<button type="submit" name="action" value="save" class="btn-add">Save</button>'
                   f'{_test_button(section)}</div></fieldset>')
 
-    return (f'<div class="subtabs">{nav}</div>{banner}'
+    return (f'<div class="settings"><nav class="subtabs" aria-label="Settings sections">{nav}</nav>{banner}'
            f'<form method="post" action="/settings?section={section}">{content}</form>'
-           f'<p class="muted">Secret fields never show their current value here - leave one blank '
-           f'to keep what\'s already saved.</p>')
+           f'<p class="muted settings-foot">Secret fields never show their current value here - leave one blank '
+           f'to keep what\'s already saved.</p></div>')
 
 
 def apply_form(section, form):
