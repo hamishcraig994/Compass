@@ -35,6 +35,21 @@ Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gent
     python3 web.py                    # no tokens set -> shows sample data; http://localhost:8080
     python3 -m unittest discover -s tests
 
+## The web page
+- **First load after a restart** takes a minute or two (a cold TMDB cache means ~190 lookups).
+  That now happens in the background: you get a "Finding your recommendations..." screen that
+  swaps itself for the list when it's ready, instead of a page that looks hung. After that, the
+  list is reused for an hour and rebuilt in the background - you keep seeing the old one, with an
+  "Updating..." badge, until the new one is ready. `GET /api/status` reports where a build is at.
+- **Buttons work in place.** "Not interested", "Add to library", "Refresh" and "Generate" don't
+  reload the page; a small message confirms what happened, and "Not interested" has an **Undo**.
+  Clicking a poster opens the full description and why it was picked.
+- **JavaScript is optional.** It's one small plain-JS file (`static/app.js`, no libraries) that
+  enhances ordinary forms. With it off, every button still works as a normal form post, Undo is a
+  note at the top of the page, and loading screens reload themselves every 5 seconds instead.
+- Dark by default, with a light theme if your device asks for one; the sidebar becomes a bottom
+  bar on phones.
+
 ## Use your own library
 Easiest: `python3 web.py`, then open the page and go to **Settings** - one tab per app (Plex,
 Watch history, TMDB, Radarr & Sonarr). Fill a tab in, hit **Test connection** to check it before
@@ -63,7 +78,11 @@ Limits worth knowing:
   Tautulli's history alone doesn't know what's currently in your library, only what's been played.
 - Titles with no TMDB id (old "Legacy" Plex agents) are skipped; the page tells you how many.
 - "Not interested" is remembered in the database; sample data never writes to it.
-- No login - keep it on the home network.
+- No login - keep it on the home network. Cross-site requests are refused, though: any
+  form post or button press your browser says came from another website (or another app on a
+  different port of the same host) gets a 403, so a page you visit can't quietly change Settings
+  or add titles. If you ever put it behind a reverse proxy, the proxy must pass the original
+  `Host` header through, or the app's own buttons will look cross-site and be refused.
 
 ### Adding to Radarr/Sonarr
 Set them up in Settings -> Radarr & Sonarr (or `RADARR_URL`/`RADARR_API_KEY` and/or
@@ -75,7 +94,8 @@ A movie is added straight from its TMDB id; a TV show's TMDB id is converted to 
 needs via TMDB's `external_ids` (cached, same as everything else). Sample data never touches
 Radarr/Sonarr - the button doesn't even appear until you're on your own library.
 
-The dialog is its own page (`/add-dialog`), not inline on the Recommended list, specifically so
+The dialog is its own page (`/add-dialog`; with JavaScript on it opens as a pop-up over the list,
+loading that same page), not pre-rendered into the Recommended list, specifically so
 quality profiles are only ever fetched when you actually open it - viewing or refreshing the
 Recommended list never touches Radarr/Sonarr just to pre-populate a dropdown you might not use.
 Whichever list Radarr/Sonarr gave that day is also cached for 10 minutes either way.
