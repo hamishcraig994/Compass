@@ -1,0 +1,8 @@
+{
+  "_comment": "Which paths each agent may write (fnmatch globs from the repo root; '*' also matches '/'; a leading '!' excludes; later patterns win). Enforced by ~/.claude/hooks/check-ownership.py. Files nobody owns (README.md, CLAUDE.md, .claude/) are the orchestrator's.",
+  "architect": ["specs/*"],
+  "ux-designer": ["static/app.css"],
+  "frontend-dev": ["pages.py", "static/app.js", "tests/test_ui.py"],
+  "backend-dev": ["*.py", "tests/*", "Dockerfile", "docker-compose.yml", ".dockerignore", ".env.example",
+                  "!pages.py", "!tests/test_ui.py"]
+}
