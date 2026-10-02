@@ -221,3 +221,22 @@ def load(now=None):
         })
     library_keys = {(w["media_type"], w["tmdb_id"]) for w in watched} | set(_EXTRA_IN_LIBRARY)
     return watched, library_keys
+
+
+def library_items(now=None):
+    """The sample "Plex library" for the Library page: everything watched plus the owned-but-unwatched
+    extras, as library item dicts (no poster, since there's no Plex to serve one)."""
+    now = now or datetime.now(timezone.utc)
+    items = []
+    for n, (tmdb_id, days_ago, _, views, progress) in enumerate(_WATCHED):
+        media_type, title, year = _CATALOGUE[tmdb_id][:3]
+        items.append({"media_type": media_type, "tmdb_id": tmdb_id, "title": title, "year": year,
+                      "added_at": (now - timedelta(days=days_ago + 30 + n)).isoformat(), "watched": views > 0,
+                      "progress": progress, "poster_key": None,
+                      "url": f"https://www.themoviedb.org/{media_type}/{tmdb_id}"})
+    for n, (media_type, tmdb_id) in enumerate(_EXTRA_IN_LIBRARY):
+        title, year = _CATALOGUE[tmdb_id][1:3]
+        items.append({"media_type": media_type, "tmdb_id": tmdb_id, "title": title, "year": year,
+                      "added_at": (now - timedelta(days=5 + n)).isoformat(), "watched": False, "progress": None,
+                      "poster_key": None, "url": f"https://www.themoviedb.org/{media_type}/{tmdb_id}"})
+    return items

@@ -21,6 +21,9 @@ def _connect():
     conn.execute("CREATE TABLE IF NOT EXISTS added (media_type TEXT NOT NULL, tmdb_id INTEGER NOT NULL, "
                  "title TEXT NOT NULL, year INTEGER, poster_url TEXT, url TEXT, added_at TEXT NOT NULL, "
                  "PRIMARY KEY (media_type, tmdb_id))")
+    conn.execute("CREATE TABLE IF NOT EXISTS ratings (media_type TEXT NOT NULL, tmdb_id INTEGER NOT NULL, "
+                 "stars INTEGER NOT NULL CHECK (stars BETWEEN 1 AND 5), rated_at TEXT NOT NULL, "
+                 "PRIMARY KEY (media_type, tmdb_id))")
     return conn
 
 
@@ -106,6 +109,37 @@ def added_count():
     conn = _connect()
     try:
         return conn.execute("SELECT COUNT(*) FROM added").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def ratings():
+    """Your own 1-5 star ratings: {(media_type, tmdb_id): stars}. Local only - never sent to Plex."""
+    conn = _connect()
+    try:
+        return {(m, i): s for m, i, s in conn.execute("SELECT media_type, tmdb_id, stars FROM ratings")}
+    finally:
+        conn.close()
+
+
+def set_rating(media_type, tmdb_id, stars):
+    if isinstance(stars, bool) or not isinstance(stars, int) or not 1 <= stars <= 5:
+        raise ValueError("stars must be a whole number from 1 to 5")
+    conn = _connect()
+    try:
+        with conn:
+            conn.execute("INSERT OR REPLACE INTO ratings (media_type, tmdb_id, stars, rated_at) VALUES (?, ?, ?, ?)",
+                         (media_type, tmdb_id, stars, datetime.now(timezone.utc).isoformat()))
+    finally:
+        conn.close()
+
+
+def clear_rating(media_type, tmdb_id):
+    """No-op if there's no rating."""
+    conn = _connect()
+    try:
+        with conn:
+            conn.execute("DELETE FROM ratings WHERE media_type = ? AND tmdb_id = ?", (media_type, tmdb_id))
     finally:
         conn.close()
 

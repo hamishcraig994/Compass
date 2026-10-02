@@ -32,6 +32,8 @@ MAX_AI = 15                            # how many resolved AI candidates to actu
 NEW_DAYS = 180                         # released within this many days = "New"
 FRESH_SPAN_DAYS = 730                  # the recency boost fades to nothing over two years
 MIN_TASTE_FOR_BUZZ = 0.10              # trending/new titles need at least this much content match
+DISLIKE_FACTORS = {1: 0.4, 2: 0.7}     # score multiplier for titles TMDB links to something you rated 1 / 2 stars
+MAX_DISLIKED = 50                      # how many disliked titles to look up (cached) for that
 LABELS = {"genre": "Genre", "keyword": "Theme", "director": "By", "actor": "Stars"}
 
 
@@ -86,13 +88,15 @@ def _details_or_none(tmdb, media_type, tmdb_id):
 
 
 def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
-              max_profile_items=100, max_sources=40, max_candidates=150, ai=None, ai_only=False):
+              max_profile_items=100, max_sources=40, max_candidates=150, ai=None, ai_only=False, disliked=None):
     """watched: items from plex.py; library_keys: {(media_type, id)} of everything you already have;
     tmdb: object with details(), discover(), trending(), new_releases() and search() (see tmdb.TmdbClient).
     ai: optional object with suggest() (see ai.AiClient) - skipped entirely if not given.
     ai_only: skip the TMDB-linked/genre/trending/new-release candidates entirely and consider only
     the AI's own ideas - for a deliberate, separate "generate AI recommendations" action (each call
     costs a real AI request, unlike everything else here, which is why it isn't automatic).
+    disliked: {(media_type, tmdb_id): stars} of titles you rated low. A candidate TMDB links to one
+    of them has its score multiplied by the smallest matching DISLIKE_FACTORS entry (never excluded).
     Returns {"items": [...best first...], "profile": {...}, "notes": [...]}."""
     now = now or datetime.now(timezone.utc)
     today = now.date()
@@ -196,6 +200,15 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
                 seen.add(key)
                 pool.append(key)
 
+    # 2d. Candidates TMDB links to titles you disliked are pushed down.
+    penalty = {}
+    for (d_type, d_id), stars in list((disliked or {}).items())[:MAX_DISLIKED]:
+        factor = DISLIKE_FACTORS.get(stars)
+        d_details = _details_or_none(tmdb, d_type, d_id) if factor else None
+        for rec_id in (d_details or {}).get("recommendations", []):
+            k = (d_type, rec_id)
+            penalty[k] = min(penalty.get(k, 1.0), factor)
+
     # 3. Score.
     scored = []
     for key in pool:
@@ -217,6 +230,7 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
                  + WEIGHTS["collab"] * min(1, c["collab"] / top_weight)
                  + WEIGHTS["quality"] * quality_score(details)
                  + WEIGHTS["buzz"] * buzz_score(age, trending))
+        final *= penalty.get(key, 1.0)
         if c["sources"]:
             names = [t for _, t in sorted(c["sources"], key=lambda s: -s[0])[:2]]
             reason = "Because you watched " + " and ".join(names)

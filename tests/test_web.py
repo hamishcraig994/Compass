@@ -66,12 +66,42 @@ class TestWeb(unittest.TestCase):
         self.assertIn("Not interested", html)
         self.assertIn("Watched titles analyzed", html)
         self.assertIn('href="/recommended"', html)
-        self.assertIn('href="/library"', html)
+        self.assertIn('href="/library?type=added"', html)
 
     def test_home_and_recommended_and_library_all_highlight_their_own_nav_item(self):
-        for path, section_href in (("/", "/"), ("/recommended", "/recommended"), ("/library", "/library")):
+        for path, section_href in (("/", "/"), ("/recommended", "/recommended"), ("/library", "/library"),
+                                   ("/library?type=movie", "/library"), ("/library?type=tv", "/library"),
+                                   ("/library?type=watched", "/library"), ("/library?type=added", "/library")):
             _, html = self.get(path)
             self.assertEqual(html.count(f'class="nav-item active" href="{section_href}"'), 2, path)
+
+    def test_nav_has_no_watched_item_and_watched_stays_a_tab(self):
+        _, html = self.get("/library?type=watched")
+        self.assertNotIn('href="/watched"', html)
+        self.assertNotRegex(html, r'class="nav-item[^"]*" href="/library\?type=watched"')
+
+    def test_library_lists_what_is_in_plex_in_sample_mode(self):
+        _, html = self.get("/library")
+        for title in ("Interstellar", "Dune", "Black Mirror"):
+            self.assertIn(title, html)
+        self.assertNotIn("Nothing added yet", html)
+
+    def test_library_watched_tab_lists_history_with_star_buttons(self):
+        _, html = self.get("/library?type=watched")
+        self.assertIn("Severance", html)
+        for n in range(1, 6):
+            self.assertIn(f'name="stars" value="{n}"', html)
+        self.assertEqual(self.get("/library?type=watched&q=severance")[0], 200)
+
+    def test_library_bad_params_still_render(self):
+        for query in ("type=%3Cscript%3E", "type=watched&sort=added", "page=-1", "page=%C2%B2", "q=" + "x" * 500,
+                      "type=added&show=watched"):
+            self.assertEqual(self.get("/library?" + query)[0], 200, query)
+
+    def test_watched_is_not_a_route(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.get("/watched")
+        self.assertEqual(ctx.exception.code, 404)
 
     def test_recommended_page_shows_suggestions_and_sample_banner(self):
         status, html = self.get("/recommended")
@@ -111,7 +141,7 @@ class TestWeb(unittest.TestCase):
         self.assertIn('class="subtab on" href="/recommended?type=movie"', html)
 
     def test_library_page_empty_state(self):
-        _, html = self.get("/library")
+        _, html = self.get("/library?type=added")
         self.assertIn("Nothing added yet", html)
 
     def test_sample_mode_has_no_dismiss_button_and_ignores_dismiss_posts(self):
@@ -359,7 +389,7 @@ class TestAddRecordsToLibrary(unittest.TestCase):
         self.assertEqual(len(added), 1)
         self.assertEqual((added[0]["media_type"], added[0]["tmdb_id"], added[0]["title"]), ("movie", 1, "M"))
         self.assertEqual(web._state["result"]["items"], [])
-        html = urllib.request.urlopen(self.base + "/library").read().decode()
+        html = urllib.request.urlopen(self.base + "/library?type=added").read().decode()
         self.assertIn("M (2020)", html)
         self.assertIn("Added ", html)
 

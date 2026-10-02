@@ -68,6 +68,10 @@ class TmdbClient:
         except Exception as e:
             return False, str(e)
 
+    def cached_details(self, media_type, tmdb_id):
+        """Details from the local cache only - never makes a request. None if not cached."""
+        return db.cache_get(f"details:v2:{media_type}:{tmdb_id}", DETAILS_MAX_AGE)
+
     def details(self, media_type, tmdb_id):
         key = f"details:v2:{media_type}:{tmdb_id}"  # v2: added release_date
         cached = db.cache_get(key, DETAILS_MAX_AGE)

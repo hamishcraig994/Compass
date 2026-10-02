@@ -367,6 +367,39 @@
 
   /* ---------------- enhanced forms ---------------- */
 
+  /* Redraw one rate form from the server's answer: mine = personal stars or null, plex = Plex's 1-5 or null. */
+  function applyRating(form, mine, plex) {
+    var effective = mine || plex || 0;
+    var fromPlex = !mine && !!plex;
+    Array.prototype.forEach.call(form.querySelectorAll(".star"), function (star) {
+      var n = parseInt(star.value, 10);
+      star.classList.toggle("on", n <= effective);
+      star.classList.toggle("from-plex", n <= effective && fromPlex);
+      star.setAttribute("aria-pressed", n === mine ? "true" : "false");
+    });
+    var text = form.querySelector(".rating-text");
+    if (text) text.textContent = mine ? "Your rating: " + mine + "/5" : (plex ? "From Plex: " + plex + "/5" : "Not rated");
+    var clear = form.querySelector(".star-clear");
+    if (mine && !clear) {
+      form.appendChild(el("button", { type: "submit", name: "stars", value: "0", className: "link-btn star-clear", text: "Clear rating" }));
+    } else if (!mine && clear) {
+      clear.parentNode.removeChild(clear);
+    }
+  }
+
+  function refreshRecommendations() {
+    post("/refresh", new URLSearchParams({ return_to: window.location.pathname + window.location.search }))
+      .then(function (data) {
+        toast(data.message || "Refreshing...", { error: data.ok === false });
+        if (data.ok === false || doc.querySelector("[data-poll=recs], [data-poll=stale]")) return;
+        showUpdating();
+        poll("recs", {
+          ready: function () { window.location.reload(); },
+          error: function (message) { markUpdateFailed(message); }
+        });
+      }).catch(function () { toast("Couldn't reach the server - try again.", { error: true }); });
+  }
+
   var handlers = {
     dismiss: function (form) {
       var type = field(form, "type"), id = field(form, "id"), returnTo = field(form, "return_to");
@@ -427,6 +460,33 @@
       }).catch(function (err) { setBusy(form, false); failed(form, err); });
     },
 
+    rate: function (form, submitter) {
+      var button = submitter && submitter.name === "stars" ? submitter : form._lastStar;
+      if (!button) { toast("Couldn't tell which star you picked - try again.", { error: true }); return; }
+      var stars = button.value;
+      // form.submit() leaves out the clicked button, so carry its value in a hidden field.
+      var nativeRate = function () {
+        form.appendChild(el("input", { type: "hidden", name: "stars", value: String(stars) }));
+        nativeSubmit(form);
+      };
+      var body = new URLSearchParams(new FormData(form));
+      body.set("stars", stars);
+      setBusy(form, true);
+      post(form.getAttribute("action"), body).then(function (data) {
+        setBusy(form, false);
+        if (!data.ok) { toast(data.message || "Couldn't save that rating.", { error: true }); return; }
+        var rating = data.rating || {};
+        applyRating(form, rating.stars, rating.plex_stars);
+        var target = stars === "0" ? form.querySelector(".star") : form.querySelector('.star[value="' + stars + '"]');
+        if (target) target.focus();
+        toast(data.message || "Rating saved", { action: { label: "Update recommendations", run: refreshRecommendations } });
+      }).catch(function (err) {
+        setBusy(form, false);
+        if (err && err.notJson) { nativeRate(); return; }
+        failed(form, err);
+      });
+    },
+
     generate: function (form) {
       var button = form.querySelector("button");
       var label = button ? button.textContent : "";
@@ -459,8 +519,24 @@
     if (!kind || !handlers[kind]) return;
     e.preventDefault();
     if (form.hasAttribute("data-busy")) return;
-    handlers[kind](form);
+    handlers[kind](form, e.submitter);
   });
+
+  // Old Safari has no e.submitter: remember which star was last pressed in a rate form.
+  doc.addEventListener("click", function (e) {
+    var button = e.target && e.target.closest ? e.target.closest("button[name=stars]") : null;
+    if (button && button.form) button.form._lastStar = button;
+  });
+
+  // A poster that fails to load (Plex down, thumb gone) becomes the tinted placeholder.
+  doc.addEventListener("error", function (e) {
+    var img = e.target;
+    if (!img || img.tagName !== "IMG" || !img.classList.contains("poster") || !img.parentNode) return;
+    var title = img.closest("article") && img.closest("article").querySelector(".title");
+    var box = el("div", { className: "poster poster-empty", "aria-hidden": "true", text: title ? title.textContent : "" });
+    box.style.setProperty("--h", String(((title ? title.textContent.length : 0) * 47) % 360));
+    img.parentNode.replaceChild(box, img);
+  }, true);
 
   /* ---------------- status polling ---------------- */
 

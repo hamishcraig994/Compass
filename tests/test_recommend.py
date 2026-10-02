@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import profile
 import recommend
 import sample
 
@@ -351,6 +352,66 @@ class TestScoring(unittest.TestCase):
         for avg in (0, 5, 10):
             q = recommend.quality_score({"vote_average": avg, "vote_count": 100000})
             self.assertTrue(0 <= q <= 1)
+
+
+class TestRatingsInRecommend(unittest.TestCase):
+    def test_loving_a_title_raises_its_genre_weight(self):
+        watched, library = sample.load()
+        before = recommend.recommend(watched, library, sample.SampleTmdb())["profile"]["genre"]["Comedy"]
+        loved = profile.apply_ratings(watched, {("movie", 1015): 5})  # Superbad
+        after = recommend.recommend(loved, library, sample.SampleTmdb())["profile"]["genre"]["Comedy"]
+        self.assertGreater(after, before)
+
+    def test_disliked_none_or_empty_changes_nothing(self):
+        base = run()
+        self.assertEqual(run(disliked=None), base)
+        self.assertEqual(run(disliked={}), base)
+
+    def _matches(self, **kw):
+        # unfloored "match", so the ratio between two runs is exact
+        with mock.patch.object(recommend.math, "floor", lambda x: x):
+            return {(i["media_type"], i["tmdb_id"]): i["match"] for i in run(**kw)["items"]}
+
+    def test_candidate_linked_from_a_one_star_title_scores_exactly_0_4(self):
+        base = self._matches()
+        after = self._matches(disliked={("movie", 1001): 1})  # Interstellar -> Gravity, Moon, Edge of Tomorrow
+        penalised = {("movie", 1019), ("movie", 1009), ("movie", 1008)}
+        self.assertIn(("movie", 1019), after)  # still listed, never excluded
+        self.assertEqual(set(base), set(after))
+        best = max(base, key=base.get)
+        self.assertNotIn(best, penalised)
+        for key in penalised & set(base):
+            self.assertAlmostEqual(after[key], base[key] * 0.4, places=6, msg=key)
+        for key in set(base) - penalised:
+            self.assertAlmostEqual(after[key], base[key], places=6, msg=key)
+
+    def test_two_stars_is_0_7_and_the_smallest_factor_wins(self):
+        base = self._matches()
+        two = self._matches(disliked={("movie", 1001): 2})
+        self.assertAlmostEqual(two[("movie", 1019)], base[("movie", 1019)] * 0.7, places=6)
+        both = self._matches(disliked={("movie", 1001): 2, ("movie", 1002): 1})  # both link Moon (1009)
+        self.assertAlmostEqual(both[("movie", 1009)], base[("movie", 1009)] * 0.4, places=6)
+
+    def test_other_star_values_and_unknown_titles_are_ignored(self):
+        base = self._matches()
+        self.assertEqual(self._matches(disliked={("movie", 1001): 3, ("movie", 99999): 1}), base)
+
+    def test_only_max_disliked_titles_are_looked_up(self):
+        looked_up = []
+        real = sample.SampleTmdb()
+
+        class Spy:
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+            def details(self, media_type, tmdb_id):
+                looked_up.append(tmdb_id)
+                return real.details(media_type, tmdb_id)
+
+        watched, library = sample.load()
+        many = {("movie", 5000 + n): 1 for n in range(recommend.MAX_DISLIKED + 20)}
+        recommend.recommend(watched, library, Spy(), disliked=many)
+        self.assertEqual(len([i for i in looked_up if i >= 5000]), recommend.MAX_DISLIKED)
 
 
 if __name__ == "__main__":

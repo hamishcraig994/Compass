@@ -12,6 +12,8 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
 
 import config
 import db
+import plex
+import profile
 import settings_page
 import sources
 
@@ -36,7 +38,8 @@ FORGET_STASH = 50          # how many removed suggestions Undo can put back with
 # Small bookkeeping, separate from compute_lock: it's only ever held for a few lines (never across a
 # build or a network call), so /api/status, page renders and clicks answer instantly mid-build.
 _status_lock = threading.Lock()
-_build = {"pending": False, "running": False, "started": None, "error": None, "failed_at": 0.0, "generation": 0}
+_build = {"pending": False, "running": False, "started": None, "error": None, "failed_at": 0.0, "generation": 0,
+          "ratings_changed": False}  # True once you've rated something since the last build started
 _forgotten = []  # (cache name, index, item) removed by forget(), newest last - see restore()
 # Every forget()/restore() since the current build or AI generation started, oldest first:
 # ("hide", key) or ("restore", cache name, index, item). sources.run() reads the dismissed list
@@ -54,7 +57,7 @@ def _key(item):
 def _needs_build(refresh):
     age = time.time() - _state["time"]
     stale = _state["result"] is None or age > CACHE_SECONDS
-    return stale or (refresh and age > REFRESH_MIN_SECONDS)
+    return stale or (refresh and (age > REFRESH_MIN_SECONDS or _build["ratings_changed"]))
 
 
 def _start_job():
@@ -105,16 +108,21 @@ def _build_locked(refresh):
     if not _needs_build(refresh):
         return None
     attempts = 3
+    carried_ratings_changed = False  # cleared by an earlier attempt whose result was discarded
     for attempt in range(attempts):
         _start_job()
         with _status_lock:
             _build.update(running=True, started=time.time())
             generation = _build["generation"]
+            had_ratings_changed, _build["ratings_changed"] = _build["ratings_changed"], False
+            carried_ratings_changed = carried_ratings_changed or had_ratings_changed
         try:
             try:
                 result = _hide_dismissed(sources.run(_is_sample()))
             except Exception as e:
                 with _status_lock:
+                    # the new ratings never made it into a result - keep offering the refresh
+                    _build["ratings_changed"] = carried_ratings_changed or _build["ratings_changed"]
                     if generation != _build["generation"] and attempt < attempts - 1:
                         continue  # failed with settings that have since changed - try the new ones
                     _build.update(error=str(e) or type(e).__name__, failed_at=time.time())
@@ -242,6 +250,113 @@ def _ai_generate():
     finally:
         with _status_lock:
             _ai_state["building"] = False
+
+
+def mark_ratings_changed():
+    """Called after a rating is saved or cleared: the recommendations are now out of date, and
+    Refresh may skip its REFRESH_MIN_SECONDS guard."""
+    with _status_lock:
+        _build["ratings_changed"] = True
+
+
+def ratings_changed():
+    with _status_lock:
+        return _build["ratings_changed"]
+
+
+def plex_thumb(rating_key):
+    """The Plex thumb path for a ratingKey in the current snapshot, or None. Server-side only."""
+    with _status_lock:
+        result = _state["result"]
+        return ((result or {}).get("thumbs") or {}).get(rating_key)
+
+
+# --- Library page data (pure helpers; pages.py does the rendering) ---
+LIBRARY_TABS = ("all", "movie", "tv", "watched", "added")
+LIST_OPTIONS = {   # tab -> (sorts, shows); the first of each is the default
+    "all":     (("added", "title", "year"), ("all", "unwatched", "watched")),
+    "movie":   (("added", "title", "year"), ("all", "unwatched", "watched")),
+    "tv":      (("added", "title", "year"), ("all", "unwatched", "watched")),
+    "watched": (("recent", "title", "rating"), ("all", "rated", "unrated")),
+    "added":   (("added", "title", "year"), ("all",)),
+}
+LIST_PAGE_SIZE = 48  # divisible by the 2/3/4/6-column grids
+MAX_QUERY_CHARS = 100
+
+
+def parse_list_query(query):
+    """query: parse_qs dict -> {"tab", "q", "sort", "show", "page"}. Every invalid value falls back to its default."""
+    def first(name):
+        return (query.get(name) or [""])[0]
+    tab = first("type")
+    tab = tab if tab in LIBRARY_TABS else "all"
+    sorts, shows = LIST_OPTIONS[tab]
+    sort, show = first("sort"), first("show")
+    return {"tab": tab, "q": first("q").strip()[:MAX_QUERY_CHARS],
+            "sort": sort if sort in sorts else sorts[0], "show": show if show in shows else shows[0],
+            "page": max(1, _parse_id(first("page")) or 1)}
+
+
+def _sorted_desc_none_last(items, value):
+    """Title order first, then a stable descending sort on value(item); items without a value go last."""
+    items = sorted(items, key=lambda i: (i.get("title") or "").casefold())
+    have = [i for i in items if value(i) is not None]
+    missing = [i for i in items if value(i) is None]
+    return sorted(have, key=value, reverse=True) + missing
+
+
+def list_view(items, tab="all", q="", sort="added", show="all", page=1, per_page=LIST_PAGE_SIZE):
+    """Filter, sort and paginate a list of library/watched items. Pure.
+    -> {"items": this page, "total", "page" (clamped to 1..pages), "pages" (>= 1)}"""
+    found = list(items)
+    if tab in ("movie", "tv"):
+        found = [i for i in found if i.get("media_type") == tab]
+    needle = (q or "").strip().casefold()
+    if needle:
+        found = [i for i in found if needle in (i.get("title") or "").casefold()]
+    if show in ("unwatched", "watched"):
+        found = [i for i in found if bool(i.get("watched")) == (show == "watched")]
+    elif show in ("rated", "unrated"):
+        found = [i for i in found if (i.get("stars") is not None) == (show == "rated")]
+    if sort == "title":
+        found.sort(key=lambda i: (i.get("title") or "").casefold())
+    elif sort == "year":
+        found = _sorted_desc_none_last(found, lambda i: i.get("year"))
+    elif sort == "recent":
+        found = _sorted_desc_none_last(found, lambda i: i.get("last_viewed"))
+    elif sort == "rating":
+        found = _sorted_desc_none_last(
+            found, lambda i: i["stars"] if i.get("stars") is not None else i.get("plex_stars"))
+    else:  # "added"
+        found = _sorted_desc_none_last(found, lambda i: i.get("added_at"))
+    per_page = max(1, per_page)
+    pages = max(1, -(-len(found) // per_page))
+    page = min(max(1, page), pages)
+    return {"items": found[(page - 1) * per_page:page * per_page], "total": len(found), "page": page, "pages": pages}
+
+
+def watched_items(result):
+    """Copies of the build's raw watch history with "stars" (your own rating; always None in sample
+    mode, which ignores stored ratings) and "plex_stars" (Plex/Tautulli's rating as 1-5)."""
+    mine = {} if _is_sample() else db.ratings()
+    out = []
+    for item in (result or {}).get("watched") or []:
+        item = dict(item)
+        item["stars"] = mine.get((item["media_type"], item["tmdb_id"]))
+        item["plex_stars"] = profile.stars_from_ten(item.get("user_rating"))
+        out.append(item)
+    return out
+
+
+def library_items(result, tab):
+    """The items for one Library tab, or None if the library isn't available (Tautulli without PLEX_TOKEN)."""
+    if tab == "added":
+        return [{"media_type": a["media_type"], "tmdb_id": a["tmdb_id"], "title": a["title"], "year": a["year"],
+                 "added_at": a["added_at"], "watched": False, "progress": None, "poster_key": None,
+                 "poster_url": a["poster_url"], "url": a["url"]} for a in db.added_items()]
+    if tab == "watched":
+        return watched_items(result)
+    return (result or {}).get("library")
 
 
 def _find_item(media_type, tmdb_id):
@@ -374,7 +489,7 @@ class Handler(BaseHTTPRequestHandler):
     STATIC_FILES = {"app.css": "text/css; charset=utf-8", "app.js": "text/javascript; charset=utf-8"}
 
     def _send(self, status, body, content_type="text/html; charset=utf-8", headers=None):
-        data = body.encode("utf-8")
+        data = body if isinstance(body, bytes) else body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
@@ -437,7 +552,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, render_recommended(tab if tab in dict(SUBTABS) else "all", msg=msg,
                                                       undo=undo if undo[0] else None))
         if url.path == "/library":
-            return self._send(200, render_library())
+            query = parse_qs(url.query)
+            return self._send(200, render_library(**parse_list_query(query), msg=query.get("msg", [""])[0]))
+        if url.path == "/poster":
+            return self._poster(parse_qs(url.query))
         if url.path == "/ai":
             query = parse_qs(url.query)
             undo = _item_from(query, "undo_type", "undo_id")
@@ -510,6 +628,8 @@ class Handler(BaseHTTPRequestHandler):
                 body = settings_page.render(section, test_result=test_result, overrides=overrides)
                 return self._send(200, _shell(body, "settings"))
             return self._redirect(f"/settings?section={section}")
+        if path == "/rate":
+            return self._post_rate(form, form.get("return_to", ["/library?type=watched"])[0], as_json)
         if path == "/add":
             media_type, tmdb_id = _item_from(form)
             if media_type is None:
@@ -536,6 +656,62 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": bool(ok), "message": msg or ""})
             return self._redirect(return_to, msg)
         return self._send(404, "Not found", "text/plain")
+
+    POSTER_TYPES = ("image/jpeg", "image/png", "image/webp")
+
+    def _poster(self, query):
+        """A Plex poster, fetched here so the token and thumb path never reach the browser. Only keys
+        in the current snapshot are served. Fetches outside every lock; any failure is a plain 404."""
+        key = _parse_id((query.get("key") or [""])[0])
+        if key is None or _is_sample() or not config.PLEX_TOKEN:
+            return self._send(404, "Not found", "text/plain")
+        thumb = plex_thumb(key)
+        if not thumb:
+            return self._send(404, "Not found", "text/plain")
+        try:
+            content_type, data = plex.PlexClient(config.PLEX_URL, config.PLEX_TOKEN).poster(thumb)
+        except Exception:
+            return self._send(404, "Not found", "text/plain")
+        if content_type not in self.POSTER_TYPES or not isinstance(data, bytes):
+            return self._send(404, "Not found", "text/plain")
+        return self._send(200, data, content_type, headers={"Cache-Control": "private, max-age=86400"})
+
+    def _post_rate(self, form, return_to, as_json):
+        """Your own 1-5 star rating of something you've watched (0 clears it). Local only - nothing
+        is ever written to Plex. Feeds the taste profile at the next rebuild."""
+        media_type, tmdb_id = _item_from(form)
+        if media_type is None:
+            if as_json:
+                return self._json({"ok": False, "message": "That isn't a valid title"}, 400)
+            return self._redirect(return_to)
+        raw = form.get("stars", [""])[0]
+        if raw not in ("0", "1", "2", "3", "4", "5"):
+            if as_json:
+                return self._json({"ok": False, "message": "Pick a rating from 1 to 5"}, 400)
+            return self._redirect(return_to)
+        if _is_sample():  # sample ids are real TMDB ids - never store ratings against them
+            if as_json:
+                return self._json({"ok": False, "message": SAMPLE_MESSAGE})
+            return self._redirect(return_to, SAMPLE_MESSAGE)
+        stars = int(raw)
+        if stars:
+            db.set_rating(media_type, tmdb_id, stars)
+        else:
+            db.clear_rating(media_type, tmdb_id)
+        mark_ratings_changed()
+        with _status_lock:
+            snapshot = (_state["result"] or {}).get("watched") or []
+        known = next((w for w in snapshot if (w["media_type"], w["tmdb_id"]) == (media_type, tmdb_id)), None)
+        if known:
+            title = known["title"]
+            message = f'Rated "{title}" {stars}/5' if stars else f'Cleared your rating for "{title}"'
+        else:
+            message = f"Rated {stars}/5" if stars else "Rating cleared"
+        if as_json:
+            return self._json({"ok": True, "message": message, "rating": {
+                "type": media_type, "id": tmdb_id, "stars": stars or None,
+                "plex_stars": profile.stars_from_ten(known.get("user_rating")) if known else None}})
+        return self._redirect(return_to, message)
 
     def _post_dismiss(self, dismiss, form, return_to, as_json):
         """"Not interested" and its Undo. Without JS, a dismiss redirects back with undo_type/undo_id

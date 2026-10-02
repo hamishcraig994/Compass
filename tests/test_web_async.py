@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["SAMPLE"] = "1"
 import config
 import db
+import plex
 import sources
 import web
 
@@ -63,7 +64,7 @@ class AsyncCase(unittest.TestCase):
         self.addCleanup(self._restore, saved)
         web._state.update(time=0.0, result=None)
         web._ai_state.update(time=0.0, result=None, building=False, error=None)
-        web._build.update(pending=False, running=False, started=None, error=None, failed_at=0.0)
+        web._build.update(pending=False, running=False, started=None, error=None, failed_at=0.0, ratings_changed=False)
         web._forgotten[:] = []
         web._actions[:] = []
         self.server = web.make_server("127.0.0.1", 0)
@@ -557,6 +558,20 @@ class TestGetPassesPageParams(AsyncCase):
             self.request("GET", "/ai")
             render.assert_called_once_with(msg="", undo=None)
 
+    def test_library_gets_parsed_params_and_msg(self):
+        with mock.patch.object(web, "render_library", return_value="page") as render:
+            self.request("GET", "/library?type=watched&q=%20dune%20&sort=rating&show=rated&page=3&msg=Hi")
+            render.assert_called_once_with(tab="watched", q="dune", sort="rating", show="rated", page=3, msg="Hi")
+            render.reset_mock()
+            self.request("GET", "/library")
+            render.assert_called_once_with(tab="all", q="", sort="added", show="all", page=1, msg="")
+            render.reset_mock()
+            self.request("GET", "/library?type=%3Cscript%3E&sort=zzz&show=zzz&page=-1")
+            render.assert_called_once_with(tab="all", q="", sort="added", show="all", page=1, msg="")
+
+    def test_watched_route_stays_404(self):
+        self.assertEqual(self.request("GET", "/watched")[0], 404)
+
     def test_add_dialog_gets_partial(self):
         with mock.patch.object(web, "render_add_dialog", return_value="page") as render:
             self.request("GET", "/add-dialog?type=movie&id=4&return_to=/ai&partial=1")
@@ -567,6 +582,228 @@ class TestGetPassesPageParams(AsyncCase):
             render.reset_mock()
             self.assertEqual(self.request("GET", "/add-dialog?type=movie&id=%C2%B2")[0], 404)
             render.assert_not_called()
+
+
+def watched_item(tmdb_id=329865, title="Arrival", media_type="movie", user_rating=9.0, poster_key=None):
+    return {"media_type": media_type, "tmdb_id": tmdb_id, "title": title, "year": 2016, "last_viewed": None,
+            "user_rating": user_rating, "view_count": 1, "progress": None, "poster_key": poster_key,
+            "poster_url": None, "url": None}
+
+
+class TestRate(AsyncCase):
+    def setUp(self):
+        super().setUp()
+        self.live()
+        web._state.update(result=dict(fake_result([item(1)]), watched=[watched_item()]), time=time.time())
+
+    def test_json_set_and_clear(self):
+        status, body = self.post_json("/rate", "type=movie&id=329865&stars=4&return_to=/library")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"ok": True, "message": 'Rated "Arrival" 4/5',
+                                "rating": {"type": "movie", "id": 329865, "stars": 4, "plex_stars": 5}})
+        self.assertEqual(db.ratings(), {("movie", 329865): 4})
+        status, body = self.post_json("/rate", "type=movie&id=329865&stars=0")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"ok": True, "message": 'Cleared your rating for "Arrival"',
+                                "rating": {"type": "movie", "id": 329865, "stars": None, "plex_stars": 5}})
+        self.assertEqual(db.ratings(), {})
+
+    def test_title_not_in_the_snapshot(self):
+        _, body = self.post_json("/rate", "type=tv&id=5&stars=2")
+        self.assertEqual(body, {"ok": True, "message": "Rated 2/5",
+                                "rating": {"type": "tv", "id": 5, "stars": 2, "plex_stars": None}})
+        _, body = self.post_json("/rate", "type=tv&id=5&stars=0")
+        self.assertEqual(body["message"], "Rating cleared")
+        self.assertEqual(db.ratings(), {})
+
+    def test_title_in_the_message_comes_from_the_snapshot_not_the_form(self):
+        _, body = self.post_json("/rate", "type=movie&id=329865&stars=3&title=Hacked")
+        self.assertEqual(body["message"], 'Rated "Arrival" 3/5')
+
+    def test_changing_a_rating_replaces_it(self):
+        self.post_json("/rate", "type=movie&id=329865&stars=2")
+        self.post_json("/rate", "type=movie&id=329865&stars=5")
+        self.assertEqual(db.ratings(), {("movie", 329865): 5})
+
+    def test_bad_title_is_400(self):
+        for data in ("type=movie&id=abc&stars=3", "type=book&id=1&stars=3", "stars=3", "type=movie&id=%C2%B2&stars=3",
+                     "type=movie&id=" + "9" * 13 + "&stars=3"):
+            status, body = self.post_json("/rate", data)
+            self.assertEqual((status, body), (400, {"ok": False, "message": "That isn't a valid title"}), data)
+        self.assertEqual(db.ratings(), {})
+
+    def test_bad_stars_is_400(self):
+        for stars in ("&stars=6", "&stars=x", "", "&stars=", "&stars=-1", "&stars=3.5", "&stars=%C2%B2", "&stars=10", "&stars=+3"):
+            status, body = self.post_json("/rate", "type=movie&id=1" + stars)
+            self.assertEqual((status, body), (400, {"ok": False, "message": "Pick a rating from 1 to 5"}), stars)
+        self.assertEqual(db.ratings(), {})
+        self.assertFalse(web.ratings_changed())
+
+    def test_no_js_redirects_with_the_message(self):
+        loc = self.location("/rate", "type=movie&id=329865&stars=4&return_to=%2Flibrary%3Ftype%3Dwatched%26page%3D2")
+        self.assertEqual(loc, "/library?type=watched&page=2&msg=Rated+%22Arrival%22+4%2F5")
+        self.assertEqual(db.ratings(), {("movie", 329865): 4})
+
+    def test_no_js_default_and_offsite_return_to(self):
+        self.assertTrue(self.location("/rate", "type=movie&id=329865&stars=4").startswith("/library?type=watched&msg="))
+        self.assertTrue(self.location("/rate", "type=movie&id=1&stars=4&return_to=https%3A%2F%2Fevil.example%2F")
+                        .startswith("/recommended?msg="))
+        self.assertTrue(self.location("/rate", "type=movie&id=1&stars=4&return_to=%2F%2Fevil.example")
+                        .startswith("/recommended?msg="))
+
+    def test_no_js_bad_input_goes_back_with_no_msg(self):
+        self.assertEqual(self.location("/rate", "type=movie&id=1&stars=9&return_to=%2Flibrary%3Ftype%3Dwatched"),
+                         "/library?type=watched")
+        self.assertEqual(self.location("/rate", "type=x&id=1&stars=3"), "/library?type=watched")
+        self.assertEqual(db.ratings(), {})
+
+    def test_sample_mode_refuses_without_writing_in_both_modes(self):
+        patch = mock.patch.object(sources, "use_sample", return_value=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        status, body = self.post_json("/rate", "type=movie&id=1001&stars=4")
+        self.assertEqual((status, body), (200, {"ok": False, "message": web.SAMPLE_MESSAGE}))
+        loc = self.location("/rate", "type=movie&id=1001&stars=4")
+        self.assertEqual(loc, "/library?type=watched&msg=Sample+data+-+not+saved")
+        self.assertEqual(db.ratings(), {})
+        self.assertFalse(web.ratings_changed())
+
+    def test_rating_sets_the_flag_and_refresh_then_skips_the_age_guard(self):
+        self.assertFalse(web.ratings_changed())
+        with mock.patch.object(sources, "run") as run:
+            _, body = self.post_json("/refresh")  # data is fresh: nothing to do
+            self.assertEqual(body["message"], "Already up to date")
+            run.assert_not_called()
+            self.post_json("/rate", "type=movie&id=329865&stars=5")
+            self.assertTrue(web.ratings_changed())
+            run.return_value = fake_result([item(2)])
+            _, body = self.post_json("/refresh")
+            self.assertEqual((body["ok"], body["started"], body["message"]), (True, True, "Refreshing..."))
+            wait_idle()
+        self.assertEqual(run.call_count, 1)
+        self.assertFalse(web.ratings_changed())  # cleared by the build that picked it up
+
+    def test_clearing_a_rating_also_sets_the_flag(self):
+        self.post_json("/rate", "type=movie&id=329865&stars=0")
+        self.assertTrue(web.ratings_changed())
+
+    def test_a_failed_build_keeps_the_flag(self):
+        web.mark_ratings_changed()
+        web._state.update(time=time.time())
+        with mock.patch.object(sources, "run", side_effect=RuntimeError("boom")):
+            self.assertTrue(web._start_build(refresh=True))
+            wait_idle()
+        self.assertTrue(web.ratings_changed())
+        self.assertEqual(web.build_status()["error"], "boom")
+
+    def test_flag_survives_a_discarded_attempt_followed_by_a_failed_one(self):
+        web.mark_ratings_changed()
+        web._state.update(time=time.time())
+        calls = []
+
+        def run(sample):
+            calls.append(1)
+            if len(calls) == 1:
+                web.invalidate_cache()  # settings changed mid-build: this result gets discarded
+                return fake_result([item(2)])
+            raise RuntimeError("boom")
+
+        with mock.patch.object(sources, "run", side_effect=run):
+            self.assertTrue(web._start_build(refresh=True))
+            wait_idle()
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(web.ratings_changed())
+
+    def test_a_rating_made_mid_build_survives_the_build(self):
+        web.mark_ratings_changed()
+        gate = Gate()
+        with mock.patch.object(sources, "run", gate):
+            web._start_build(refresh=True)
+            self.assertTrue(gate.entered.wait(2))
+            self.assertFalse(web.ratings_changed())  # cleared when the job started
+            self.post_json("/rate", "type=movie&id=329865&stars=1")
+            gate.release.set()
+            wait_idle()
+        self.assertTrue(web.ratings_changed())
+
+    def test_ratings_never_touch_plex(self):
+        with mock.patch.object(plex.PlexClient, "_get", side_effect=AssertionError("Plex")), \
+             mock.patch("http_util.urllib.request.urlopen", side_effect=AssertionError("network")):
+            self.post_json("/rate", "type=movie&id=329865&stars=5")
+            self.post_json("/rate", "type=movie&id=329865&stars=0")
+
+    def test_status_shape_is_unchanged(self):
+        self.assertEqual(set(web.build_status()), {"state", "has_result", "started", "updated", "error", "ai"})
+
+
+class TestPoster(AsyncCase):
+    THUMB = "/library/metadata/10/thumb/1"
+
+    def setUp(self):
+        super().setUp()
+        self.live()
+        old = config.PLEX_TOKEN
+        self.addCleanup(setattr, config, "PLEX_TOKEN", old)
+        config.PLEX_TOKEN = "SECRET-TOKEN"
+        web._state.update(result=dict(fake_result(), thumbs={10: self.THUMB}), time=time.time())
+
+    def fetch(self, path="/poster?key=10"):
+        req = urllib.request.Request(self.base + path)
+        try:
+            resp = urllib.request.build_opener(NoRedirect).open(req, timeout=5)
+            return resp.status, resp.headers, resp.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read()
+
+    def test_serves_the_image_with_cache_header(self):
+        for content_type in ("image/jpeg", "image/png", "image/webp"):
+            with mock.patch.object(plex.PlexClient, "poster", return_value=(content_type, b"BYTES")) as poster:
+                status, headers, body = self.fetch()
+            self.assertEqual((status, body), (200, b"BYTES"))
+            self.assertEqual(headers["Content-Type"], content_type)
+            self.assertEqual(headers["Cache-Control"], "private, max-age=86400")
+            poster.assert_called_once_with(self.THUMB)
+            self.assertNotIn("SECRET-TOKEN", str(headers))
+
+    def test_404s(self):
+        cases = {"bad key": "/poster?key=abc", "no key": "/poster", "unknown key": "/poster?key=11",
+                 "unicode digit": "/poster?key=%C2%B2", "huge": "/poster?key=" + "1" * 13}
+        for name, path in cases.items():
+            with mock.patch.object(plex.PlexClient, "poster", return_value=("image/jpeg", b"x")) as poster:
+                status, headers, body = self.fetch(path)
+            self.assertEqual((status, body), (404, b"Not found"), name)
+            poster.assert_not_called()
+
+    def test_non_image_and_errors_are_404(self):
+        for kind in (("text/html", b"<html>"), ("image/svg+xml", b"<svg>"), ("", b"x")):
+            with mock.patch.object(plex.PlexClient, "poster", return_value=kind):
+                status, _, body = self.fetch()
+            self.assertEqual((status, body), (404, b"Not found"), kind)
+        with mock.patch.object(plex.PlexClient, "poster", side_effect=RuntimeError("HTTP 500 http://plex/?X-Plex-Token=SECRET-TOKEN")):
+            status, _, body = self.fetch()
+        self.assertEqual((status, body), (404, b"Not found"))
+        self.assertNotIn(b"SECRET", body)
+
+    def test_sample_mode_and_missing_token_are_404(self):
+        with mock.patch.object(plex.PlexClient, "poster", return_value=("image/jpeg", b"x")) as poster:
+            config.PLEX_TOKEN = ""
+            self.assertEqual(self.fetch()[0], 404)
+            config.PLEX_TOKEN = "SECRET-TOKEN"
+            with mock.patch.object(sources, "use_sample", return_value=True):
+                self.assertEqual(self.fetch()[0], 404)
+        poster.assert_not_called()
+
+    def test_no_build_yet_is_404(self):
+        web._state.update(result=None, time=0.0)
+        with mock.patch.object(plex.PlexClient, "poster") as poster:
+            self.assertEqual(self.fetch()[0], 404)
+        poster.assert_not_called()
+
+    def test_plex_thumb_helper(self):
+        self.assertEqual(web.plex_thumb(10), self.THUMB)
+        self.assertIsNone(web.plex_thumb(11))
+        web._state.update(result=fake_result())  # fakes without "thumbs"
+        self.assertIsNone(web.plex_thumb(10))
 
 
 class TestReview1HeaderInjection(AsyncCase):
@@ -801,7 +1038,7 @@ class TestReview7Hardening(AsyncCase):
 
 
 POST_ROUTES = (("/settings?section=arr", "action=save&RADARR_URL=http%3A%2F%2Fevil"),
-               ("/add", "type=movie&id=1"), ("/dismiss", "type=movie&id=1"), ("/undismiss", "type=movie&id=1"),
+               ("/rate", "type=movie&id=1&stars=3"), ("/add", "type=movie&id=1"), ("/dismiss", "type=movie&id=1"), ("/undismiss", "type=movie&id=1"),
                ("/refresh", ""), ("/ai/generate", ""))
 
 
@@ -839,6 +1076,7 @@ class TestCsrf(AsyncCase):
             self.assertIsNone(resp_headers.get("Location"))
         self.assertIsNone(db.get_setting("RADARR_URL"))
         self.assertEqual(db.dismissed(), set())
+        self.assertEqual(db.ratings(), {})
         self.mock_add_to_library.assert_not_called()
         self.mock_generate_ai_recommendations.assert_not_called()
         self.mock_run.assert_not_called()

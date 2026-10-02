@@ -37,6 +37,11 @@ class TestTmdbIdFromMetadata(unittest.TestCase):
         self.assertIsNone(_tmdb_id_from_metadata({"guids": [{"id": "imdb://tt1"}]}))
         self.assertIsNone(_tmdb_id_from_metadata({}))
 
+    def test_non_ascii_digit_in_legacy_guid_does_not_raise(self):
+        meta = {"guid": "com.plexapp.agents.themoviedb://12\u00b2?lang=en"}
+        self.assertEqual(_tmdb_id_from_metadata(meta), 12)
+        self.assertIsNone(_tmdb_id_from_metadata({"guid": "com.plexapp.agents.themoviedb://\u00b2"}))
+
 
 class TestTautulliClient(unittest.TestCase):
     def setUp(self):
@@ -86,6 +91,43 @@ class TestTautulliClient(unittest.TestCase):
                          ("movie", 329865, "Arrival", 2, 9.0))
         self.assertTrue(item["last_viewed"].startswith("2025-"))
         self.assertIsNone(item["progress"])
+
+    def test_load_carries_rating_key_and_thumb(self):
+        row = {"media_type": "movie", "rating_key": "100", "date": 1750000000, "watched_status": 1}
+        meta = dict(MOVIE_META, thumb="/library/metadata/100/thumb/5")
+
+        def fake_get_json(url, headers=None, params=None, **kw):
+            return history_response([row]) if params.get("cmd") == "get_history" else metadata_response(meta)
+
+        with mock.patch.object(tautulli, "get_json", side_effect=fake_get_json):
+            watched, _ = self.client.load()
+        self.assertEqual((watched[0]["rating_key"], watched[0]["thumb"]), (100, "/library/metadata/100/thumb/5"))
+        meta.pop("thumb")
+        with mock.patch.object(tautulli, "get_json", side_effect=fake_get_json):
+            watched, _ = self.client.load()
+        self.assertEqual((watched[0]["rating_key"], watched[0]["thumb"]), (100, None))
+
+    def test_non_ascii_digit_rating_key_and_year_do_not_crash(self):
+        row = {"media_type": "movie", "rating_key": "\u00b2", "date": 1750000000, "watched_status": 1}
+        meta = dict(MOVIE_META, year="\u00b2")
+
+        def fake_get_json(url, headers=None, params=None, **kw):
+            return history_response([row]) if params.get("cmd") == "get_history" else metadata_response(meta)
+
+        with mock.patch.object(tautulli, "get_json", side_effect=fake_get_json):
+            watched, _ = self.client.load()
+        self.assertEqual((watched[0]["rating_key"], watched[0]["year"]), (None, None))
+
+    def test_show_rating_key_is_the_group_key(self):
+        episodes = [{"media_type": "episode", "rating_key": "201", "grandparent_rating_key": "200",
+                     "date": 1750000000, "watched_status": 1}]
+
+        def fake_get_json(url, headers=None, params=None, **kw):
+            return history_response(episodes) if params.get("cmd") == "get_history" else metadata_response(SHOW_META)
+
+        with mock.patch.object(tautulli, "get_json", side_effect=fake_get_json):
+            watched, _ = self.client.load()
+        self.assertEqual(watched[0]["rating_key"], 200)
 
     def test_load_groups_episodes_under_the_show_and_computes_progress(self):
         episodes = [

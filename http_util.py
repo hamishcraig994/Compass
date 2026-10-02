@@ -46,6 +46,36 @@ def get_json(url, headers=None, params=None, timeout=20, retries=2):
             raise
 
 
+def get_bytes(url, headers=None, params=None, timeout=10, max_bytes=2_000_000, retries=2):
+    """GET url and return (content_type, data) - for images. Same retry and error rules as get_json;
+    RuntimeError if the body is bigger than max_bytes."""
+    if params:
+        url += ("&" if "?" in url else "?") + urlencode(params)
+    request = urllib.request.Request(url, headers=headers or {})
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                data = response.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    raise RuntimeError("Response too large")
+                content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                return content_type, data
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503, 504) and attempt < retries:
+                try:
+                    wait = min(10, int(e.headers.get("Retry-After", "")))
+                except ValueError:
+                    wait = attempt + 1
+                time.sleep(wait)
+                continue
+            raise RuntimeError(_http_error_message(e)) from e
+        except (urllib.error.URLError, TimeoutError):
+            if attempt < retries:
+                time.sleep(attempt + 1)
+                continue
+            raise
+
+
 def post_json(url, headers=None, body=None, timeout=20):
     """POST a JSON body and return the decoded JSON response. No retries, unlike get_json - this is
     for write actions (e.g. adding a movie to Radarr), where blindly retrying a failed write is

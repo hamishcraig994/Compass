@@ -36,7 +36,8 @@ class TestPlexParsing(unittest.TestCase):
 
 class FakePlex(plex.PlexClient):
     """Serves canned Plex answers, two items per page, to exercise paging."""
-    LIBRARY = [{"title": f"M{n}", "viewCount": n % 2, "Guid": [{"id": f"tmdb://{n}"}]} for n in range(5)] + [{"title": "no id"}]
+    LIBRARY = [{"title": f"M{n}", "viewCount": n % 2, "ratingKey": str(100 + n), "thumb": f"/library/metadata/{100 + n}/thumb/1",
+                "Guid": [{"id": f"tmdb://{n}"}]} for n in range(5)] + [{"title": "no id"}]
 
     def _get(self, path, params=None):
         if path == "/library/sections":
@@ -47,10 +48,68 @@ class FakePlex(plex.PlexClient):
 
 class TestPlexLoad(unittest.TestCase):
     def test_paging_music_skipping_and_watched_split(self):
-        watched, library_keys, skipped = FakePlex("http://x", "t").load()
+        watched, library_keys, skipped, library = FakePlex("http://x", "t").load()
         self.assertEqual(library_keys, {("movie", n) for n in range(5)})
         self.assertEqual(sorted(w["tmdb_id"] for w in watched), [1, 3])
         self.assertEqual(skipped, 1)
+
+    def test_load_is_a_4_tuple_and_library_includes_titles_without_a_tmdb_id(self):
+        result = FakePlex("http://x", "t").load()
+        self.assertEqual(len(result), 4)
+        library = result[3]
+        self.assertEqual(len(library), 6)
+        self.assertEqual([i["tmdb_id"] for i in library], [0, 1, 2, 3, 4, None])
+        self.assertEqual(library[-1]["title"], "no id")
+        self.assertEqual(library[0]["rating_key"], 100)
+        self.assertEqual(library[0]["thumb"], "/library/metadata/100/thumb/1")
+
+
+class TestPlexLibraryItems(unittest.TestCase):
+    def test_parse_library_item_without_tmdb_id(self):
+        item = plex.parse_library_item({"title": "Old", "ratingKey": "7", "addedAt": 1750000000}, "movie")
+        self.assertIsNone(item["tmdb_id"])
+        self.assertEqual(item["rating_key"], 7)
+        self.assertTrue(item["added_at"].startswith("2025-"))
+
+    def test_bad_rating_key_and_missing_thumb(self):
+        item = plex.parse_library_item({"title": "X", "ratingKey": "abc"}, "movie")
+        self.assertEqual((item["rating_key"], item["thumb"], item["added_at"]), (None, None, None))
+
+    def test_only_library_thumbs_are_kept(self):
+        for bad in ("http://evil.example/x.jpg", "//evil/x", "/photo/:/transcode?url=x", "", 5):
+            self.assertIsNone(plex.parse_library_item({"title": "X", "thumb": bad}, "movie")["thumb"], bad)
+        self.assertEqual(plex.parse_library_item({"title": "X", "thumb": "/library/metadata/1/thumb/2"}, "movie")["thumb"],
+                         "/library/metadata/1/thumb/2")
+
+    def test_parse_item_gains_rating_key_and_thumb(self):
+        item = plex.parse_item({"title": "A", "ratingKey": "9", "thumb": "/library/metadata/9/thumb/1",
+                                "Guid": [{"id": "tmdb://5"}]}, "movie")
+        self.assertEqual((item["rating_key"], item["thumb"]), (9, "/library/metadata/9/thumb/1"))
+        self.assertNotIn("added_at", item)
+
+
+class TestPlexPoster(unittest.TestCase):
+    def test_token_is_sent_as_a_header_not_in_the_url(self):
+        calls = []
+
+        def fake(url, headers=None, params=None, **kw):
+            calls.append((url, headers, params))
+            return "image/jpeg", b"JPEG"
+
+        with mock.patch.object(plex, "get_bytes", fake):
+            result = plex.PlexClient("http://plex:32400/", "SECRET").poster("/library/metadata/1/thumb/2")
+        self.assertEqual(result, ("image/jpeg", b"JPEG"))
+        url, headers, params = calls[0]
+        self.assertEqual(url, "http://plex:32400/photo/:/transcode")
+        self.assertEqual(headers, {"X-Plex-Token": "SECRET"})
+        self.assertNotIn("SECRET", url + str(params))
+        self.assertEqual(params["url"], "/library/metadata/1/thumb/2")
+        self.assertEqual((params["width"], params["height"]), (342, 513))
+
+    def test_non_image_raises(self):
+        with mock.patch.object(plex, "get_bytes", return_value=("text/html", b"<html>")):
+            with self.assertRaises(RuntimeError):
+                plex.PlexClient("http://x", "t").poster("/library/x")
 
 
 RAW_MOVIE = {

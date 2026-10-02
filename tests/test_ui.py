@@ -294,6 +294,159 @@ class TestStaticAssets(unittest.TestCase):
                 self.assertIn(kind, r.headers.get("Content-Type"))
 
 
+class TestLibraryPage(PatchedState):
+    def lib(self, **kw):
+        base = {"media_type": "movie", "tmdb_id": 5, "title": "Arrival", "year": 2016, "added_at": "2024-03-01T10:00:00Z",
+                "watched": False, "progress": None, "poster_key": None, "url": None}
+        base.update(kw)
+        return base
+
+    def wat(self, **kw):
+        base = {"media_type": "movie", "tmdb_id": 5, "title": "Arrival", "year": 2016, "last_viewed": "2024-05-02T10:00:00Z",
+                "view_count": 1, "poster_key": None, "poster_url": None, "url": None, "stars": None, "plex_stars": None}
+        base.update(kw)
+        return base
+
+    def render(self, items, tab="all", **kw):
+        self.use(result())
+        with mock.patch.object(web, "library_items", return_value=items):
+            return web.render_library(tab=tab, **kw)
+
+    def test_every_tab_escapes_hostile_titles(self):
+        for tab in ("all", "movie", "tv", "watched", "added"):
+            maker = self.wat if tab == "watched" else self.lib
+            kind = "tv" if tab == "tv" else "movie"
+            html = self.render([maker(title="<script>alert(1)</script>", url="javascript:alert(1)", media_type=kind)], tab=tab)
+            self.assertNotIn("<script>alert", html, tab)
+            self.assertIn("&lt;script&gt;alert(1)", html, tab)
+            self.assertNotIn("javascript:", html, tab)
+
+    def test_poster_key_uses_the_proxy_and_never_leaks_thumbs(self):
+        html = self.render([self.lib(poster_key=42, thumb="/library/metadata/42/thumb/1")])
+        self.assertIn('src="/poster?key=42"', html)
+        self.assertNotIn("/library/metadata", html)
+        self.assertNotIn("X-Plex-Token", html)
+
+    def test_poster_url_wins_over_poster_key(self):
+        html = self.render([self.wat(poster_key=42, poster_url="https://img.example/p.jpg")], tab="watched")
+        self.assertIn('src="https://img.example/p.jpg"', html)
+        self.assertNotIn("/poster?key=", html)
+
+    def test_no_tmdb_id_renders_a_placeholder(self):
+        html = self.render([self.lib(tmdb_id=None)])
+        self.assertIn("poster-empty", html)
+
+    def test_badges_watched_and_started(self):
+        html = self.render([self.lib(watched=True), self.lib(title="Half", progress=0.4)])
+        self.assertIn(">Watched<", html)
+        self.assertIn(">Started<", html)
+
+    def test_subtabs_carry_only_type_and_q_and_active_is_marked(self):
+        html = self.render([self.lib()], tab="movie", q="arr", sort="title", show="unwatched", page=1)
+        self.assertIn('class="subtab on" href="/library?type=movie&amp;q=arr"', html)
+        self.assertIn('href="/library?type=watched&amp;q=arr"', html)
+        self.assertNotRegex(html, r'class="subtab[^"]*" href="[^"]*sort=')
+        for label in ("All", "Movies", "TV shows", "Watched", "Added here"):
+            self.assertIn(f">{label}</a>", html)
+
+    def test_toolbar_is_a_get_form_following_the_tab(self):
+        html = self.render([self.lib()], tab="all")
+        self.assertIn('<form class="toolbar" method="get" action="/library" role="search">', html)
+        self.assertIn('<input type="hidden" name="type" value="all">', html)
+        self.assertIn('type="search" name="q"', html)
+        self.assertIn('name="sort"', html)
+        self.assertIn('<option value="unwatched">', html)
+        watched = self.render([self.wat()], tab="watched")
+        self.assertIn('<option value="rated">', watched)
+        self.assertNotIn('<option value="unwatched">', watched)
+        added = self.render([self.lib()], tab="added")
+        self.assertNotIn('name="show"', added)
+
+    def test_pager_keeps_params_and_is_omitted_for_one_page(self):
+        items = [self.lib(tmdb_id=n, title=f"Film {n:03d}") for n in range(1, 120)]
+        html = self.render(items, tab="movie", q="Film", sort="title", show="all", page=2)
+        self.assertIn("Page 2 of 3", html)
+        self.assertIn('href="/library?type=movie&amp;q=Film&amp;sort=title&amp;show=all"', html)   # previous = page 1
+        self.assertIn('href="/library?type=movie&amp;q=Film&amp;sort=title&amp;show=all&amp;page=3"', html)
+        self.assertNotIn('class="pager"', self.render([self.lib()]))
+
+    def test_added_tab_shows_added_date_and_year_in_title(self):
+        html = self.render([self.lib(title="M", year=2020)], tab="added")
+        self.assertIn("M (2020)", html)
+        self.assertIn("Added 2024-03-01", html)
+
+    def test_rate_form_personal_rating(self):
+        html = self.render([self.wat(stars=4, plex_stars=5)], tab="watched")
+        self.assertEqual(html.count('name="stars"'), 6)  # 5 stars + Clear
+        self.assertEqual(html.count('aria-pressed="true"'), 1)
+        self.assertRegex(html, r'value="4" class="star on" aria-pressed="true"')
+        self.assertIn("Your rating: 4/5", html)
+        self.assertIn("star-clear", html)
+        self.assertNotIn("from-plex", html)
+        self.assertIn('data-enhance="rate"', html)
+        self.assertIn('name="return_to" value="/library?type=watched&amp;sort=recent&amp;show=all"', html)
+
+    def test_rate_form_plex_fallback_and_unrated(self):
+        html = self.render([self.wat(plex_stars=5)], tab="watched")
+        self.assertIn("From Plex: 5/5", html)
+        self.assertIn("from-plex", html)
+        self.assertNotIn('aria-pressed="true"', html)
+        self.assertNotIn("star-clear", html)
+        plain = self.render([self.wat()], tab="watched")
+        self.assertIn("Not rated", plain)
+        self.assertEqual(plain.count('name="stars"'), 5)
+
+    def test_ratings_changed_note_and_refresh_form(self):
+        with mock.patch.object(web, "ratings_changed", return_value=True):
+            html = self.render([self.wat()], tab="watched")
+        self.assertIn("Your ratings changed - refresh to update your recommendations.", html)
+        self.assertIn('action="/refresh"', html)
+        self.assertNotIn("Your ratings changed", self.render([self.wat()], tab="watched"))
+        self.assertNotIn("Your ratings changed", self.render([self.lib()], tab="all"))
+
+    def test_sample_mode_notes_that_ratings_are_not_saved(self):
+        html = self.render([self.wat()], tab="watched")
+        self.assertIn("Sample data - ratings aren't saved.", html)
+
+    def test_states(self):
+        self.use(None, st=status("building", has_result=False))
+        html = web.render_library(tab="all")
+        self.assertIn('data-poll="recs"', html)
+        self.assertIn('http-equiv="refresh"', html)
+        self.use(None, st=status("error", has_result=False, error="boom <b>"))
+        html = web.render_library(tab="watched")
+        self.assertIn("boom &lt;b&gt;", html)
+        self.assertIn("Connect Plex to browse your library", self.render(None, tab="all"))
+        self.assertIn('href="/settings?section=plex"', self.render(None, tab="all"))
+        self.assertIn("Nothing watched yet", self.render([], tab="watched"))
+        none = self.render([self.lib()], q="zzz")
+        self.assertIn("Nothing matches", none)
+        self.assertIn('href="/library?type=all"', none)
+
+    def test_added_tab_needs_no_build(self):
+        self.use(None, st=status("building", has_result=False))
+        html = web.render_library(tab="added")
+        self.assertIn("Nothing added yet", html)
+        self.assertNotIn("data-poll", html)
+
+    def test_home_added_tile_links_to_added_tab(self):
+        self.use(result())
+        self.assertIn('href="/library?type=added"', web.render_home())
+
+    def test_rate_native_fallback_carries_the_star_value(self):
+        js = read_static("app.js")
+        rate = js[js.index("rate: function"):js.index("generate: function")]
+        self.assertIn('name: "stars"', rate)
+        self.assertIn("nativeRate()", rate)
+        self.assertNotIn("nativeSubmit(form); return;", rate)
+
+    def test_app_js_has_rate_handler_without_innerhtml_additions(self):
+        js = read_static("app.js")
+        self.assertIn("rate: function", js)
+        self.assertIn("e.submitter", js)
+        self.assertEqual(js.count("innerHTML"), 1)
+
+
 class TestSettingsRestyle(unittest.TestCase):
     def test_settings_keeps_logic_but_uses_new_wrapper(self):
         import settings_page

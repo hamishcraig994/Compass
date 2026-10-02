@@ -8,6 +8,7 @@ MIN_RECENCY = 0.15     # ...but old favourites never vanish completely
 CATEGORIES = ("genre", "keyword", "director", "actor")
 FIELD = {"genre": "genres", "keyword": "keywords", "director": "directors", "actor": "cast"}
 MIN_APPEARANCES = {"director": 2, "actor": 2}  # one appearance is a coincidence, two is a pattern
+DISLIKE_MAX_STARS = 2  # 1-2 stars: no taste input, and linked titles are pushed down (see recommend.py)
 GENRE_DAMPING = {"Drama": 0.4}  # so common it says little about taste; don't let it dominate the profile
 
 
@@ -30,6 +31,31 @@ def item_weight(item, now=None):
     if progress is not None and progress < 0.25:  # started a show and drifted away
         weight *= 0.4
     return weight
+
+
+def stars_from_ten(rating):
+    """Plex's 0-10 rating -> 1-5 whole stars (rounding half up), or None if there isn't a usable one."""
+    try:
+        r = float(rating)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(r) or r <= 0:
+        return None
+    return max(1, min(5, int(r / 2 + 0.5)))
+
+
+def apply_ratings(watched, ratings):
+    """Copies of watched with your own star ratings laid over the Plex/Tautulli ones (stars * 2, the
+    same 0-10 scale). Unrated titles are untouched. ratings: {(media_type, tmdb_id): stars}."""
+    out = []
+    for item in watched:
+        stars = ratings.get((item["media_type"], item["tmdb_id"]))
+        item = dict(item)
+        if stars is not None:
+            item["user_rating"] = stars * 2
+            item["personal_stars"] = stars
+        out.append(item)
+    return out
 
 
 def build(pairs, now=None):

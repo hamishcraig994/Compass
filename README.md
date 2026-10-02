@@ -47,6 +47,17 @@ Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gent
 - **JavaScript is optional.** It's one small plain-JS file (`static/app.js`, no libraries) that
   enhances ordinary forms. With it off, every button still works as a normal form post, Undo is a
   note at the top of the page, and loading screens reload themselves every 5 seconds instead.
+- **Library** (sidebar) shows what's in your Plex library as a poster grid, with tabs for All,
+  Movies, TV shows, **Watched** and "Added here" (what you added through Radarr/Sonarr), plus
+  search, filters, sorting and paging. Posters are fetched through the app (`/poster`), so your Plex
+  token never reaches the browser. No new Plex requests are made per page view; it uses the
+  snapshot from the last build.
+- **Rate what you've watched.** The Watched tab lists your history with 1-5 star buttons. Your
+  rating overrides your Plex rating (clear it to fall back to Plex's) and feeds the taste profile:
+  4-5 stars count more, 3 counts less, 1-2 count for nothing, and titles TMDB links to a 1 or 2
+  star title are ranked lower (never hidden). Ratings are stored locally in SQLite and are never
+  written to Plex. After rating, "Update recommendations" rebuilds the list. In sample mode the
+  stars show but nothing is saved.
 - Dark by default, with a light theme if your device asks for one; the sidebar becomes a bottom
   bar on phones.
 

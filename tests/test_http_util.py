@@ -6,7 +6,7 @@ import urllib.error
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from http_util import get_json, post_json
+from http_util import get_bytes, get_json, post_json
 
 # Every other test in this suite mocks get_json/post_json themselves at the module boundary -
 # this file is the one place that actually exercises urllib's error handling, which is exactly
@@ -81,6 +81,58 @@ class TestPostJsonErrors(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 post_json("http://x", body={})
         self.assertEqual(len(calls), 1)
+
+
+class FakeResponse:
+    def __init__(self, data, content_type="image/jpeg"):
+        self._data, self.headers = data, {"Content-Type": content_type}
+
+    def read(self, n=-1):
+        return self._data if n < 0 else self._data[:n]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class TestGetBytes(unittest.TestCase):
+    def test_returns_content_type_and_data(self):
+        with mock.patch("urllib.request.urlopen", return_value=FakeResponse(b"abc", "image/PNG; charset=x")) as urlopen:
+            self.assertEqual(get_bytes("http://x", headers={"X-Plex-Token": "T"}, params={"a": 1}), ("image/png", b"abc"))
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://x?a=1")
+        self.assertEqual(request.get_header("X-plex-token"), "T")
+
+    def test_max_bytes_is_enforced(self):
+        with mock.patch("urllib.request.urlopen", return_value=FakeResponse(b"x" * 11)):
+            with self.assertRaises(RuntimeError):
+                get_bytes("http://x", max_bytes=10)
+        with mock.patch("urllib.request.urlopen", return_value=FakeResponse(b"x" * 10)):
+            self.assertEqual(len(get_bytes("http://x", max_bytes=10)[1]), 10)
+
+    def test_http_error_message_matches_get_json(self):
+        body = b'{"error": "nope"}'
+        with mock.patch("urllib.request.urlopen", side_effect=http_error(404, body, "Not Found")):
+            with self.assertRaises(RuntimeError) as a:
+                get_bytes("http://x")
+        with mock.patch("urllib.request.urlopen", side_effect=http_error(404, body, "Not Found")):
+            with self.assertRaises(RuntimeError) as b:
+                get_json("http://x")
+        self.assertEqual(str(a.exception), str(b.exception))
+
+    def test_retries_on_5xx_then_gives_up(self):
+        calls = []
+
+        def fake(request, timeout=None):
+            calls.append(1)
+            raise http_error(503, b"busy")
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake), mock.patch("time.sleep"):
+            with self.assertRaises(RuntimeError):
+                get_bytes("http://x")
+        self.assertEqual(len(calls), 3)
 
 
 if __name__ == "__main__":

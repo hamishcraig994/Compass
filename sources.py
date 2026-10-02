@@ -4,6 +4,7 @@ import ai
 import config
 import db
 import plex
+import profile
 import radarr
 import recommend
 import sample
@@ -37,7 +38,8 @@ def _arr_exclusions(notes):
 
 
 def _load_live():
-    """Returns (watched, library_keys, notes)."""
+    """Returns (watched, library_keys, notes, library). library is Plex's full item list (raw
+    parse_library_item() dicts, thumbs included), or None when there's no PLEX_TOKEN to read it with."""
     notes = []
     if config.HISTORY_SOURCE == "tautulli":
         watched, skipped = tautulli.TautulliClient(config.TAUTULLI_URL, config.TAUTULLI_API_KEY,
@@ -47,16 +49,63 @@ def _load_live():
         if config.PLEX_TOKEN:
             # Only used for "everything currently in the library" (to exclude owned-but-unwatched
             # titles) - Tautulli's own history above is what actually drives the taste profile.
-            _, library_keys, _ = plex.PlexClient(config.PLEX_URL, config.PLEX_TOKEN).load()
+            _, library_keys, _, library = plex.PlexClient(config.PLEX_URL, config.PLEX_TOKEN).load()
         else:
-            library_keys = set()
+            library_keys, library = set(), None
             notes.append("PLEX_TOKEN not set: can't exclude titles you own but haven't watched yet.")
     else:
-        watched, library_keys, skipped = plex.PlexClient(config.PLEX_URL, config.PLEX_TOKEN).load()
+        watched, library_keys, skipped, library = plex.PlexClient(config.PLEX_URL, config.PLEX_TOKEN).load()
         if skipped:
             notes.append(f"{skipped} Plex titles have no TMDB id and were ignored (try Plex's newer 'Plex Movie/TV' agents).")
     library_keys = set(library_keys) | _arr_exclusions(notes)
-    return watched, library_keys, notes
+    return watched, library_keys, notes, library
+
+
+def _valid_thumb(thumb):
+    """Only Plex paths under /library/ are kept, so the poster proxy can't be aimed at another host."""
+    return thumb if isinstance(thumb, str) and thumb.startswith("/library/") else None
+
+
+def _snapshot(watched, library, tmdb_client=None):
+    """What the Library page shows, kept in the build result so pages never call Plex or TMDB.
+    Returns (library_items | None, watched_items, thumbs). thumbs: {ratingKey: thumb path} - server
+    side only; no item dict carries a thumb. Watched posters/links come from TMDB's local cache only
+    (tmdb_client.cached_details), never a request."""
+    thumbs = {}
+
+    def poster_key(raw):
+        key, thumb = raw.get("rating_key"), _valid_thumb(raw.get("thumb"))
+        if config.PLEX_TOKEN and isinstance(key, int) and not isinstance(key, bool) and thumb:
+            thumbs[key] = thumb
+            return key
+        return None
+
+    library_items = None
+    if library is not None:
+        library_items = []
+        for raw in library:
+            tmdb_id = raw.get("tmdb_id")
+            library_items.append({
+                "media_type": raw["media_type"], "tmdb_id": tmdb_id, "title": raw.get("title") or "?",
+                "year": raw.get("year"), "added_at": raw.get("added_at"),
+                "watched": (raw.get("view_count") or 0) > 0, "progress": raw.get("progress"),
+                "poster_key": poster_key(raw),
+                "url": f"https://www.themoviedb.org/{raw['media_type']}/{tmdb_id}" if tmdb_id else None})
+    watched_items = []
+    for raw in watched:
+        details = None
+        if tmdb_client is not None:
+            try:
+                details = tmdb_client.cached_details(raw["media_type"], raw["tmdb_id"])
+            except Exception:
+                details = None
+        watched_items.append({
+            "media_type": raw["media_type"], "tmdb_id": raw["tmdb_id"], "title": raw.get("title") or "?",
+            "year": raw.get("year"), "last_viewed": raw.get("last_viewed"), "user_rating": raw.get("user_rating"),
+            "view_count": raw.get("view_count") or 0, "progress": raw.get("progress"),
+            "poster_key": poster_key(raw),
+            "poster_url": (details or {}).get("poster_url"), "url": (details or {}).get("url")})
+    return library_items, watched_items, thumbs
 
 
 def ai_client():
@@ -70,11 +119,17 @@ def run(sample_mode, limit=200):
     if sample_mode:
         watched, library_keys = sample.load()
         result = recommend.recommend(watched, library_keys, sample.SampleTmdb(), limit=limit)
+        snapshot = _snapshot(watched, sample.library_items())  # sample mode ignores stored ratings and the TMDB cache
         notes = ["Showing made-up sample data. Add PLEX_TOKEN/TAUTULLI_* and TMDB_TOKEN to use your own library."]
     else:
-        watched, library_keys, notes = _load_live()
-        result = recommend.recommend(watched, library_keys, tmdb.TmdbClient(config.TMDB_TOKEN),
-                                     dismissed=db.dismissed(), limit=limit)
+        watched, library_keys, notes, library = _load_live()
+        client = tmdb.TmdbClient(config.TMDB_TOKEN)
+        ratings = db.ratings()
+        result = recommend.recommend(profile.apply_ratings(watched, ratings), library_keys, client,
+                                     dismissed=db.dismissed(), limit=limit,
+                                     disliked={k: s for k, s in ratings.items() if s <= profile.DISLIKE_MAX_STARS})
+        snapshot = _snapshot(watched, library, client)  # raw history: your ratings are overlaid when shown
+    result["library"], result["watched"], result["thumbs"] = snapshot
     result["notes"] = notes + result["notes"]
     result["sample"] = sample_mode
     result["watched_count"] = len(watched)
@@ -90,9 +145,11 @@ def generate_ai_recommendations(limit=50):
     if not config.ai_configured():
         return {"items": [], "profile": empty_profile, "notes": ["AI isn't configured - add a token in "
                 "Settings -> AI first."], "sample": False, "watched_count": 0}
-    watched, library_keys, notes = _load_live()
-    result = recommend.recommend(watched, library_keys, tmdb.TmdbClient(config.TMDB_TOKEN),
-                                 dismissed=db.dismissed(), limit=limit, ai=ai_client(), ai_only=True)
+    watched, library_keys, notes, _ = _load_live()
+    ratings = db.ratings()
+    result = recommend.recommend(profile.apply_ratings(watched, ratings), library_keys, tmdb.TmdbClient(config.TMDB_TOKEN),
+                                 dismissed=db.dismissed(), limit=limit, ai=ai_client(), ai_only=True,
+                                 disliked={k: s for k, s in ratings.items() if s <= profile.DISLIKE_MAX_STARS})
     result["notes"] = notes + result["notes"]
     result["sample"] = False
     result["watched_count"] = len(watched)

@@ -37,7 +37,7 @@ def _tmdb_id_from_metadata(meta):
                 return None
     single = meta.get("guid") or ""
     if "themoviedb" in single or "tmdb://" in single:
-        digits = "".join(ch for ch in single.rsplit("/", 1)[-1] if ch.isdigit())
+        digits = "".join(ch for ch in single.rsplit("/", 1)[-1] if ch.isascii() and ch.isdigit())
         return int(digits) if digits else None
     return None
 
@@ -121,11 +121,14 @@ class TautulliClient:
                 if total:
                     progress = min(1.0, len(g["episodes"]) / total)
             year = meta.get("year")
+            thumb = meta.get("thumb")  # raw; sources.py only keeps ones under /library/
             watched.append({
+                "rating_key": int(rating_key) if str(rating_key).isascii() and str(rating_key).isdigit() else None,
+                "thumb": thumb if isinstance(thumb, str) else None,
                 "media_type": g["media_type"],
                 "tmdb_id": tmdb_id,
                 "title": meta.get("title") or meta.get("full_title") or "?",
-                "year": int(year) if str(year or "").isdigit() else None,
+                "year": int(year) if str(year or "").isascii() and str(year or "").isdigit() else None,
                 "last_viewed": datetime.fromtimestamp(g["last"], timezone.utc).isoformat() if g["last"] else None,
                 "user_rating": meta.get("user_rating"),
                 "view_count": g["plays"] or 1,

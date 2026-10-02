@@ -268,8 +268,71 @@ a.tile .tile-value { color: var(--accent-text); }
 @keyframes card-in { from { opacity: 0; transform: scale(.94); } }
 
 /* Library cards: no actions */
-.card .added { font-size: .82rem; color: var(--muted); margin: -4px 0 0; }
 
+/* ---------- Library: toolbar, pager ---------- */
+.toolbar {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; margin: 0 0 20px;
+}
+.toolbar label {
+  display: grid; gap: 4px; min-width: 0; font-size: .78rem; font-weight: 650; color: var(--muted);
+}
+.toolbar label:has(input[type="search"]) { flex: 1 1 100%; }
+.toolbar select { min-width: 0; }
+.toolbar label:has(select) { flex: 1 1 130px; max-width: 220px; }
+.toolbar .btn-ghost { min-height: 44px; flex: none; }
+.toolbar input[type="search"] { -webkit-appearance: none; appearance: none; }
+@media (min-width: 640px) {
+  .toolbar label:has(input[type="search"]) { flex: 1 1 260px; max-width: 420px; }
+}
+
+.pager {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px 16px; margin: 28px 0 0;
+}
+.pager a {
+  display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 8px 16px;
+  border-radius: 999px; border: 1px solid var(--line); color: var(--text); background: var(--surface);
+  text-decoration: none; font-size: .92rem; font-weight: 650;
+}
+.pager a:hover { border-color: var(--muted); }
+.pager > span.muted { display: inline-flex; align-items: center; min-height: 40px; padding: 8px 16px; opacity: .65; }
+.pager-status { color: var(--muted); font-size: .88rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+@media (max-width: 520px) {
+  .pager-status { order: -1; flex: 1 1 100%; text-align: center; }
+  .pager a, .pager > span.muted { flex: 1 1 0; }
+}
+
+/* ---------- Watched: star rating ---------- */
+:root {
+  --star-off: #6b7488;        /* unselected star (3:1+ on --bg and --surface) */
+  --star-on: #ffb224;         /* your rating */
+  --star-plex: #a8996f;      /* rating inherited from Plex (muted, not yours) */
+}
+@media (prefers-color-scheme: light) {
+  /* luminance order on (darkest) > plex > off (lightest); off >= 3:1 on --bg and --surface */
+  :root { --star-off: #828a9a; --star-on: #8a4f00; --star-plex: #a8691a; }
+}
+.rate { display: grid; gap: 2px; margin: 0; min-width: 0; }
+.stars { display: flex; flex-wrap: nowrap; align-items: center; gap: 0; margin: 0 -2px; }
+.star {
+  flex: 0 1 30px; width: 30px; min-width: 22px; min-height: 32px; height: 32px; padding: 0; gap: 0;
+  border: 0; border-radius: 6px; background: transparent; color: var(--star-off);
+  font-size: 1.5rem; line-height: 1; font-weight: 400;
+  transition: color .15s, transform .1s;
+}
+.star:hover { border-color: transparent; }
+.star:active { transform: scale(.88); }
+.star.on { color: var(--star-on); }
+.star.on.from-plex { color: var(--star-plex); }
+@media (hover: hover) {
+  .stars:hover .star { color: var(--star-off); }
+  .stars:hover .star:hover, .stars:hover .star:has(~ .star:hover) { color: var(--star-on); }
+}
+.rating-text { margin: 0; font-size: .8rem; color: var(--muted); }
+.star-clear {
+  justify-self: start; min-height: 28px; padding: 2px 2px; font-size: .8rem; font-weight: 650;
+  color: var(--accent-text); background: none; border: 0;
+}
+.star-clear:hover { border-color: transparent; text-decoration-thickness: 2px; }
 /* ---------- Empty / building / error screens ---------- */
 .empty, .building {
   display: grid; justify-items: center; gap: 12px; text-align: center; padding: clamp(40px, 10vh, 96px) 20px;
@@ -306,11 +369,11 @@ fieldset {
 }
 legend { padding: 0 8px; font-weight: 800; font-size: 1rem; }
 fieldset label { display: grid; gap: 6px; font-size: .88rem; font-weight: 600; color: var(--muted); }
-input[type="text"], input[type="password"], select {
+input[type="text"], input[type="search"], input[type="password"], select {
   width: 100%; min-height: 44px; padding: 10px 12px; font: inherit; font-size: 1rem; color: var(--text);
   background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
 }
-input[type="text"]:focus, input[type="password"]:focus, select:focus { border-color: var(--accent); }
+input[type="text"]:focus, input[type="search"]:focus, input[type="password"]:focus, select:focus { border-color: var(--accent); }
 input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); }
 .checkbox-label { display: flex !important; flex-direction: row; align-items: center; gap: 10px; color: var(--text) !important; }
 .settings { max-width: 720px; }

@@ -79,5 +79,32 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(s["genre"], ["b"])
 
 
+class TestRatings(unittest.TestCase):
+    def test_stars_from_ten(self):
+        self.assertEqual(profile.stars_from_ten(7.0), 4)
+        self.assertEqual(profile.stars_from_ten("8"), 4)
+        self.assertEqual(profile.stars_from_ten(10), 5)
+        self.assertEqual(profile.stars_from_ten(2), 1)
+        self.assertEqual(profile.stars_from_ten(1), 1)
+        for bad in (None, 0, "0", "x", "", float("nan"), -3, [], float("inf")):
+            self.assertIsNone(profile.stars_from_ten(bad), bad)
+
+    def test_apply_ratings_overrides_without_mutating(self):
+        a, b = item(user_rating=9.0, media_type="movie", tmdb_id=1), item(media_type="tv", tmdb_id=1)
+        original = [dict(a), dict(b)]
+        out = profile.apply_ratings([a, b], {("movie", 1): 4})
+        self.assertEqual([a, b], original)
+        self.assertEqual((out[0]["user_rating"], out[0]["personal_stars"]), (8, 4))
+        self.assertEqual(out[1], b)  # same id, other media type: untouched
+        self.assertNotIn("personal_stars", out[1])
+        self.assertIsNot(out[1], b)
+
+    def test_stars_scale_matches_item_weight(self):
+        w = lambda stars: profile.item_weight(profile.apply_ratings([item(media_type="movie", tmdb_id=1)], {("movie", 1): stars})[0], NOW)
+        self.assertEqual((w(1), w(2)), (0.0, 0.0))
+        self.assertGreater(w(5), w(4))
+        self.assertGreater(w(4), w(3))
+
+
 if __name__ == "__main__":
     unittest.main()

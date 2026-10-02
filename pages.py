@@ -4,6 +4,7 @@ Frontend-owned (see .claude/ownership.json); web.py owns state, the HTTP handler
 Reads state only through the web module (web.get_result_nowait(), web._ai_state, ...), never by
 importing names from it, so tests that patch web.<name> affect rendering too."""
 import time
+import zlib
 from html import escape
 from urllib.parse import urlencode
 
@@ -36,12 +37,24 @@ def _title_text(item):
 
 
 def _poster_html(item):
-    """The real poster, or a tinted placeholder carrying the title (sample data has no posters)."""
+    """The real poster (TMDB url, else the server-side Plex proxy by ratingKey), or a tinted
+    placeholder carrying the title (sample data has no posters)."""
     poster_url = _web_url(item.get("poster_url"))
     if poster_url:
         return f'<img class="poster" src="{escape(poster_url, quote=True)}" alt="" loading="lazy">'
-    hue = (int(item["tmdb_id"]) * 47) % 360
-    return f'<div class="poster poster-empty" style="--h:{hue}" aria-hidden="true">{escape(item["title"])}</div>'
+    try:
+        poster_key = int(item["poster_key"]) if item.get("poster_key") is not None else None
+    except (TypeError, ValueError):
+        poster_key = None
+    if poster_key is not None:
+        return f'<img class="poster" src="/poster?key={poster_key}" alt="" loading="lazy">'
+    seed = item.get("tmdb_id")
+    try:
+        seed = int(seed)
+    except (TypeError, ValueError):
+        seed = zlib.crc32(str(item.get("title") or "").encode("utf-8"))
+    hue = (seed * 47) % 360
+    return f'<div class="poster poster-empty" style="--h:{hue}" aria-hidden="true">{escape(str(item.get("title") or ""))}</div>'
 
 
 def _card_key(item):
@@ -89,16 +102,62 @@ def _card(item, return_to, can_dismiss):
             f'<div class="card-info"><h3 class="title">{title}</h3>{details}{actions}</div></article>')
 
 
-def _library_card(item):
+def _library_card(item, show_added=False):
+    """A Plex library (or "Added here") card: poster, title, year. No actions."""
     link = _web_url(item.get("url"))
-    title = escape(_title_text(item))
+    title = escape(_title_text(item) if show_added else str(item["title"]))
     if link:
         title = f'<a href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">{title}</a>'
     kind = "Movie" if item["media_type"] == "movie" else "TV"
-    added_date = (item.get("added_at") or "")[:10] or "unknown date"
-    return (f'<article class="card"><div class="card-poster">{_poster_html(item)}<span class="kind">{kind}</span></div>'
+    badge = ""
+    progress = item.get("progress")
+    if item.get("watched"):
+        badge = '<span class="badge">Watched</span>'
+    elif isinstance(progress, (int, float)) and 0 < progress < 1:
+        badge = '<span class="badge">Started</span>'
+    top = f'<div class="poster-top"><span class="badges">{badge}</span></div>' if badge else ""
+    if show_added:
+        sub = f'Added {escape((item.get("added_at") or "")[:10] or "unknown date")}'
+    else:
+        sub = escape(str(item["year"])) if item.get("year") else ""
+    return (f'<article class="card"><div class="card-poster">{_poster_html(item)}{top}'
+            f'<span class="kind">{kind}</span></div>'
             f'<div class="card-info"><h3 class="title">{title}</h3>'
-            f'<p class="added">Added {escape(added_date)}</p></div></article>')
+            f'<p class="card-sub">{sub}</p></div></article>')
+
+
+def _watched_card(item, return_to):
+    """A watch-history card with 1-5 star buttons (a plain form, so it works without JS)."""
+    title_text = _title_text(item)
+    title = escape(title_text)
+    link = _web_url(item.get("url"))
+    title_html = (f'<a href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">{title}</a>'
+                  if link else title)
+    kind = "Movie" if item["media_type"] == "movie" else "TV"
+    sub = f'Watched {escape((item.get("last_viewed") or "")[:10])}' if item.get("last_viewed") else "Watched"
+    if (item.get("view_count") or 0) > 1:
+        sub += f' &middot; {int(item["view_count"])} plays'
+    mine, plex = item.get("stars"), item.get("plex_stars")
+    effective = mine or plex or 0
+    from_plex = not mine and bool(plex)
+    stars = "".join(
+        f'<button type="submit" name="stars" value="{n}" class="star{" on" if n <= effective else ""}'
+        f'{" from-plex" if n <= effective and from_plex else ""}" aria-pressed="{"true" if n == mine else "false"}" '
+        f'aria-label="Rate {n} out of 5">&#9733;</button>' for n in range(1, 6))
+    if mine:
+        text = f"Your rating: {int(mine)}/5"
+    elif plex:
+        text = f"From Plex: {int(plex)}/5"
+    else:
+        text = "Not rated"
+    clear = ('<button type="submit" name="stars" value="0" class="link-btn star-clear">Clear rating</button>'
+             if mine else "")
+    form = (f'<form class="rate" method="post" action="/rate" data-enhance="rate">{_hidden_fields(item, return_to)}'
+            f'<div class="stars" role="group" aria-label="Your rating for {escape(title_text, quote=True)}">{stars}</div>'
+            f'<p class="rating-text">{text}</p>{clear}</form>')
+    return (f'<article class="card" data-card="{_card_key(item)}"><div class="card-poster">{_poster_html(item)}'
+            f'<span class="kind">{kind}</span></div>'
+            f'<div class="card-info"><h3 class="title">{title_html}</h3><p class="card-sub">{sub}</p>{form}</div></article>')
 
 
 def _in_tab(item, tab):
@@ -298,7 +357,7 @@ def render_home(refresh=False):
         return _shell(_waiting_screen("recs"), "home", "Getting things ready", return_to="/", auto_refresh=True)
     tiles = [
         ("Recommended", len(result["items"]), "/recommended"),
-        ("Added to library", db.added_count(), "/library"),
+        ("Added to library", db.added_count(), "/library?type=added"),
         ("Not interested", len(db.dismissed()), None),
         ("Watched titles analyzed", result["watched_count"], None),
     ]
@@ -321,17 +380,142 @@ def render_home(refresh=False):
                   return_to="/", status_html=UPDATING_HTML if building else "", auto_refresh=building)
 
 
-def render_library():
-    items = db.added_items()
-    if items:
-        body = f'<div class="grid">{"".join(_library_card(i) for i in items)}</div>'
-    else:
-        body = ('<div class="empty"><h3>Your added list is empty</h3>'
+LIBRARY_TABS = (("all", "All"), ("movie", "Movies"), ("tv", "TV shows"), ("watched", "Watched"),
+                ("added", "Added here"))
+_SORT_LABELS = {"added": "Recently added", "title": "Title A-Z", "year": "Newest year", "recent": "Recently watched",
+                "rating": "Highest rated"}
+_SHOW_LABELS = {"all": "Everything", "unwatched": "Unwatched", "watched": "Watched", "rated": "Rated by you",
+                "unrated": "Not rated by you"}
+
+
+def _library_url(tab, q="", sort=None, show=None, page=1):
+    params = [("type", tab)]
+    if q:
+        params.append(("q", q))
+    if sort:
+        params.append(("sort", sort))
+    if show:
+        params.append(("show", show))
+    if page and page > 1:
+        params.append(("page", page))
+    return "/library?" + urlencode(params)
+
+
+def _library_subtabs(active, q):
+    links = []
+    for key, label in LIBRARY_TABS:
+        params = {"type": key}
+        if q:
+            params["q"] = q
+        links.append(f'<a class="subtab{" on" if key == active else ""}" '
+                     f'href="/library?{escape(urlencode(params))}">{escape(label)}</a>')
+    return f'<nav class="subtabs" aria-label="Library">{"".join(links)}</nav>'
+
+
+def _library_toolbar(tab, q, sort, show, sorts, shows):
+    def select(name, label, options, labels, current):
+        opts = "".join(f'<option value="{escape(o, quote=True)}"{" selected" if o == current else ""}>'
+                       f'{escape(labels.get(o, o))}</option>' for o in options)
+        return f'<label>{label}<select name="{name}">{opts}</select></label>'
+    show_select = select("show", "Show", shows, _SHOW_LABELS, show) if len(shows) > 1 else ""
+    return (f'<form class="toolbar" method="get" action="/library" role="search">'
+            f'<input type="hidden" name="type" value="{escape(tab, quote=True)}">'
+            f'<label>Search<input type="search" name="q" value="{escape(q, quote=True)}" maxlength="100" '
+            f'placeholder="Title"></label>'
+            f'{select("sort", "Sort by", sorts, _SORT_LABELS, sort)}{show_select}'
+            f'<button type="submit" class="btn-ghost">Apply</button></form>')
+
+
+def _library_pager(tab, q, sort, show, page, pages):
+    if pages <= 1:
+        return ""
+    def link(target, label, rel):
+        href = escape(_library_url(tab, q, sort, show, target), quote=True)
+        return f'<a href="{href}" rel="{rel}">{label}</a>'
+    prev = link(page - 1, "&#8249; Previous", "prev") if page > 1 else '<span class="muted">&#8249; Previous</span>'
+    nxt = link(page + 1, "Next &#8250;", "next") if page < pages else '<span class="muted">Next &#8250;</span>'
+    return (f'<nav class="pager" aria-label="Pages">{prev}<span class="pager-status">Page {page} of {pages}</span>'
+            f'{nxt}</nav>')
+
+
+def _library_empty(tab, filtered):
+    if filtered:
+        return ('<div class="empty"><h3>Nothing matches</h3><p>No titles match your search or filters.</p>'
+                f'<a class="btn-ghost" href="{escape(_library_url(tab), quote=True)}">Clear filters</a></div>')
+    if tab == "added":
+        return ('<div class="empty"><h3>Your added list is empty</h3>'
                 '<p>Nothing added yet - approve a recommendation from the Recommended page and it\'ll show up here.</p>'
                 '<a class="btn-add" href="/recommended">Browse recommendations</a></div>')
-    count = len(items)
-    subtitle = f"{count} title{'s' if count != 1 else ''} added"
-    return _shell(body, "library", subtitle, show_refresh=False)
+    if tab == "watched":
+        return ('<div class="empty"><h3>Nothing watched yet</h3>'
+                '<p>Titles you watch in Plex show up here, ready to rate.</p></div>')
+    return ('<div class="empty"><h3>Your library is empty</h3>'
+            '<p>Nothing in your Plex library yet.</p></div>')
+
+
+def render_library(tab="all", q="", sort=None, show="all", page=1, msg=""):
+    """Library: All / Movies / TV shows (the Plex library), Watched (history, with ratings) and
+    Added here (the log of what was sent to Radarr/Sonarr). Data comes from the last build's
+    snapshot - this never calls Plex."""
+    tab = tab if tab in dict(LIBRARY_TABS) else "all"
+    sorts, shows = web.LIST_OPTIONS[tab]
+    sort = sort if sort in sorts else sorts[0]
+    show = show if show in shows else shows[0]
+    q = (q or "").strip()[:100]
+    return_to = _library_url(tab, q, sort, show, page)
+    subtabs = _library_subtabs(tab, q)
+    messages = _message_notes(msg, None, return_to)
+
+    result = None
+    if tab != "added":
+        try:
+            result, _age = web.get_result_nowait()
+        except Exception as e:
+            return _shell(subtabs + messages + _error_screen(str(e), return_to), "library", return_to=return_to)
+        if result is None:
+            status = _status()
+            if status.get("state") == "error":
+                return _shell(subtabs + messages + _error_screen(status.get("error"), return_to), "library",
+                              "The last attempt failed", return_to=return_to)
+            return _shell(subtabs + messages + _waiting_screen("recs"), "library", "Getting things ready",
+                          return_to=return_to, auto_refresh=True)
+
+    items = web.library_items(result, tab)
+    if items is None:
+        body = (f'{subtabs}{messages}<div class="empty"><h3>Connect Plex to browse your library</h3>'
+                '<p>Your watch history comes from Tautulli, which can\'t list the library itself. '
+                'Add your Plex token to see everything in it.</p>'
+                '<a class="btn-add" href="/settings?section=plex">Plex settings</a></div>')
+        return _shell(body, "library", return_to=return_to)
+
+    notes = ""
+    if tab == "watched":
+        if web.ratings_changed():
+            notes += ('<p class="note">Your ratings changed - refresh to update your recommendations.</p>'
+                      + _refresh_form(return_to, "Refresh recommendations"))
+        if web._is_sample():
+            notes += '<p class="note">Sample data - ratings aren\'t saved.</p>'
+
+    if not items:
+        body = f'{subtabs}{messages}{notes}{_library_empty(tab, False)}'
+        return _shell(body, "library", "0 titles", return_to=return_to)
+
+    view = web.list_view(items, tab=tab, q=q, sort=sort, show=show, page=page)
+    page = view["page"]
+    return_to = _library_url(tab, q, sort, show, page)
+    toolbar = _library_toolbar(tab, q, sort, show, sorts, shows)
+    if view["items"]:
+        if tab == "watched":
+            cards = "".join(_watched_card(i, return_to) for i in view["items"])
+        else:
+            cards = "".join(_library_card(i, tab == "added") for i in view["items"])
+        grid = f'<div class="grid" data-grid>{cards}</div>'
+    else:
+        grid = _library_empty(tab, True)
+    pager = _library_pager(tab, q, sort, show, page, view["pages"])
+    total = view["total"]
+    subtitle = f"{total} title{'s' if total != 1 else ''}"
+    return _shell(f'{subtabs}{messages}{notes}{toolbar}{grid}{pager}', "library", subtitle, return_to=return_to)
 
 
 def _generate_form(label):
