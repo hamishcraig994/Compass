@@ -128,11 +128,21 @@ def _render_arr_section(overrides=None):
            f'<button type="submit" name="action" value="save" class="btn-add">Save</button>')
 
 
+APPEARANCE_TAB = ("appearance", "Appearance", "/appearance")
+
+
+def subtabs_html(current):
+    """The sub-tab row shared by the settings sections and the Appearance page."""
+    nav = "".join(f'<a class="subtab{" on" if key == current else ""}" href="/settings?section={key}">{escape(label)}</a>'
+                  for key, label in SECTIONS)
+    key, label, href = APPEARANCE_TAB
+    nav += f'<a class="subtab{" on" if key == current else ""}" href="{href}">{escape(label)}</a>'
+    return f'<nav class="subtabs" aria-label="Settings sections">{nav}</nav>'
+
+
 def render(section=DEFAULT_SECTION, saved=False, test_result=None, overrides=None):
     if section not in dict(SECTIONS):
         section = DEFAULT_SECTION
-    nav = "".join(f'<a class="subtab{" on" if key == section else ""}" href="/settings?section={key}">{escape(label)}</a>'
-                 for key, label in SECTIONS)
     banner = '<p class="note success" role="status">Saved - changes apply immediately, no restart needed.</p>' if saved else ""
     if test_result:
         cls = "success" if test_result["ok"] else "error"
@@ -146,7 +156,7 @@ def render(section=DEFAULT_SECTION, saved=False, test_result=None, overrides=Non
                   f'<button type="submit" name="action" value="save" class="btn-add">Save</button>'
                   f'{_test_button(section)}</div></fieldset>')
 
-    return (f'<div class="settings"><nav class="subtabs" aria-label="Settings sections">{nav}</nav>{banner}'
+    return (f'<div class="settings">{subtabs_html(section)}{banner}'
            f'<form method="post" action="/settings?section={section}">{content}</form>'
            f'<p class="muted settings-foot">Secret fields never show their current value here - leave one blank '
            f'to keep what\'s already saved.</p></div>')

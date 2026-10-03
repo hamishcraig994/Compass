@@ -10,9 +10,11 @@ Server: stdlib `http.server` - `Handler` in `web.py` (backend-owned). Pages are 
 ## Routes (current)
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/` | Home |
-| GET | `/recommended?type=all\|new\|movie\|tv&msg=&undo_type=&undo_id=` | invalid `type` falls back to `all` |
+| GET | `/?msg=&undo_type=&undo_id=` | Home (cinematic hero + rows, movies and TV mixed) |
+| GET | `/movies?...`, `/tv?...` | same layout, one kind; same `msg`/undo params |
+| GET | `/recommended?type=movie\|tv&msg=&undo_type=&undo_id=` | legacy: 303 to `/movies`, `/tv` or `/` (any other `type`); keeps `msg` and a valid undo |
 | GET | `/library` | |
+| GET | `/appearance?msg=` | theme picker (Settings tab); cookie `wn_theme` selects the theme on every page |
 | GET | `/ai?msg=&undo_type=&undo_id=` | |
 | GET | `/add-dialog?type=&id=&return_to=&partial=1` | `partial=1` returns just the fragment for the JS modal; bad type/id gives 404 |
 | GET | `/settings?section=<settings_page.SECTIONS>` | |
@@ -20,6 +22,9 @@ Server: stdlib `http.server` - `Handler` in `web.py` (backend-owned). Pages are 
 | GET | `/health` | `ok`, text/plain (Docker healthcheck) |
 | GET | `/static/app.css`, `/static/app.js` | whitelist `Handler.STATIC_FILES` only; anything else gives 404 |
 | POST | `/refresh`, `/dismiss`, `/undismiss`, `/add`, `/ai/generate` | item routes take form fields `type`, `id`, `return_to` |
+| POST | `/theme` | `theme` (whitelist in `themes.py`), `return_to` (default `/appearance`); sets cookie `wn_theme` (Path=/, SameSite=Lax, 1 year), JSON or 303; works in sample mode; never touches db/cache |
+| POST | `/rate` | `type`, `id`, `stars` (0 clears, 1-5), `return_to`; works for any title incl. unwatched recommendations; sample mode answers "not saved" |
+| GET | `/poster?...` | Plex poster proxy (token stays server-side) |
 | POST | `/settings?section=` | `action=save` or `action=test_<app>`; unknown section redirects to `/settings` |
 
 Anything else: `404 Not found` text/plain.
@@ -39,7 +44,7 @@ Anything else: `404 Not found` text/plain.
 
 ## Auth and security
 - **No login** - home network only. Instead, **every POST** first passes `_cross_site(self.headers)` (CSRF): `Sec-Fetch-Site` must be `same-origin`/`none`; otherwise `Origin` must match `Host`; neither header (curl) is allowed. Behind a reverse proxy the Host header must be forwarded.
-- Redirect targets only via `_safe_path(path, default="/recommended")` (internal, printable ASCII, no `//`, `\`, `://`). Never interpolate unvalidated input into a header (e.g. whitelist `section` against `settings_page.SECTIONS`).
+- Redirect targets only via `_safe_path(path, default="/recommended" (redirects to a browse page))` (internal, printable ASCII, no `//`, `\`, `://`). Never interpolate unvalidated input into a header (e.g. whitelist `section` against `settings_page.SECTIONS`).
 - Validate ids with `_parse_id()` / `_item_from(fields, type_key, id_key)` (ASCII digits, max 12, type in `movie|tv`).
 - Sample mode (`_is_sample()`) must never write to the DB or call Radarr/Sonarr.
 - Secrets (tokens, API keys) never appear in responses or rendered settings fields (blank = keep current).

@@ -12,7 +12,7 @@ Suggests movies and TV shows you *don't* have yet, based on what you've watched 
 3. Finds candidates from TMDB: what's linked to your favourites ("people who liked this also liked..."),
    well-rated titles in your top genres, this week's trending titles, and releases from the last 6 months in
    your top genres. Anything already in your Plex library is dropped, and so is anything not out yet.
-4. If an AI is configured, its own dedicated **AI** page (sidebar) can, on request, ask it for a
+4. If an AI is configured, its own dedicated **AI** page (top bar) can, on request, ask it for a
    batch of ideas grounded in your taste profile - see "AI-assisted suggestions" below. This never
    happens automatically as part of the list above; every suggestion names a title, never a trusted
    id, so it's looked up on TMDB ourselves (matching by year, not just taking the first search
@@ -47,7 +47,22 @@ Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gent
 - **JavaScript is optional.** It's one small plain-JS file (`static/app.js`, no libraries) that
   enhances ordinary forms. With it off, every button still works as a normal form post, Undo is a
   note at the top of the page, and loading screens reload themselves every 5 seconds instead.
-- **Library** (sidebar) shows what's in your Plex library as a poster grid, with tabs for All,
+- **Cinematic browsing.** Home, **Movies** and **TV** look like a streaming service: a big hero at the top
+  rotates through your five best picks (every 6 seconds on desktop, swipe on phones; it pauses on hover
+  and has a Pause button; nothing rotates if your device asks for reduced motion), then headed rows to
+  scroll: *Recommended for You*, *Because you watched ...*, *Top 10 picks for you*, *Trending in <your
+  favourite genre>*, *Hidden Gems* (high match, lower popularity) and *New in your library*. Rows only
+  appear when they have enough titles. Hovering a poster on desktop opens a small preview with Add,
+  Not interested, a star rating and More info; tapping a poster opens the full description. Rating a
+  recommendation saves your rating (it feeds your taste profile like any other) and keeps the title
+  listed. Hero banners use TMDB backdrops; a live build fetches up to 15 missing ones, otherwise a
+  tinted fallback is shown. `/recommended` still works and redirects here.
+- **Themes.** Settings -> Appearance (`/appearance`) lets you pick a colour theme: Amber (the default),
+  Crimson, Lime, Ocean, Teal Night or Mono (pure black, good for OLED screens). Each swatch previews its
+  own colours and, with JavaScript, applies instantly. The choice is remembered per device in a cookie
+  (`wn_theme`), so your phone and TV can differ; there's no flash on load and it works without JS.
+  Every theme still follows your device's light/dark setting. Nothing is stored in the database.
+- **Library** (top bar) shows what's in your Plex library as a poster grid, with tabs for All,
   Movies, TV shows, **Watched** and "Added here" (what you added through Radarr/Sonarr), plus
   search, filters, sorting and paging. Posters are fetched through the app (`/poster`), so your Plex
   token never reaches the browser. No new Plex requests are made per page view; it uses the
@@ -58,7 +73,7 @@ Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gent
   star title are ranked lower (never hidden). Ratings are stored locally in SQLite and are never
   written to Plex. After rating, "Update recommendations" rebuilds the list. In sample mode the
   stars show but nothing is saved.
-- Dark by default, with a light theme if your device asks for one; the sidebar becomes a bottom
+- Dark by default, with a light theme if your device asks for one; the top navigation becomes a bottom
   bar on phones.
 
 ## Use your own library
@@ -106,9 +121,9 @@ needs via TMDB's `external_ids` (cached, same as everything else). Sample data n
 Radarr/Sonarr - the button doesn't even appear until you're on your own library.
 
 The dialog is its own page (`/add-dialog`; with JavaScript on it opens as a pop-up over the list,
-loading that same page), not pre-rendered into the Recommended list, specifically so
+loading that same page), not pre-rendered into the Home/Movies/TV rows, specifically so
 quality profiles are only ever fetched when you actually open it - viewing or refreshing the
-Recommended list never touches Radarr/Sonarr just to pre-populate a dropdown you might not use.
+recommendations never touches Radarr/Sonarr just to pre-populate a dropdown you might not use.
 Whichever list Radarr/Sonarr gave that day is also cached for 10 minutes either way.
 
 ### AI-assisted suggestions
@@ -116,13 +131,13 @@ Set it up in Settings -> AI (or `AI_PROVIDER_URL`/`AI_TOKEN`/`AI_MODEL` in `.env
 OpenAI-compatible endpoint works - OpenAI itself, a self-hosted server, OpenRouter, etc. - not just
 OpenAI, so change the provider URL for anything else.
 
-**Manual only, by design.** Once configured, a new **AI** section appears in the sidebar with its
+**Manual only, by design.** Once configured, a new **AI** section appears in the top bar with its
 own **Generate** button. Clicking it is the only thing that ever triggers an AI request - it never
-runs as part of the automatic Recommended list, its hourly refresh, or Home's stats. That's
+runs as part of the automatic recommendations, their hourly refresh, or Home. That's
 deliberate: every click is a real request (and, depending on your provider, a real cost), so it
 should only ever happen because you asked. The AI page shows whatever your last Generate produced
-until you generate again; "Add to library" and "Not interested" work the same as they do on the
-main Recommended list.
+until you generate again; "Add to library" and "Not interested" work the same as they do on
+Home, Movies and TV.
 
 Two rules keep this from being a black box or a liability:
 - **Nothing the AI says is trusted outright.** It names a title and year; that gets looked up on

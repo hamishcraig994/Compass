@@ -31,19 +31,23 @@ Light mode = `@media (prefers-color-scheme: light)` overriding the same tokens; 
 
 **TODO:** there is no spacing scale - paddings/margins/gaps are literal values in each rule. Match neighbouring rules; propose a `--space-*` scale if a feature needs one.
 
+## Themes
+Six themes (registry in `themes.py`: amber, crimson, lime, ocean, teal, mono) selected by `<html data-theme>` from the `wn_theme` cookie. Every theme block in `static/app.css` (`[data-theme="key"]`, Amber also on `:root`) declares exactly the same 15 tokens in dark and in `@media (prefers-color-scheme: light)`; `tests/test_ui.py::TestThemeCss` enforces this and the registry sync. Component rules use tokens only (new tokens: `--accent-glow`, `--accent-hover`, `--match-text`, `--focus`). No brand names in the CSS. Contrast targets: text AA, `--focus` >= 3:1. Picker classes: `.theme-picker`, `.theme-grid`, `.theme-option`, `.theme-radio`, `.theme-swatch` (+ `.swatch-*`), `.theme-text/-name/-current/-desc`, `.theme-submit` (hidden under `html.js`). Full spec: `specs/themes.md`.
+
 ## Components (existing classes - reuse before inventing)
-- Layout: `.app-shell`, `.app-sidebar` (+ `.brand-lockup`, `.brand-mark`, `.nav-list`, `.nav-item`), `.app-main`, `.top`, `.top-actions`, `.bottom-nav` (phones), `.section-head`, `.grid`, `.rail` (horizontal scroller).
+- Layout: `.topbar` (+ `.brand`, `.brand-mark`, `.brand-name`, `.topnav`, `.topbar-actions`, `.nav-item`; fixed + transparent on `body.cinematic`, solid when `.is-scrolled`), `.app-main`, `.top`, `.top-actions`, `.top.browse-top`, `.bottom-nav` (phones, 5 items), `.grid`.
+- Cinematic browse (Home/Movies/TV): `.hero`, `.hero-slides`, `.hero-slide(.on)`, `.hero-art`, `.hero-backdrop`, `.hero-poster`, `.hero-glyph`, `.hero-copy`, `.kicker`, `.hero-title`, `.hero-meta`, `.hero-genres`, `.hero-actions`, `.hero-details`, `.hero-dots`, `.hero-dot`, `.hero-pause`; `.rows`, `.row`, `.row-head`, `.row-sub`, `.track-wrap`, `.track(-numbered)`, `.rank`, `.track-arrow.prev/.next`, `.row-card`, `.lib-card`, `.lib-tag`, `.card-meta`, `.badge.cert`; `.preview` (+ `.preview-poster/-body/-actions/-btn/-rate`); `.browse-messages`, `.browse-foot`. `html.has-dialog` hides the no-JS `<details>` actions. Arrows at row ends are hidden with the `hidden` attribute; a global `[hidden]{display:none!important}` exists.
 - Cards: `.card`, `.card-poster`, `.poster`, `.poster-empty`, `.poster-top`, `.card-info`, `.card-sub`, `.card-details`, `.card-actions`, `.title`, `.kind`, `.match`, `.badge`/`.badges`, `.chip`/`.chips`, `.reason`, `.overview`, `.ext-link`.
 - Buttons: `.btn-add` (primary, accent fill), `.btn-ghost` (secondary), `.link-btn`, `.modal-close`.
 - Feedback: `.note` (inline message), `.undo-note`, `.toast`/`.toasts` (aria-live region), `.updating` badge, `.spinner`, `.skeleton-row`, `.empty`, `.building-error`.
 - Navigation within a page: `.subtabs` / `.subtab`.
-- Home: `.tiles`, `.tile`, `.tile-value`, `.tile-label`, `.taste`.
+- Home footer: `.taste` (taste summary in `.browse-foot`). The old stat tiles and `.rail`/`.section-head` are gone.
 - Dialogs: native `<dialog>` with `.modal-inner`, `.modal-loading`, `.dialog-box`, `.dialog-head`, `.dialog-page`; detail view `.detail-layout`, `.detail-main`, `.detail-body`.
 - Settings: `.settings`, `.settings-foot`, `.checkbox-label`. AI page: `.ai-intro`, `.ai-toolbar`.
 - Utility: `.muted`, `.sub`, `.visually-hidden`, `.skip-link`; `html.js` is set by app.js when JS runs.
 
 ## Breakpoints
-- `max-width: 820px` - sidebar becomes the fixed bottom nav (`--nav-h`).
+- `max-width: 820px` - top nav links are replaced by the fixed bottom nav (`--nav-h`); the hero becomes a swipe card and stops auto-rotating.
 - `max-width: 560px` and `520px` - tighter card grid and spacing.
 - Must work at **375px with no horizontal scroll** (`body` has `overflow-x: hidden` only as a backstop - don't rely on it).
 
@@ -58,5 +62,5 @@ Light mode = `@media (prefers-color-scheme: light)` overriding the same tokens; 
 ## Markup and behaviour rules
 - Every untrusted string (TMDB/Plex/Radarr data, titles, overviews) goes through `html.escape`; links and images only via `_web_url()` (http/https only). `static/app.js` builds DOM with `createElement`/`textContent`; the single `innerHTML` is the server-escaped `/add-dialog?...&partial=1` fragment.
 - **Progressive enhancement:** every form/link works without JS (POST + 303 redirect). app.js only enhances via data attributes:
-  `data-enhance="dismiss|undismiss|add|refresh|generate"` (forms), `data-add-dialog` (Add link -> modal), `data-open-detail` / `data-card` / `data-grid` (detail modal, card removal), `data-close`, `data-poll` / `data-poll-error` (screens that poll `/api/status`), `data-busy`, `data-js-empty`.
+  `data-enhance="dismiss|undismiss|add|refresh|generate|rate"` (forms), `data-add-dialog` (Add link -> modal), `data-open-detail` / `data-card` / `data-grid` (detail modal, card removal), `data-close`, `data-poll` / `data-poll-error` (screens that poll `/api/status`), `data-busy`, `data-js-empty`.
 - Building / generating / "Updating..." screens must also include `<noscript><meta http-equiv="refresh" content="5"></noscript>` (via `_shell(auto_refresh=True)`).

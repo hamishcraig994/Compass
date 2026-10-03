@@ -3,8 +3,8 @@
 Self-hosted movie/TV recommender: Plex (or Tautulli) watch history -> taste profile -> TMDB candidates, with optional Radarr/Sonarr "Add to library" and a manual-only AI page. Stdlib-only Python 3 (no pip), plain JS, no build step. See README.md for features and setup.
 
 - Run: `python3 web.py` (sample data if no tokens; `SAMPLE=1 PORT=8099 python3 web.py` for a local demo)
-- Test: `python3 -m unittest discover -s tests` (~53s) - details in `.claude/skills/testing-recipe`
-- Layout: `web.py` = state, background builds, HTTP handler, validation (backend) · `pages.py` = all HTML rendering (frontend) · `static/app.css` / `static/app.js` · integrations in `plex.py`, `tautulli.py`, `tmdb.py`, `radarr.py`, `sonarr.py`, `ai.py` · data in `db.py` (SQLite in `data/`)
+- Test: `python3 -m unittest discover -s tests` (~71s) - details in `.claude/skills/testing-recipe`
+- Layout: `web.py` = state, background builds, HTTP handler, validation (backend) · `browse.py` = pure hero/row logic for Home/Movies/TV · `themes.py` = colour-theme registry + cookie · `pages.py` = all HTML rendering (frontend) · `static/app.css` / `static/app.js` · integrations in `plex.py`, `tautulli.py`, `tmdb.py`, `radarr.py`, `sonarr.py`, `ai.py` · data in `db.py` (SQLite in `data/`)
 - Live on arr (container `whatsnext`, port 8091). **Never deploy, restart or rebuild it without Hamish's OK** - see `.claude/skills/deploy-checklist`.
 - Don't make live requests to Plex/TMDB/Radarr/Sonarr/AI providers in tests or reviews; use mocks/fixtures.
 

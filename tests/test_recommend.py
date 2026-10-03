@@ -414,5 +414,59 @@ class TestRatingsInRecommend(unittest.TestCase):
         self.assertEqual(len([i for i in looked_up if i >= 5000]), recommend.MAX_DISLIKED)
 
 
+class TestBecause(unittest.TestCase):
+    def catalogue(self, n_sources):
+        cat = {("movie", 100 + i): _details("movie", 100 + i, f"Src{i}", genres=["Drama"]) for i in range(n_sources)}
+        cat[("movie", 1)] = _details("movie", 1, "Watched Movie", genres=["Drama"])
+        return cat
+
+    def watched(self, n):
+        return [{"media_type": "movie", "tmdb_id": 100 + i, "title": f"Src{i}", "last_viewed": None,
+                 "user_rating": 10 - i * 0.1, "view_count": 1, "progress": None} for i in range(n)]
+
+    def test_because_lists_all_linked_sources_best_first_deduped(self):
+        cat = self.catalogue(3)
+        for i, src in enumerate(("Src0", "Src1", "Src2")):
+            cat[("movie", 100 + i)] = {**cat[("movie", 100 + i)], "recommendations": [500]}
+        cat[("movie", 500)] = _details("movie", 500, "Target", genres=["Drama"])
+        watched = self.watched(3)
+        watched[0]["user_rating"], watched[1]["user_rating"], watched[2]["user_rating"] = 6, 10, 8
+        result = recommend.recommend(watched, set(), FakeTmdb(cat))
+        target = [i for i in result["items"] if i["title"] == "Target"][0]
+        self.assertEqual(target["because"], ["Src1", "Src2", "Src0"])
+        self.assertEqual(target["reason"], "Because you watched Src1 and Src2")  # reason unchanged: top 2
+
+    def test_because_is_capped(self):
+        n = recommend.MAX_BECAUSE + 3
+        cat = self.catalogue(n)
+        for i in range(n):
+            cat[("movie", 100 + i)] = {**cat[("movie", 100 + i)], "recommendations": [500]}
+        cat[("movie", 500)] = _details("movie", 500, "Target", genres=["Drama"])
+        result = recommend.recommend(self.watched(n), set(), FakeTmdb(cat))
+        target = [i for i in result["items"] if i["title"] == "Target"][0]
+        self.assertEqual(len(target["because"]), recommend.MAX_BECAUSE)
+
+    def test_because_is_empty_without_a_linked_source(self):
+        class Trending(FakeTmdb):
+            def trending(self, media_type):
+                return [600] if media_type == "movie" else []
+        cat = self.catalogue(1)
+        cat[("movie", 600)] = _details("movie", 600, "Hot", genres=["Drama"])
+        result = recommend.recommend(self.watched(1), set(), Trending(cat))
+        hot = [i for i in result["items"] if i["title"] == "Hot"][0]
+        self.assertEqual(hot["because"], [])
+
+    def test_every_sample_item_has_a_because_list(self):
+        items = run()["items"]
+        self.assertTrue(items)
+        for item in items:
+            self.assertIsInstance(item["because"], list)
+            self.assertLessEqual(len(item["because"]), recommend.MAX_BECAUSE)
+        linked = [i for i in items if i["reason"].startswith("Because you watched")]
+        for item in linked:
+            self.assertTrue(item["because"], item["title"])
+            self.assertIn(item["because"][0], item["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

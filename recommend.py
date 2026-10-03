@@ -34,6 +34,7 @@ FRESH_SPAN_DAYS = 730                  # the recency boost fades to nothing over
 MIN_TASTE_FOR_BUZZ = 0.10              # trending/new titles need at least this much content match
 DISLIKE_FACTORS = {1: 0.4, 2: 0.7}     # score multiplier for titles TMDB links to something you rated 1 / 2 stars
 MAX_DISLIKED = 50                      # how many disliked titles to look up (cached) for that
+MAX_BECAUSE = 10                       # how many watched titles an item's "because" list names
 LABELS = {"genre": "Genre", "keyword": "Theme", "director": "By", "actor": "Stars"}
 
 
@@ -242,7 +243,11 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
             reason = f"AI pick: {c['ai_reason']}" if c.get("ai_reason") else "AI pick based on your taste profile"
         else:
             reason = f"Highly rated in {c['genre']}, one of your favourite genres"
-        scored.append((final, {**details, "reason": reason, "matches": matches(features, details),
+        because = []
+        for _, t in sorted(c["sources"], key=lambda s: -s[0]):
+            if t not in because:
+                because.append(t)
+        scored.append((final, {**details, "reason": reason, "because": because[:MAX_BECAUSE], "matches": matches(features, details),
                                "new": is_new, "trending": trending}))
     scored.sort(key=lambda s: -s[0])
 

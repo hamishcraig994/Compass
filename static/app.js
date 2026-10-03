@@ -1,7 +1,7 @@
 /* What's Next - progressive enhancement. Plain JS, no libraries.
  *
  * Every form and link on the page works without this file (POST + 303 redirect). This only
- * intercepts them to work in place: forms marked data-enhance="dismiss|undismiss|add|refresh|generate",
+ * intercepts them to work in place: forms marked data-enhance="dismiss|undismiss|add|refresh|generate|rate|theme",
  * "Add to library" links (data-add-dialog), card details (a modal instead of the inline <details>),
  * and the "Finding your recommendations..." / "Updating..." states (data-poll), which poll /api/status.
  *
@@ -18,6 +18,8 @@
   var POLL_MS = 3000;
   var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   var hasDialog = typeof window.HTMLDialogElement === "function";
+  if (hasDialog) doc.documentElement.classList.add("has-dialog");  // CSS hides the row cards' <details> then
+  var heroApi = null;  // set by the hero controller below; syncHero() reaches it after a card is removed
 
   /* ---------------- helpers ---------------- */
 
@@ -44,8 +46,9 @@
     return input ? input.value : "";
   }
 
-  function post(url, body) {
+  function post(url, body, keepalive) {
     return fetch(url, {
+      keepalive: !!keepalive,
       method: "POST",
       credentials: "same-origin",
       headers: { "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded" },
@@ -99,13 +102,16 @@
     }
   }
 
-  function findCard(type, id) {
+  /* Every on-page card for one title: its hero slide plus each row it appears in (never copies in the modal/preview). */
+  function findCards(type, id) {
     var key = type + "-" + id;
-    var cards = doc.querySelectorAll("[data-card]");
-    for (var i = 0; i < cards.length; i++) {
-      if (cards[i].getAttribute("data-card") === key) return cards[i];
-    }
-    return null;
+    return Array.prototype.filter.call(doc.querySelectorAll("[data-card]"), function (card) {
+      return card.getAttribute("data-card") === key && !card.closest("dialog, .preview");
+    });
+  }
+
+  function finePointer() {
+    return !!(window.matchMedia && window.matchMedia("(hover: hover) and (pointer: fine)").matches);
   }
 
   function animate(node, className) {
@@ -222,6 +228,7 @@
   /* fill(body) puts content into the modal; opts.focus picks what gets focus first. */
   function openModal(fill, opts) {
     opts = opts || {};
+    closePreview();
     ensureModal();
     if (!modal.open) returnFocus = opts.returnFocus || doc.activeElement;
     modalBody.textContent = "";
@@ -230,12 +237,14 @@
     var label = modalBody.querySelector("h3[id]");
     if (label) modal.setAttribute("aria-labelledby", label.id); else modal.removeAttribute("aria-labelledby");
     if (!modal.open) modal.showModal();
-    var first = (opts.focus && modalBody.querySelector(opts.focus)) || focusables(modalBody)[0] ||
+    var first = (opts.focus && modalBody.querySelector(opts.focus)) ||
+                (opts.closeFallback ? modal.querySelector(".modal-close") : focusables(modalBody)[0]) ||
                 modal.querySelector(".modal-close");
     if (first) first.focus();
   }
 
   function closeModal() {
+    closePreview();
     if (modal && modal.open) modal.close();
   }
 
@@ -245,7 +254,15 @@
     openModal(function (body) {
       var poster = card.querySelector(".card-poster");
       var posterCopy = poster ? poster.cloneNode(true) : null;
-      if (posterCopy) posterCopy.removeAttribute("data-open-detail");
+      if (posterCopy) {
+        posterCopy.removeAttribute("data-open-detail");
+        posterCopy.removeAttribute("hidden");  // the hero's copy is hidden on the page, shown in the modal
+        posterCopy.removeAttribute("role");
+        posterCopy.removeAttribute("tabindex");
+        posterCopy.removeAttribute("aria-label");
+        var rank = posterCopy.querySelector(".rank");
+        if (rank) rank.parentNode.removeChild(rank);
+      }
       var title = card.querySelector(".title");
       var main = el("div", { className: "detail-main" }, [
         el("h3", { id: "detail-title", text: title ? title.textContent : "" })
@@ -255,19 +272,23 @@
       var actions = card.querySelector(".card-actions");
       if (actions) main.appendChild(actions.cloneNode(true));  // delegated handlers find the card by type/id
       body.appendChild(el("div", { className: "detail-layout" }, [posterCopy, main]));
-    }, { returnFocus: trigger, focus: ".detail-main .btn-add, .detail-main button[type=submit]" });
+    }, { returnFocus: trigger, closeFallback: true,
+       focus: ".detail-main .btn-add, .detail-main form[data-enhance=dismiss] button[type=submit]" });
   }
 
   /* ---------------- add-to-library dialog ---------------- */
 
   function openAddDialog(link) {
     var href = link.getAttribute("href");
+    // A link cloned into the (hidden) hover preview can't take focus back: use its card's poster button.
+    var fromPreview = link.closest(".preview") && lastPreviewCard;
+    var returnTarget = (fromPreview && fromPreview.querySelector("[data-open-detail]")) || link;
     openModal(function (body) {
       body.appendChild(el("div", { className: "modal-loading", role: "status" }, [
         el("div", { className: "spinner", "aria-hidden": "true" }),
         el("span", { text: "Loading options..." })
       ]));
-    }, { narrow: true, returnFocus: link, focus: ".modal-close" });
+    }, { narrow: true, returnFocus: returnTarget, focus: ".modal-close" });
 
     fetch(href + (href.indexOf("?") === -1 ? "?" : "&") + "partial=1", {
       credentials: "same-origin", headers: { "Accept": "text/html" }
@@ -306,14 +327,47 @@
     var card = (summary || poster) && target.closest("[data-card]");
     if (!card) return;
     e.preventDefault();
-    var details = card.querySelector(".card-details");
-    openDetail(card, details ? details.querySelector("summary") : null);
+    var opener = card.querySelector("[data-open-detail]");
+    openDetail(card, summary && visible(summary) ? summary : (opener || summary));
   });
+
+  /* With a dialog, a row card's poster is its one tab stop: a button that opens the detail modal. */
+  function titleOf(card) {
+    var title = card.querySelector(".title");
+    return title ? title.textContent : "";
+  }
+
+  if (hasDialog) {
+    Array.prototype.forEach.call(doc.querySelectorAll(".row-card[data-card] [data-open-detail]"), function (poster) {
+      poster.setAttribute("tabindex", "0");
+      poster.setAttribute("role", "button");
+      poster.setAttribute("aria-label", "More info: " + titleOf(poster.closest("[data-card]")));
+    });
+    doc.addEventListener("keydown", function (e) {
+      if ((e.key !== "Enter" && e.key !== " ") || !e.target || !e.target.matches ||
+          !e.target.matches("[data-open-detail][role=button]")) return;
+      var card = e.target.closest("[data-card]");
+      if (!card) return;
+      e.preventDefault();
+      openDetail(card, e.target);
+    });
+  }
 
   /* ---------------- removing / restoring cards ---------------- */
 
   function syncEmpty(grid) {
     if (!grid || !grid.parentNode) return;
+    if (grid.hasAttribute("data-hero-slides")) { syncHero(); syncBrowseEmpty(); return; }
+    if (grid.hasAttribute("data-track")) {
+      var row = grid.closest(".row");
+      if (row) row.hidden = !grid.querySelector(".row-card");
+      if (grid.classList.contains("track-numbered")) {
+        Array.prototype.forEach.call(grid.querySelectorAll(".rank"), function (rank, i) { rank.textContent = String(i + 1); });
+      }
+      updateArrows(grid);
+      syncBrowseEmpty();
+      return;
+    }
     var existing = grid.parentNode.querySelector("[data-js-empty]");
     var hasCards = !!grid.querySelector("[data-card]");
     if (hasCards && existing) existing.parentNode.removeChild(existing);
@@ -325,15 +379,35 @@
     }
   }
 
+  /* Browse pages: once the last card is gone, say so (the hero and every row are hidden by then). */
+  function syncBrowseEmpty() {
+    var top = doc.querySelector("body.cinematic .browse-top");
+    if (!top) return;
+    var existing = doc.querySelector("[data-js-empty]");
+    var hasCards = !!doc.querySelector("main .row:not([hidden]), main [data-hero]:not([hidden])");
+    if (hasCards && existing) existing.parentNode.removeChild(existing);
+    if (!hasCards && !existing) {
+      top.parentNode.insertBefore(el("div", { className: "empty", "data-js-empty": "" }, [
+        el("h3", { text: "That's everything here" }),
+        el("p", { text: "Refresh to look for more." })
+      ]), top);
+    }
+  }
+
+  function syncHero() {
+    if (heroApi) heroApi.sync();
+  }
+
   function focusNeighbour(card) {
     var next = card.nextElementSibling || card.previousElementSibling;
-    var target = next && (next.querySelector("summary") || next.querySelector("a, button"));
+    var target = next && (next.querySelector("[role=button]") || next.querySelector("summary") || next.querySelector("a, button"));
     if (target) target.focus();
-    else { var main = doc.getElementById("main"); if (main) main.focus(); }
+    if (!target || card.contains(doc.activeElement)) { var main = doc.getElementById("main"); if (main) main.focus(); }
   }
 
   function removeCard(card) {
     var place = { parent: card.parentNode, next: card.nextSibling };
+    if (previewCard === card) closePreview();
     return animate(card, "is-leaving").then(function () {
       if (card.contains(doc.activeElement)) focusNeighbour(card);
       if (card.parentNode) card.parentNode.removeChild(card);
@@ -343,24 +417,43 @@
     });
   }
 
-  function reinsertCard(card, place) {
-    if (!place || !place.parent || !doc.contains(place.parent)) { window.location.reload(); return; }
-    var next = place.next && place.next.parentNode === place.parent ? place.next : null;
-    place.parent.insertBefore(card, next);
-    syncEmpty(place.parent);
-    animate(card, "is-entering").then(function () { card.classList.remove("is-entering"); });
-    var summary = card.querySelector("summary");
-    if (summary) summary.focus();
+  function removeCards(cards) {
+    return Promise.all(cards.map(removeCard));
   }
 
-  function undismiss(undo, returnTo, card, place) {
+  function reinsertCards(cards, places) {
+    var stale = places.some(function (place) { return !place || !place.parent || !doc.contains(place.parent); });
+    if (!cards.length || stale) { window.location.reload(); return; }
+    // Later siblings first, so each card finds its own "next" still in place.
+    for (var i = cards.length - 1; i >= 0; i--) {
+      var card = cards[i], place = places[i];
+      var next = place.next && place.next.parentNode === place.parent ? place.next : null;
+      place.parent.insertBefore(card, next);
+      syncEmpty(place.parent);
+      animate(card, "is-entering").then(function (c) { return function () { c.classList.remove("is-entering"); }; }(card));
+    }
+    // Prefer a visible row card's poster button (the hero slide may be inert or off-screen).
+    var focusTarget = null;
+    for (var j = 0; j < cards.length && !focusTarget; j++) {
+      var candidate = cards[j].querySelector("[role=button]");
+      if (candidate && visible(candidate)) focusTarget = candidate;
+    }
+    for (var k = 0; k < cards.length && !focusTarget; k++) {
+      var fallback = cards[k].querySelector("summary");
+      if (fallback && visible(fallback)) focusTarget = fallback;
+    }
+    if (focusTarget) focusTarget.focus();
+    else { var main = doc.getElementById("main"); if (main) main.focus(); }
+  }
+
+  function undismiss(undo, returnTo, cards, places) {
     var body = new URLSearchParams();
     body.set("type", undo.type);
     body.set("id", String(undo.id));
     body.set("return_to", returnTo || window.location.pathname + window.location.search);
     post("/undismiss", body).then(function (data) {
       if (!data.ok) { toast(data.message || "Couldn't undo that.", { error: true }); return; }
-      if (card && place) reinsertCard(card, place); else window.location.reload();
+      if (cards && cards.length && places) reinsertCards(cards, places); else window.location.reload();
       toast(data.message || "Restored");
     }).catch(function () { toast("Couldn't reach the server - try again.", { error: true }); });
   }
@@ -381,7 +474,9 @@
     if (text) text.textContent = mine ? "Your rating: " + mine + "/5" : (plex ? "From Plex: " + plex + "/5" : "Not rated");
     var clear = form.querySelector(".star-clear");
     if (mine && !clear) {
-      form.appendChild(el("button", { type: "submit", name: "stars", value: "0", className: "link-btn star-clear", text: "Clear rating" }));
+      var clearButton = el("button", { type: "submit", name: "stars", value: "0", className: "link-btn star-clear", text: "Clear rating" });
+      if (form.closest(".preview")) clearButton.setAttribute("tabindex", "-1");  // keyboard users rate in the modal
+      form.appendChild(clearButton);
     } else if (!mine && clear) {
       clear.parentNode.removeChild(clear);
     }
@@ -400,19 +495,136 @@
       }).catch(function () { toast("Couldn't reach the server - try again.", { error: true }); });
   }
 
+  /* ---------------- colour theme picker (form[data-enhance=theme] on /appearance) ---------------- */
+
+  var root = doc.documentElement;
+  var savedTheme = root.getAttribute("data-theme");
+  var themeTimer = null;
+  var pickSeq = 0;  // bumped on every new selection; a response for an older one is stale
+
+  function themeRadios() {
+    return Array.prototype.slice.call(doc.querySelectorAll("form[data-enhance=theme] .theme-radio"));
+  }
+
+  function setMeta(media, color) {
+    var meta = doc.querySelector('meta[name=theme-color][media="' + media + '"]');
+    if (meta && color) meta.setAttribute("content", color);
+  }
+
+  /* Preview a theme at once: <html data-theme> plus the browser-chrome colour metas. No save. */
+  function applyTheme(option) {
+    var radio = option.querySelector(".theme-radio");
+    if (!radio) return;
+    root.setAttribute("data-theme", radio.value);
+    setMeta("(prefers-color-scheme: dark)", option.getAttribute("data-meta-dark"));
+    setMeta("(prefers-color-scheme: light)", option.getAttribute("data-meta-light"));
+  }
+
+  /* Check the radio for `key`, apply it and put the "Current" pill on it. */
+  function showTheme(key, apply) {
+    themeRadios().forEach(function (radio) {
+      var option = radio.closest(".theme-option");
+      var on = radio.value === key;
+      radio.checked = on;
+      var pill = option.querySelector(".theme-current");
+      if (on) {
+        if (apply) applyTheme(option);
+        if (!pill) {
+          pill = el("span", { className: "theme-current", text: "Current" });
+          var name = option.querySelector(".theme-name");
+          if (name && name.parentNode) name.parentNode.insertBefore(pill, name.nextSibling);
+        }
+      } else if (pill && pill.parentNode) {
+        pill.parentNode.removeChild(pill);
+      }
+    });
+  }
+
+  /* Move only the "Current" pill (radios and the previewed theme stay as the user left them). */
+  function markCurrent(key) {
+    themeRadios().forEach(function (radio) {
+      var option = radio.closest(".theme-option");
+      var pill = option.querySelector(".theme-current");
+      if (radio.value === key) {
+        if (!pill) {
+          var name = option.querySelector(".theme-name");
+          if (name && name.parentNode) name.parentNode.insertBefore(el("span", { className: "theme-current", text: "Current" }), name.nextSibling);
+        }
+      } else if (pill && pill.parentNode) {
+        pill.parentNode.removeChild(pill);
+      }
+    });
+  }
+
+  function saveTheme(form, keepalive) {
+    clearTimeout(themeTimer);
+    themeTimer = null;
+    var radio = form.querySelector(".theme-radio:checked");
+    if (!radio) return;
+    var seq = pickSeq;
+    var stale = function () { return seq !== pickSeq || themeTimer !== null; };
+    var revert = function (message) {
+      if (stale()) return;  // a newer pick is on screen: leave it alone
+      showTheme(savedTheme, true);
+      toast(message, { error: true });
+    };
+    post(form.getAttribute("action"), new URLSearchParams({ theme: radio.value, return_to: field(form, "return_to") }), keepalive)
+      .then(function (data) {
+        if (!data.ok) { revert(data.message || "Couldn't save that theme."); return; }
+        savedTheme = data.theme;
+        if (stale()) { markCurrent(savedTheme); return; }
+        showTheme(savedTheme, false);
+        toast(data.message || "Theme saved");
+      }).catch(function (err) {
+        if (err && err.notJson) { failed(form, err); return; }
+        revert("Couldn't reach the server - try again.");
+      });
+  }
+
+  doc.addEventListener("change", function (e) {
+    var radio = e.target;
+    if (!radio || !radio.classList || !radio.classList.contains("theme-radio")) return;
+    var form = radio.form;
+    if (!form || form.getAttribute("data-enhance") !== "theme") return;
+    pickSeq++;
+    applyTheme(radio.closest(".theme-option"));
+    clearTimeout(themeTimer);
+    themeTimer = setTimeout(function () { saveTheme(form); }, 400);
+  });
+
+  // Leaving within the debounce window: save now (keepalive lets the request outlive the page).
+  window.addEventListener("pagehide", function () {
+    var form = themeTimer !== null && doc.querySelector("form[data-enhance=theme]");
+    if (form) saveTheme(form, true);
+  });
+
+  // Back/forward cache restores the old DOM: re-sync with the cookie the server set.
+  window.addEventListener("pageshow", function (e) {
+    if (!e.persisted) return;
+    var match = /(?:^|;\s*)wn_theme=([^;]*)/.exec(doc.cookie || "");
+    if (!match || !/^[a-z]{1,20}$/.test(match[1])) return;
+    savedTheme = match[1];
+    root.setAttribute("data-theme", savedTheme);
+    if (themeRadios().length) {
+      showTheme(savedTheme, true);
+    }
+  });
+
   var handlers = {
+    theme: function (form) { saveTheme(form); },
+
     dismiss: function (form) {
       var type = field(form, "type"), id = field(form, "id"), returnTo = field(form, "return_to");
-      var card = findCard(type, id);
+      var cards = findCards(type, id);
       closeModal();
       setBusy(form, true);
       postForm(form).then(function (data) {
         setBusy(form, false);
         if (!data.ok) { toast(data.message || "Couldn't hide that.", { error: true }); return; }
         var undo = data.undo || { type: type, id: id };
-        (card ? removeCard(card) : Promise.resolve(null)).then(function (place) {
+        (cards.length ? removeCards(cards) : Promise.resolve(null)).then(function (places) {
           toast(data.message || "Hidden", {
-            action: { label: "Undo", run: function () { undismiss(undo, returnTo, card, place); } }
+            action: { label: "Undo", run: function () { undismiss(undo, returnTo, cards, places); } }
           });
         });
       }).catch(function (err) { setBusy(form, false); failed(form, err); });
@@ -435,8 +647,7 @@
         if (!data.ok) { toast(data.message || "Couldn't add that.", { error: true }); return; }
         closeModal();
         toast(data.message || "Added");
-        var card = findCard(type, id);
-        if (card) removeCard(card);
+        removeCards(findCards(type, id));
       }).catch(function (err) { setBusy(form, false); failed(form, err); });
     },
 
@@ -477,8 +688,14 @@
         if (!data.ok) { toast(data.message || "Couldn't save that rating.", { error: true }); return; }
         var rating = data.rating || {};
         applyRating(form, rating.stars, rating.plex_stars);
+        // The same title can have several rate forms (hero, rows, preview): keep them in step.
+        Array.prototype.forEach.call(doc.querySelectorAll("form[data-enhance=rate]"), function (other) {
+          if (other !== form && field(other, "type") === field(form, "type") && field(other, "id") === field(form, "id")) {
+            applyRating(other, rating.stars, rating.plex_stars);
+          }
+        });
         var target = stars === "0" ? form.querySelector(".star") : form.querySelector('.star[value="' + stars + '"]');
-        if (target) target.focus();
+        if (target && !form.classList.contains("preview-rate")) target.focus();
         toast(data.message || "Rating saved", { action: { label: "Update recommendations", run: refreshRecommendations } });
       }).catch(function (err) {
         setBusy(form, false);
@@ -531,12 +748,346 @@
   // A poster that fails to load (Plex down, thumb gone) becomes the tinted placeholder.
   doc.addEventListener("error", function (e) {
     var img = e.target;
+    if (img && img.tagName === "IMG" && img.parentNode &&
+        (img.classList.contains("hero-backdrop") || img.classList.contains("hero-poster"))) {
+      img.parentNode.removeChild(img);  // the tinted gradient behind it stays
+      return;
+    }
     if (!img || img.tagName !== "IMG" || !img.classList.contains("poster") || !img.parentNode) return;
     var title = img.closest("article") && img.closest("article").querySelector(".title");
     var box = el("div", { className: "poster poster-empty", "aria-hidden": "true", text: title ? title.textContent : "" });
     box.style.setProperty("--h", String(((title ? title.textContent.length : 0) * 47) % 360));
     img.parentNode.replaceChild(box, img);
   }, true);
+
+  /* ---------------- browse pages: hero, row arrows, hover preview, top bar ---------------- */
+
+  var mqDesktop = window.matchMedia ? window.matchMedia("(min-width: 821px)") : { matches: true };
+
+  function onMedia(query, fn) {
+    if (!query.addEventListener && !query.addListener) return;
+    if (query.addEventListener) query.addEventListener("change", fn); else query.addListener(fn);
+  }
+
+  function initHero(root) {
+    var slidesEl = root.querySelector("[data-hero-slides]");
+    if (!slidesEl) return;
+    var HERO_MS = 6000;
+    var cur = 0, timer = null, remaining = HERO_MS, startedAt = 0;
+    var userPaused = false, hovering = false, focusInside = false;
+    var override = false;  // set when Play is pressed: the pointer/focus are still on the hero, but rotation resumes anyway
+    var dotsEl = null, pauseBtn = null;
+
+    function slides() { return Array.prototype.slice.call(slidesEl.querySelectorAll("[data-slide]")); }
+    function auto() { return mqDesktop.matches && finePointer() && !reduceMotion; }
+    function canRun() { return auto() && !userPaused && (override || (!hovering && !focusInside)) && !doc.hidden; }
+    function clearOverride() { if (!hovering && !focusInside) override = false; }
+
+    function restartFill() {
+      var dot = dotsEl && dotsEl.querySelector(".hero-dot.on");
+      if (!dot) return;
+      dot.classList.remove("on");
+      void dot.offsetWidth;  // restart the CSS progress animation
+      dot.classList.add("on");
+    }
+
+    function stopTimer() {
+      if (!timer) return;
+      clearTimeout(timer);
+      timer = null;
+      remaining = Math.max(300, remaining - (Date.now() - startedAt));
+    }
+
+    function schedule() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      root.classList.toggle("is-paused", auto() && !canRun());
+      if (!canRun()) return;
+      startedAt = Date.now();
+      timer = setTimeout(function () { timer = null; show(cur + 1, true); }, remaining);
+    }
+
+    function pauseChanged() {
+      if (!canRun()) { stopTimer(); root.classList.toggle("is-paused", auto()); return; }
+      if (timer) root.classList.remove("is-paused");  // already running: leave the timer (and its elapsed time) alone
+      else schedule();
+    }
+
+    function mark() {
+      var list = slides();
+      list.forEach(function (slide, i) {
+        slide.classList.toggle("on", i === cur);
+        if (mqDesktop.matches && i !== cur) { slide.setAttribute("aria-hidden", "true"); slide.setAttribute("inert", ""); }
+        else { slide.removeAttribute("aria-hidden"); slide.removeAttribute("inert"); }
+      });
+      if (dotsEl) {
+        Array.prototype.forEach.call(dotsEl.querySelectorAll(".hero-dot"), function (dot, i) {
+          dot.classList.toggle("on", i === cur);
+          if (i === cur) dot.setAttribute("aria-current", "true"); else dot.removeAttribute("aria-current");
+        });
+      }
+    }
+
+    function slideStep(list) {
+      return list.length > 1 ? Math.abs(list[1].getBoundingClientRect().left - list[0].getBoundingClientRect().left) : slidesEl.clientWidth;
+    }
+
+    function show(n, fromTimer) {
+      var list = slides();
+      if (!list.length) return;
+      cur = (n + list.length) % list.length;
+      remaining = HERO_MS;
+      if (mqDesktop.matches) {
+        mark();
+        restartFill();
+      } else {
+        var left = slidesEl.scrollLeft + list[cur].getBoundingClientRect().left - slidesEl.getBoundingClientRect().left;
+        slidesEl.scrollTo({ left: left, behavior: reduceMotion ? "auto" : "smooth" });
+        mark();
+      }
+      schedule();
+    }
+
+    function build() {
+      var list = slides();
+      if (dotsEl && dotsEl.parentNode) dotsEl.parentNode.removeChild(dotsEl);
+      if (pauseBtn && pauseBtn.parentNode) pauseBtn.parentNode.removeChild(pauseBtn);
+      dotsEl = pauseBtn = null;
+      if (!list.length) return;
+      list.forEach(function (slide) { slide.hidden = false; });
+      dotsEl = el("div", { className: "hero-dots", role: "group", "aria-label": "Choose a featured title" });
+      list.forEach(function (slide, i) {
+        var title = slide.querySelector(".hero-title");
+        var dot = el("button", { type: "button", className: "hero-dot", "aria-label": "Show " + (title ? title.textContent : "title " + (i + 1)) });
+        dot.addEventListener("click", function () { show(i); });
+        dotsEl.appendChild(dot);
+      });
+      root.appendChild(dotsEl);
+      if (auto()) {
+        pauseBtn = el("button", { type: "button", className: "hero-pause", "aria-pressed": userPaused ? "true" : "false",
+                                  "aria-label": userPaused ? "Play slideshow" : "Pause slideshow", text: userPaused ? "Play" : "Pause" });
+        pauseBtn.addEventListener("click", function () {
+          userPaused = !userPaused;
+          override = !userPaused;
+          pauseBtn.setAttribute("aria-pressed", userPaused ? "true" : "false");
+          pauseBtn.setAttribute("aria-label", userPaused ? "Play slideshow" : "Pause slideshow");
+          pauseBtn.textContent = userPaused ? "Play" : "Pause";
+          pauseChanged();
+        });
+        root.appendChild(pauseBtn);
+      }
+    }
+
+    function sync() {
+      var list = slides();
+      if (!list.length) { stopTimer(); root.hidden = true; return; }
+      root.hidden = false;
+      if (cur >= list.length) cur = list.length - 1;
+      stopTimer();
+      remaining = HERO_MS;
+      build();
+      mark();
+      if (!mqDesktop.matches) {  // phone: the slides scroll natively; start where the user is
+        slidesEl.scrollLeft = 0;
+        cur = 0;
+        mark();
+      }
+      schedule();
+    }
+
+    root.addEventListener("mouseenter", function () { hovering = true; pauseChanged(); });
+    root.addEventListener("mouseleave", function () { hovering = false; clearOverride(); pauseChanged(); });
+    // Play's override only covers the hero controls (Pause/dots); inside a slide, hover/focus pause as normal.
+    function inSlide(node) { return !!(node && node.closest && node.closest("[data-slide]")); }
+    root.addEventListener("mouseover", function (e) { if (override && inSlide(e.target)) { override = false; pauseChanged(); } });
+    root.addEventListener("focusin", function (e) {
+      focusInside = true;
+      if (inSlide(e.target)) override = false;
+      pauseChanged();
+    });
+    root.addEventListener("focusout", function (e) {
+      if (e.relatedTarget && root.contains(e.relatedTarget)) return;
+      focusInside = false;
+      clearOverride();
+      pauseChanged();
+    });
+    doc.addEventListener("visibilitychange", pauseChanged);
+    onMedia(mqDesktop, function () { sync(); });
+
+    var scrollTick = null;
+    slidesEl.addEventListener("scroll", function () {  // phone: dots follow the swipe
+      if (mqDesktop.matches || scrollTick) return;
+      scrollTick = setTimeout(function () {
+        scrollTick = null;
+        var list = slides();
+        var step = slideStep(list) || 1;
+        var index = Math.max(0, Math.min(list.length - 1, Math.round(slidesEl.scrollLeft / step)));
+        if (index !== cur) { cur = index; mark(); }
+      }, 60);
+    }, { passive: true });
+
+    heroApi = { sync: sync };
+    sync();
+  }
+
+  var heroRoot = doc.querySelector("[data-hero]");
+  if (heroRoot) initHero(heroRoot);
+
+  /* Row arrows (mouse only): scroll a row by most of its width, hidden at either end. */
+  function updateArrows(track) {
+    var wrap = track.parentNode;
+    var prev = wrap && wrap.querySelector(".track-arrow.prev"), next = wrap && wrap.querySelector(".track-arrow.next");
+    if (!prev || !next) return;
+    prev.hidden = track.scrollLeft <= 2;
+    next.hidden = track.scrollLeft + track.clientWidth >= track.scrollWidth - 2;
+  }
+
+  if (finePointer()) {
+    Array.prototype.forEach.call(doc.querySelectorAll("[data-track]"), function (track) {
+      function arrow(dir) {
+        var button = el("button", { type: "button", className: "track-arrow " + dir, tabindex: "-1", "aria-hidden": "true",
+                                    "aria-label": dir === "prev" ? "Scroll left" : "Scroll right" });
+        button.addEventListener("click", function () {
+          track.scrollBy({ left: (dir === "prev" ? -1 : 1) * track.clientWidth * 0.85, behavior: reduceMotion ? "auto" : "smooth" });
+        });
+        return button;
+      }
+      track.parentNode.appendChild(arrow("prev"));
+      track.parentNode.appendChild(arrow("next"));
+      track.addEventListener("scroll", function () { updateArrows(track); }, { passive: true });
+      updateArrows(track);
+    });
+    window.addEventListener("resize", function () {
+      Array.prototype.forEach.call(doc.querySelectorAll("[data-track]"), updateArrows);
+    });
+  }
+
+  /* Hover preview: one shared element, a mouse-only shortcut to the card's actions. */
+  var preview = null, previewCard = null, lastPreviewCard = null, openTimer = null, closeTimer = null;
+
+  function closePreview() {
+    clearTimeout(openTimer);
+    clearTimeout(closeTimer);
+    openTimer = closeTimer = null;
+    if (preview) preview.classList.remove("is-open");
+    previewCard = null;
+  }
+
+  function scheduleClose() {
+    clearTimeout(openTimer);
+    clearTimeout(closeTimer);
+    closeTimer = setTimeout(closePreview, 150);
+  }
+
+  function previewButton(node, label, primary) {
+    node.classList.add("preview-btn");
+    if (primary) node.classList.add("primary");
+    node.setAttribute("tabindex", "-1");
+    node.setAttribute("aria-label", label);
+    return node;
+  }
+
+  function openPreview(card) {
+    if (!doc.contains(card) || (modal && modal.open) || !finePointer()) return;
+    if (!preview) {
+      preview = el("div", { className: "preview", "aria-hidden": "true" });
+      preview.addEventListener("mouseenter", function () { clearTimeout(closeTimer); closeTimer = null; });
+      preview.addEventListener("mouseleave", function (e) {
+        if (!(previewCard && e.relatedTarget && previewCard.contains(e.relatedTarget))) scheduleClose();
+      });
+      preview.addEventListener("click", function (e) {
+        var hit = e.target.closest && e.target.closest("a, button");
+        if (hit && !hit.classList.contains("star")) closePreview();  // rating keeps the preview open; the content stays for the delegated handlers
+      });
+      doc.body.appendChild(preview);
+    }
+    clearTimeout(closeTimer);
+    closeTimer = null;
+    previewCard = lastPreviewCard = card;
+    preview.textContent = "";
+    var art = card.querySelector(".card-poster .poster");
+    if (art) {
+      var posterBox = el("div", { className: "preview-poster" }, [art.cloneNode(true)]);
+      posterBox.addEventListener("click", function () { openDetail(card, card.querySelector("[data-open-detail]")); });
+      preview.appendChild(posterBox);
+    }
+
+    var actions = el("div", { className: "preview-actions" });
+    var add = card.querySelector("a[data-add-dialog]");
+    if (add) {
+      var addCopy = previewButton(add.cloneNode(true), "Add to library", true);
+      addCopy.classList.remove("btn-add");
+      addCopy.setAttribute("title", "Add to library");
+      addCopy.textContent = "\uFF0B";
+      actions.appendChild(addCopy);
+    }
+    var dismissForm = card.querySelector("form[data-enhance=dismiss]");
+    if (dismissForm) {
+      var formCopy = dismissForm.cloneNode(true);
+      var formButton = formCopy.querySelector("button");
+      if (formButton) {
+        previewButton(formButton, "Not interested", false);
+        formButton.setAttribute("title", "Not interested");
+        formButton.textContent = "\u2715";
+      }
+      actions.appendChild(formCopy);
+    }
+    var rateForm = card.querySelector("form[data-enhance=rate]");
+    if (rateForm) {
+      var rateCopy = rateForm.cloneNode(true);
+      rateCopy.classList.add("preview-rate");
+      Array.prototype.forEach.call(rateCopy.querySelectorAll("button"), function (b) { b.setAttribute("tabindex", "-1"); });
+      var rateText = rateCopy.querySelector(".rating-text");
+      if (rateText) rateText.parentNode.removeChild(rateText);
+      actions.appendChild(rateCopy);
+    }
+    var more = previewButton(el("button", { type: "button", title: "More info", text: "\u2304" }), "More info", false);
+    more.addEventListener("click", function () {
+      openDetail(card, card.querySelector("[data-open-detail]"));
+    });
+    actions.appendChild(more);
+
+    var body = el("div", { className: "preview-body" }, [actions]);
+    [".card-meta", ".chips", ".reason"].forEach(function (selector) {
+      var source = card.querySelector(selector);
+      if (source) body.appendChild(source.cloneNode(true));
+    });
+    preview.appendChild(body);
+
+    var rect = card.getBoundingClientRect();
+    var width = preview.offsetWidth || 320, height = preview.offsetHeight || 300;
+    var left = Math.max(8, Math.min(window.innerWidth - width - 8, rect.left + rect.width / 2 - width / 2));
+    var top = Math.max(8, Math.min(window.innerHeight - height - 8, rect.top - 12));
+    preview.style.left = left + "px";
+    preview.style.top = top + "px";
+    preview.classList.add("is-open");
+  }
+
+  if (finePointer()) {
+    doc.addEventListener("mouseover", function (e) {
+      var card = e.target.closest ? e.target.closest(".row-card[data-card]") : null;
+      if (!card || card.closest("dialog") || card.classList.contains("is-leaving")) return;
+      clearTimeout(closeTimer);
+      closeTimer = null;
+      if (card === previewCard) return;
+      clearTimeout(openTimer);
+      openTimer = setTimeout(function () { openPreview(card); }, 400);
+    });
+    doc.addEventListener("mouseout", function (e) {
+      var card = e.target.closest ? e.target.closest(".row-card[data-card]") : null;
+      if (!card || card.contains(e.relatedTarget) || (preview && e.relatedTarget && preview.contains(e.relatedTarget))) return;
+      scheduleClose();
+    });
+    doc.addEventListener("keydown", function (e) { if (e.key === "Escape") closePreview(); });
+    doc.addEventListener("scroll", function () { if (previewCard || openTimer) closePreview(); }, true);
+  }
+
+  /* Cinematic top bar: transparent over the hero, solid once the page scrolls. */
+  var topbar = doc.querySelector(".topbar");
+  if (topbar && doc.body.classList.contains("cinematic")) {
+    var syncTopbar = function () { topbar.classList.toggle("is-scrolled", window.scrollY > 10); };
+    window.addEventListener("scroll", syncTopbar, { passive: true });
+    syncTopbar();
+  }
 
   /* ---------------- status polling ---------------- */
 

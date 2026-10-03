@@ -9,15 +9,16 @@ from html import escape
 from urllib.parse import urlencode
 
 import config
-import db
 import profile
+import settings_page
 import sources
+import themes
 
 SHOW = 24                  # suggestions per page
-SUBTABS = (("all", "All"), ("new", "New & trending"), ("movie", "Movies"), ("tv", "TV shows"))
-# The sidebar/bottom-nav's top-level sections. "recommended" covers all four SUBTABS above.
-NAV_SECTIONS = (("home", "Home", "/"), ("recommended", "Recommended", "/recommended"),
-                ("library", "Library", "/library"), ("ai", "AI", "/ai"), ("settings", "Settings", "/settings"))
+# The top bar's / bottom nav's sections (Settings sits in the top bar only).
+NAV_SECTIONS = (("home", "Home", "/"), ("movies", "Movies", "/movies"), ("tv", "TV", "/tv"),
+                ("library", "Library", "/library"), ("ai", "AI picks", "/ai"), ("settings", "Settings", "/settings"))
+BROWSE_PAGES = {"all": ("home", "/"), "movie": ("movies", "/movies"), "tv": ("tv", "/tv")}  # kind -> (section, return_to)
 
 
 def _web_url(url):
@@ -48,13 +49,16 @@ def _poster_html(item):
         poster_key = None
     if poster_key is not None:
         return f'<img class="poster" src="/poster?key={poster_key}" alt="" loading="lazy">'
+    return f'<div class="poster poster-empty" style="--h:{_hue(item)}" aria-hidden="true">{escape(str(item.get("title") or ""))}</div>'
+
+
+def _hue(item):
     seed = item.get("tmdb_id")
     try:
         seed = int(seed)
     except (TypeError, ValueError):
         seed = zlib.crc32(str(item.get("title") or "").encode("utf-8"))
-    hue = (seed * 47) % 360
-    return f'<div class="poster poster-empty" style="--h:{hue}" aria-hidden="true">{escape(str(item.get("title") or ""))}</div>'
+    return (seed * 47) % 360
 
 
 def _card_key(item):
@@ -126,18 +130,8 @@ def _library_card(item, show_added=False):
             f'<p class="card-sub">{sub}</p></div></article>')
 
 
-def _watched_card(item, return_to):
-    """A watch-history card with 1-5 star buttons (a plain form, so it works without JS)."""
-    title_text = _title_text(item)
-    title = escape(title_text)
-    link = _web_url(item.get("url"))
-    title_html = (f'<a href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">{title}</a>'
-                  if link else title)
-    kind = "Movie" if item["media_type"] == "movie" else "TV"
-    sub = f'Watched {escape((item.get("last_viewed") or "")[:10])}' if item.get("last_viewed") else "Watched"
-    if (item.get("view_count") or 0) > 1:
-        sub += f' &middot; {int(item["view_count"])} plays'
-    mine, plex = item.get("stars"), item.get("plex_stars")
+def _rate_parts(mine, plex):
+    """(stars html, rating text, clear-button html) for a rate form: mine = your 1-5 or None, plex = Plex's 1-5 or None."""
     effective = mine or plex or 0
     from_plex = not mine and bool(plex)
     stars = "".join(
@@ -152,23 +146,36 @@ def _watched_card(item, return_to):
         text = "Not rated"
     clear = ('<button type="submit" name="stars" value="0" class="link-btn star-clear">Clear rating</button>'
              if mine else "")
+    return stars, text, clear
+
+
+def _star_value(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if 1 <= number <= 5 else None
+
+
+def _watched_card(item, return_to):
+    """A watch-history card with 1-5 star buttons (a plain form, so it works without JS)."""
+    title_text = _title_text(item)
+    title = escape(title_text)
+    link = _web_url(item.get("url"))
+    title_html = (f'<a href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">{title}</a>'
+                  if link else title)
+    kind = "Movie" if item["media_type"] == "movie" else "TV"
+    sub = f'Watched {escape((item.get("last_viewed") or "")[:10])}' if item.get("last_viewed") else "Watched"
+    if (item.get("view_count") or 0) > 1:
+        sub += f' &middot; {int(item["view_count"])} plays'
+    mine, plex = item.get("stars"), item.get("plex_stars")
+    stars, text, clear = _rate_parts(mine, plex)
     form = (f'<form class="rate" method="post" action="/rate" data-enhance="rate">{_hidden_fields(item, return_to)}'
             f'<div class="stars" role="group" aria-label="Your rating for {escape(title_text, quote=True)}">{stars}</div>'
             f'<p class="rating-text">{text}</p>{clear}</form>')
     return (f'<article class="card" data-card="{_card_key(item)}"><div class="card-poster">{_poster_html(item)}'
             f'<span class="kind">{kind}</span></div>'
             f'<div class="card-info"><h3 class="title">{title_html}</h3><p class="card-sub">{sub}</p>{form}</div></article>')
-
-
-def _in_tab(item, tab):
-    if tab == "new":
-        return bool(item.get("new") or item.get("trending"))
-    return tab == "all" or item["media_type"] == tab
-
-
-def _subtabs_html(active):
-    return "".join(f'<a class="subtab{" on" if key == active else ""}" href="/recommended?{urlencode({"type": key})}">'
-                   f'{escape(label)}</a>' for key, label in SUBTABS)
 
 
 def _configured_profiles(client_factory):
@@ -265,53 +272,17 @@ def _status():
         return {"state": "ready", "has_result": False, "error": None, "ai": {"state": "idle", "error": None}}
 
 
-def render_recommended(tab="all", refresh=False, msg="", undo=None):
-    """refresh is accepted for compatibility but unused: POST /refresh starts rebuilds now."""
-    return_to = f"/recommended?{urlencode({'type': tab})}"
-    subtabs = f'<nav class="subtabs" aria-label="Filter">{_subtabs_html(tab)}</nav>'
-    messages = _message_notes(msg, undo, return_to)
-    try:
-        result, age = web.get_result_nowait()
-    except Exception as e:
-        body = subtabs + messages + _error_screen(str(e), return_to)
-        return _shell(body, "recommended", return_to=return_to)
-    status = _status()
-    if result is None:
-        if status.get("state") == "error":
-            return _shell(subtabs + messages + _error_screen(status.get("error"), return_to), "recommended",
-                          "The last attempt failed", return_to=return_to)
-        return _shell(subtabs + messages + _waiting_screen("recs"), "recommended", "Getting things ready",
-                      return_to=return_to, auto_refresh=True)
-
-    items = [i for i in result["items"] if _in_tab(i, tab)][:SHOW]
-    notes = messages + "".join(f'<p class="note">{escape(n)}</p>' for n in result["notes"])
-    notes += _stale_error_note(status)
-    taste = ""
-    top = profile.summary(result["profile"], 5)
-    if any(top.values()):
-        rows = [("Genres", top["genre"]), ("Themes", top["keyword"]), ("People", top["director"] + top["actor"][:3])]
-        taste = ('<div class="taste">' + "".join(
-            f'<div><b>{label}</b> {escape(", ".join(names))}</div>' for label, names in rows if names) + "</div>")
-    cards = "".join(_card(i, return_to, not result["sample"]) for i in items)
-    if items:
-        grid = f'<div class="grid" data-grid>{cards}</div>'
-    else:
-        grid = ('<div class="empty"><h3>Nothing here right now</h3><p>No recommendations found for this filter. '
-                'Try another tab, or Refresh to look again.</p></div>')
-    body = f'{subtabs}{notes}{taste}{grid}'
-    subtitle = f"Based on {result['watched_count']} watched titles - updated {_age_text(age)}"
-    building = status.get("state") == "building"
-    return _shell(body, "recommended", subtitle, show_refresh=True, return_to=return_to,
-                  status_html=UPDATING_HTML if building else "", auto_refresh=building)
-
-
 def render_add_dialog(media_type, tmdb_id, return_to, partial=False):
     """A dedicated page (or, with partial=True, just the dialog's inner HTML for app.js's modal):
     quality profiles are fetched here and only here, so viewing the Recommended or AI list never
     pays for a Radarr/Sonarr round-trip you might not need. Looks in both caches (web._find_item)
     rather than forcing a recompute - this can be reached from either the Recommended or the AI page."""
     return_to = web._safe_path(return_to)
-    section = "ai" if return_to.startswith("/ai") else "recommended"
+    section = "home"
+    for prefix, name in (("/ai", "ai"), ("/movies", "movies"), ("/tv", "tv"), ("/library", "library")):
+        if return_to.startswith(prefix):
+            section = name
+            break
     item = web._find_item(media_type, tmdb_id) if not web._is_sample() else None
     if item is None:
         inner = (f'<div class="dialog-box"><div class="dialog-head"><div>'
@@ -344,40 +315,224 @@ def render_add_dialog(media_type, tmdb_id, return_to, partial=False):
     return _shell(f'<div class="dialog-page">{inner}</div>', section, f"Adding to {service}")
 
 
-def render_home(refresh=False):
-    """refresh is accepted for compatibility but unused: POST /refresh starts rebuilds now."""
+def _can_add(item, can_act):
+    """Whether this item gets an "Add to library" link: not sample, and its Radarr/Sonarr is set up."""
+    return bool(can_act and ((item["media_type"] == "movie" and config.radarr_configured())
+                             or (item["media_type"] == "tv" and config.sonarr_configured())))
+
+
+def _add_link(item, return_to):
+    # A real page nav, not an inline dialog (see _card); app.js opens it in a modal instead.
+    dialog_url = "/add-dialog?" + urlencode({"type": item["media_type"], "id": item["tmdb_id"], "return_to": return_to})
+    return f'<a class="btn-add" href="{escape(dialog_url, quote=True)}" data-add-dialog>Add to library</a>'
+
+
+def _int_or_none(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _runtime_text(item):
+    """"2h 46m" / "46m" for a movie, "3 seasons" / "1 season" for a show, else ""."""
+    minutes = _int_or_none(item.get("runtime"))
+    if minutes:
+        hours, rest = divmod(minutes, 60)
+        return " ".join(part for part in (f"{hours}h" if hours else "", f"{rest}m" if rest else "") if part)
+    seasons = _int_or_none(item.get("seasons"))
+    if seasons:
+        return f"{seasons} season{'s' if seasons != 1 else ''}"
+    return ""
+
+
+def _meta_html(item):
+    """Inner spans of a .card-meta line: match, year, certification, runtime / seasons."""
+    try:
+        match = int(item.get("match") or 0)
+    except (TypeError, ValueError):
+        match = 0
+    parts = [f'<span class="match">{match}% match</span>']
+    if item.get("year"):
+        parts.append(f'<span>{escape(str(item["year"]))}</span>')
+    if item.get("certification"):
+        parts.append(f'<span class="badge cert">{escape(str(item["certification"]))}</span>')
+    runtime = _runtime_text(item)
+    if runtime:
+        parts.append(f'<span>{escape(runtime)}</span>')
+    return "".join(parts)
+
+
+def _detail_body(item):
+    """The .detail-body shared by hero and row cards (app.js clones it into the modal)."""
+    link = _web_url(item.get("url"))
+    reason = escape(item.get("reason") or "")
+    chips = "".join(f'<span class="chip">{escape(m)}</span>' for m in item.get("matches") or [])
+    ext = (f'<a class="ext-link" href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">'
+           f'More on TMDB<span class="visually-hidden"> (opens in a new tab)</span> &#8599;</a>' if link else "")
+    return ('<div class="detail-body">'
+            f'<p class="card-meta">{_meta_html(item)}</p>'
+            + (f'<p class="reason">{reason}</p>' if reason else "")
+            + (f'<div class="chips">{chips}</div>' if chips else "")
+            + f'<p class="overview">{escape(item.get("overview") or "No overview available.")}</p>{ext}</div>')
+
+
+def _rate_form(item, return_to):
+    """1-5 stars posting to /rate (the same form the Library uses), showing your saved rating (item["stars"]).
+    Rating a recommendation never hides it. Shown even in sample mode: the server answers
+    "Sample data - not saved" and app.js toasts it."""
+    title = escape(_title_text(item), quote=True)
+    stars, text, clear = _rate_parts(_star_value(item.get("stars")), _star_value(item.get("plex_stars")))
+    return (f'<form class="rate" method="post" action="/rate" data-enhance="rate">{_hidden_fields(item, return_to)}'
+            f'<div class="stars" role="group" aria-label="Your rating for {title}">{stars}</div>'
+            f'<p class="rating-text">{text}</p>{clear}</form>')
+
+
+def _card_actions(item, return_to, can_act):
+    add = _add_link(item, return_to) if _can_add(item, can_act) else ""
+    dismiss = (f'<form class="inline" method="post" action="/dismiss" data-enhance="dismiss">'
+               f'{_hidden_fields(item, return_to)}<button type="submit">Not interested</button></form>'
+               if can_act else "")
+    return f'<div class="card-actions">{add}{dismiss}{_rate_form(item, return_to)}</div>'
+
+
+def _row_card(item, return_to, can_act, rank=None):
+    """A poster card in a row. Reason, overview and actions sit in a <details> (no JS); with JS the
+    poster becomes a button that opens the same content in the detail modal."""
+    title = escape(_title_text(item))
+    rank_html = f'<span class="rank" aria-hidden="true">{int(rank)}</span>' if rank is not None else ""
+    lib = '<span class="lib-tag">In library</span>' if item.get("in_library") else ""
+    return (f'<article class="card row-card" data-card="{_card_key(item)}">'
+            f'<div class="card-poster" data-open-detail>{rank_html}{_poster_html(item)}'
+            f'<div class="poster-top"><span class="match">{int(item.get("match") or 0)}% match</span>{lib}</div></div>'
+            f'<div class="card-info"><h4 class="title">{title}</h4>'
+            f'<details class="card-details"><summary>Details<span class="visually-hidden">: {title}</span></summary>'
+            f'{_detail_body(item)}{_card_actions(item, return_to, can_act)}</details></div></article>')
+
+
+def _library_row_card(item):
+    """A "New in your library" card: poster, tag, title (linked to TMDB when known). No actions."""
+    link = _web_url(item.get("url"))
+    title = escape(_title_text(item))
+    if link:
+        title = f'<a href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">{title}</a>'
+    return (f'<article class="card row-card lib-card"><div class="card-poster">{_poster_html(item)}</div>'
+            f'<span class="lib-tag">In library</span>'
+            f'<div class="card-info"><h4 class="title">{title}</h4></div></article>')
+
+
+def _row_html(row, return_to, can_act):
+    rid = escape(str(row["id"]), quote=True)
+    if row.get("source") == "library":
+        cards = "".join(_library_row_card(i) for i in row["items"])
+    else:
+        numbered = row.get("numbered")
+        cards = "".join(_row_card(i, return_to, can_act, n if numbered else None)
+                        for n, i in enumerate(row["items"], 1))
+    sub = f'<p class="row-sub">{escape(row["subtitle"])}</p>' if row.get("subtitle") else ""
+    return (f'<section class="row" data-row="{rid}" aria-labelledby="row-{rid}">'
+            f'<div class="row-head"><h3 id="row-{rid}">{escape(row["title"])}</h3>{sub}</div>'
+            f'<div class="track-wrap"><div class="track{" track-numbered" if row.get("numbered") else ""}" data-track>'
+            f'{cards}</div></div></section>')
+
+
+def _hero_art(item):
+    backdrop = _web_url(item.get("backdrop_url"))
+    poster = _web_url(item.get("poster_large_url")) or _web_url(item.get("poster_url"))
+    imgs = ""
+    if backdrop:
+        imgs += f'<img class="hero-backdrop" src="{escape(backdrop, quote=True)}" alt="" loading="lazy">'
+    if poster:
+        imgs += f'<img class="hero-poster" src="{escape(poster, quote=True)}" alt="" loading="lazy">'
+    if not imgs:
+        imgs = f'<span class="hero-glyph">{escape(str(item.get("title") or "?")[:1])}</span>'
+    return f'<div class="hero-art" style="--h:{_hue(item)}" aria-hidden="true">{imgs}</div>'
+
+
+def _hero_slide(item, n, total, return_to, can_act):
+    title = escape(str(item["title"]))
+    genres = " &middot; ".join(escape(str(g)) for g in (item.get("genres") or [])[:3])
+    reason = escape(item.get("reason") or "")
+    if item.get("in_library"):
+        primary = '<span class="lib-tag">In library</span>'
+    else:
+        primary = _add_link(item, return_to) if _can_add(item, can_act) else ""
+    return (f'<article class="hero-slide{" on" if n == 1 else ""}" data-slide data-card="{_card_key(item)}" '
+            f'aria-label="{n} of {total}: {escape(str(item["title"]), quote=True)}"{"" if n == 1 else " hidden"}>'
+            f'{_hero_art(item)}'
+            f'<div class="card-poster" hidden>{_poster_html(item)}</div>'
+            f'<div class="hero-copy"><p class="kicker">Top pick for you</p>'
+            f'<h3 class="title hero-title">{title}</h3>'
+            f'<p class="hero-meta card-meta">{_meta_html(item)}'
+            + (f'<span class="hero-genres">{genres}</span>' if genres else "")
+            + '</p>'
+            + (f'<p class="reason">{reason}</p>' if reason else "")
+            + f'<div class="hero-actions">{primary}'
+            f'<details class="card-details hero-details"><summary>More info<span class="visually-hidden">: {title}</span></summary>'
+            f'{_detail_body(item)}{_card_actions(item, return_to, can_act)}</details></div></div></article>')
+
+
+def _hero_html(items, return_to, can_act):
+    if not items:
+        return ""
+    slides = "".join(_hero_slide(i, n, len(items), return_to, can_act) for n, i in enumerate(items, 1))
+    return (f'<section class="hero" data-hero aria-label="Top picks for you">'
+            f'<div class="hero-slides" data-hero-slides>{slides}</div></section>')
+
+
+def _taste_html(result):
+    top = profile.summary(result.get("profile") or {"genre": {}, "keyword": {}, "director": {}, "actor": {}}, 5)
+    if not any(top.values()):
+        return ""
+    rows = [("Genres", top["genre"]), ("Themes", top["keyword"]), ("People", top["director"] + top["actor"][:3])]
+    return ('<div class="taste">' + "".join(
+        f'<div><b>{label}</b> {escape(", ".join(names))}</div>' for label, names in rows if names) + "</div>")
+
+
+def render_browse(kind="all", msg="", undo=None):
+    """Home / Movies / TV: a hero of the top picks, then headed rows (see browse.py). Reads state
+    only through web.*; never starts an AI generation."""
+    kind = kind if kind in BROWSE_PAGES else "all"
+    section, return_to = BROWSE_PAGES[kind]
+    messages = _message_notes(msg, undo, return_to)
     try:
         result, age = web.get_result_nowait()
     except Exception as e:
-        return _shell(_error_screen(str(e), "/"), "home", return_to="/")
+        return _shell(messages + _error_screen(str(e), return_to), section, return_to=return_to)
     status = _status()
     if result is None:
         if status.get("state") == "error":
-            return _shell(_error_screen(status.get("error"), "/"), "home", "The last attempt failed", return_to="/")
-        return _shell(_waiting_screen("recs"), "home", "Getting things ready", return_to="/", auto_refresh=True)
-    tiles = [
-        ("Recommended", len(result["items"]), "/recommended"),
-        ("Added to library", db.added_count(), "/library?type=added"),
-        ("Not interested", len(db.dismissed()), None),
-        ("Watched titles analyzed", result["watched_count"], None),
-    ]
-    tiles_html = "".join(
-        (f'<a class="tile" href="{href}">' if href else '<div class="tile">')
-        + f'<div class="tile-value">{value}</div><div class="tile-label">{escape(label)}</div>'
-        + ('</a>' if href else '</div>')
-        for label, value, href in tiles)
-    notes = "".join(f'<p class="note">{escape(n)}</p>' for n in result["notes"])
-    picks = result["items"][:12]
-    rail = ""
-    if picks:
-        # Read-only here (no actions): Home's redirects can't carry a message or an Undo note.
-        rail = ('<div class="section-head"><h3>Top picks for you</h3><a href="/recommended">See all &#8250;</a></div>'
-                f'<div class="rail">{"".join(_card(i, "/", False) for i in picks)}</div>')
-    subtitle = f"Updated {_age_text(age)}"
-    notes += _stale_error_note(status)
+            return _shell(messages + _error_screen(status.get("error"), return_to), section,
+                          "The last attempt failed", return_to=return_to)
+        return _shell(messages + _waiting_screen("recs"), section, "Getting things ready",
+                      return_to=return_to, auto_refresh=True)
+
+    view = web.browse_view(result, kind)
     building = status.get("state") == "building"
-    return _shell(f'{notes}<div class="tiles">{tiles_html}</div>{rail}', "home", subtitle, show_refresh=True,
-                  return_to="/", status_html=UPDATING_HTML if building else "", auto_refresh=building)
+    if not view["total"]:
+        body = (f'{messages}<div class="empty"><h3>Nothing to recommend here yet</h3>'
+                f'<p>No recommendations found for this page. Refresh to look again.</p>'
+                f'{_refresh_form(return_to)}</div>')
+        return _shell(body, section, return_to=return_to, status_html=UPDATING_HTML if building else "",
+                      auto_refresh=building)
+
+    can_act = not result.get("sample")
+    parts = [f'<div class="browse-messages">{messages}</div>' if messages else "",
+             _hero_html(view["hero"], return_to, can_act)]
+    if view["rows"]:
+        parts.append('<div class="rows">' + "".join(_row_html(r, return_to, can_act) for r in view["rows"]) + '</div>')
+    foot = "".join(f'<p class="note">{escape(n)}</p>' for n in result.get("notes") or [])
+    foot += _stale_error_note(status) + _taste_html(result)
+    if foot:
+        parts.append(f'<div class="browse-foot">{foot}</div>')
+    subtitle = f"Based on {result.get('watched_count', 0)} watched titles - updated {_age_text(age)}"
+    return _shell("".join(parts), section, subtitle, show_refresh=True, return_to=return_to,
+                  status_html=UPDATING_HTML if building else "", auto_refresh=building, cinematic=True)
+
+
+def render_home(msg="", undo=None):
+    return render_browse("all", msg, undo)
 
 
 LIBRARY_TABS = (("all", "All"), ("movie", "Movies"), ("tv", "TV shows"), ("watched", "Watched"),
@@ -563,7 +718,8 @@ def render_ai_page(msg="", undo=None):
 # Inline SVG nav icons (fixed strings, no user data).
 _NAV_ICONS = {
     "home": '<path d="M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
-    "recommended": '<path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>',
+    "movies": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18M8 5v4M16 5v4M3 15h18"/>',
+    "tv": '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M8 21h8M12 18v3M9 2l3 4 3-4"/>',
     "library": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>',
     "ai": '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
     "settings": '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/>'
@@ -571,9 +727,12 @@ _NAV_ICONS = {
 }
 
 
-def _nav_html(section):
+def _nav_html(section, keys=None):
+    """The .nav-item links for the given section keys (default: all but Settings)."""
     links = []
     for key, label, href in NAV_SECTIONS:
+        if (keys is not None and key not in keys) or (keys is None and key == "settings"):
+            continue
         active, current = (" active", ' aria-current="page"') if key == section else ("", "")
         links.append(f'<a class="nav-item{active}" href="{href}"{current}>'
                      f'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
@@ -582,28 +741,68 @@ def _nav_html(section):
     return "".join(links)
 
 
-def _shell(body, section, subtitle="", show_refresh=False, return_to="/", status_html="", auto_refresh=False):
+def render_appearance(msg=""):
+    """The colour-theme picker (a Settings sub-tab). Each card carries its own data-theme, so app.css
+    previews it in that theme's colours; the saved theme is the checked one."""
+    current = themes.get(web.current_theme())["key"]
+    options = []
+    for t in themes.THEMES:
+        is_current = t["key"] == current
+        pill = '<span class="theme-current">Current</span>' if is_current else ""
+        options.append(
+            f'<label class="theme-option" data-theme="{escape(t["key"])}" data-meta-dark="{escape(t["bg"])}" '
+            f'data-meta-light="{escape(t["bg_light"])}">'
+            f'<input class="theme-radio" type="radio" name="theme" value="{escape(t["key"])}"{" checked" if is_current else ""}>'
+            '<span class="theme-swatch" aria-hidden="true"><span class="swatch-top"></span>'
+            '<span class="swatch-hero"><span class="swatch-line"></span><span class="swatch-line short"></span>'
+            '<span class="swatch-btn"></span></span>'
+            '<span class="swatch-row"><span class="swatch-card"></span><span class="swatch-card"></span>'
+            '<span class="swatch-card"></span></span></span>'
+            f'<span class="theme-text"><span class="theme-name">{escape(t["label"])}</span>'
+            f'{pill}'
+            f'<span class="theme-desc">{escape(t["description"])}</span></span></label>')
+    body = (f'<div class="settings appearance">{settings_page.subtabs_html("appearance")}'
+            f'{_message_notes(msg, None, "/appearance")}'
+            '<form class="theme-form" method="post" action="/theme" data-enhance="theme">'
+            '<input type="hidden" name="return_to" value="/appearance">'
+            '<fieldset class="theme-picker"><legend>Colour theme</legend>'
+            '<p class="muted theme-help">Saved on this device only. Light or dark follows your device setting.</p>'
+            f'<div class="theme-grid">{"".join(options)}</div></fieldset>'
+            '<button type="submit" class="btn-add theme-submit">Use this theme</button></form></div>')
+    return _shell(body, "settings")
+
+
+def _shell(body, section, subtitle="", show_refresh=False, return_to="/", status_html="", auto_refresh=False,
+           cinematic=False):
     """status_html: trusted markup (e.g. UPDATING_HTML) appended to the subtitle. auto_refresh: the
-    no-JS fallback for the building screens - app.js polls /api/status instead."""
+    no-JS fallback for the building screens - app.js polls /api/status instead. cinematic: a ready
+    browse page - the hero sits under the transparent top bar and the title strip moves below the rows."""
     heading = dict((key, label) for key, label, _ in NAV_SECTIONS).get(section, "What's Next")
     nav_html = _nav_html(section)
     refresh = _refresh_form(return_to) if show_refresh else ""
     meta_refresh = '<noscript><meta http-equiv="refresh" content="5"></noscript>' if auto_refresh else ""
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    body_class = ' class="cinematic"' if cinematic else ""
+    if cinematic:
+        main = (f'{body}<div class="top browse-top"><h2 class="visually-hidden">{escape(heading)}</h2>'
+                f'<p class="sub">{escape(subtitle)}{status_html}</p><div class="top-actions">{refresh}</div></div>')
+    else:
+        main = (f'<div class="top"><div><h2>{escape(heading)}</h2><p class="sub">{escape(subtitle)}{status_html}</p></div>'
+                f'<div class="top-actions">{refresh}</div></div>{body}')
+    theme = themes.get(web.current_theme())
+    return (f'<!doctype html><html lang="en" data-theme="{escape(theme["key"])}"><head><meta charset="utf-8">'
             f'<title>{escape(heading)} - What&#39;s Next</title>'
             f'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
-            f'<meta name="color-scheme" content="dark light"><meta name="theme-color" content="#0a0c11">'
+            f'<meta name="color-scheme" content="dark light">'
+            f'<meta name="theme-color" media="(prefers-color-scheme: dark)" content="{escape(theme["bg"])}">'
+            f'<meta name="theme-color" media="(prefers-color-scheme: light)" content="{escape(theme["bg_light"])}">'
             f'<link rel="stylesheet" href="/static/app.css"><script src="/static/app.js" defer></script>'
-            f'{meta_refresh}</head><body>'
+            f'{meta_refresh}</head><body{body_class}>'
             f'<a class="skip-link" href="#main">Skip to content</a>'
-            f'<div class="app-shell">'
-            f'<aside class="app-sidebar"><div class="brand-lockup"><span class="brand-mark" aria-hidden="true">W</span>'
-            f'<div><h1>What&#39;s Next</h1><p>Movies &amp; TV, just for you</p></div></div>'
-            f'<nav class="nav-list" aria-label="Main">{nav_html}</nav></aside>'
-            f'<main class="app-main" id="main" tabindex="-1">'
-            f'<div class="top"><div><h2>{escape(heading)}</h2><p class="sub">{escape(subtitle)}{status_html}</p></div>'
-            f'<div class="top-actions">{refresh}</div></div>'
-            f'{body}</main></div>'
+            f'<header class="topbar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">W</span>'
+            f'<h1 class="brand-name">What&#39;s Next</h1></a>'
+            f'<nav class="topnav" aria-label="Main">{nav_html}</nav>'
+            f'<div class="topbar-actions">{_nav_html(section, ("settings",))}</div></header>'
+            f'<main class="app-main" id="main" tabindex="-1">{main}</main>'
             f'<nav class="bottom-nav" aria-label="Main">{nav_html}</nav>'
             f'<div class="toasts" id="toasts" role="status" aria-live="polite"></div>'
             f'</body></html>')

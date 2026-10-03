@@ -1,0 +1,313 @@
+<title>What's Next Cinematic Mockups</title>
+<style>
+/* Layout: three labelled artboards (desktop home, phone home, hover card) on a neutral board. Tokens copied from static/app.css so the mockup matches the live app. */
+:root{
+  --board:#e4e6ec; --board-ink:#10131a; --board-muted:#535c6c;
+  --bg:#0a0c11; --bg-2:#10131a; --surface:#161a23; --surface-2:#1e2330; --line:#2a3140;
+  --text:#f3f5f9; --muted:#a3acbd; --accent:#ffb224; --accent-ink:#1a1200; --accent-text:#ffc557;
+  --accent-soft:rgba(255,178,36,.14); --ok:#6ee7a8;
+  --radius:14px; --radius-sm:10px;
+  --font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--board:#06070a;--board-ink:#f3f5f9;--board-muted:#a3acbd}}
+:root[data-theme="dark"]{--board:#06070a;--board-ink:#f3f5f9;--board-muted:#a3acbd}
+body{background:var(--board);color:var(--board-ink);font-family:var(--font);padding-inline:16px;padding-block:32px;line-height:1.5}
+.wrap{max-width:1320px;margin:0 auto;display:flex;flex-direction:column;gap:48px}
+h1{font-size:1.6rem;margin:0 0 6px;text-wrap:balance}
+.intro p{margin:0;color:var(--board-muted);max-width:68ch}
+.label{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:12px}
+.label h2{margin:0;font-size:1.05rem}
+.label span{color:var(--board-muted);font-size:.9rem}
+.notes{margin:12px 0 0;padding-left:18px;color:var(--board-muted);font-size:.9rem;display:grid;gap:2px}
+
+/* ---------- app frame (dark, matches live app) ---------- */
+.frame{background:var(--bg);color:var(--text);border-radius:12px;overflow:hidden;border:1px solid var(--line);box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.topbar{position:absolute;inset:0 0 auto 0;z-index:5;display:flex;align-items:center;gap:24px;padding:16px 4%;
+  background:linear-gradient(180deg,rgba(10,12,17,.9),rgba(10,12,17,0))}
+.brand{display:flex;align-items:center;gap:8px;font-weight:800;letter-spacing:.2px;color:var(--accent-text);font-size:1.15rem}
+.brand i{width:26px;height:26px;border-radius:7px;background:var(--accent);display:grid;place-items:center;color:var(--accent-ink);font-style:normal;font-weight:900;font-size:.9rem}
+.topbar nav{display:flex;gap:18px;font-size:.9rem;color:var(--muted)}
+.topbar nav b{color:var(--text);font-weight:600}
+.topbar .sp{flex:1}
+.pill{border:1px solid var(--line);background:rgba(22,26,35,.7);border-radius:999px;padding:6px 12px;font-size:.8rem;color:var(--muted)}
+.pill.on{color:var(--accent-text);border-color:var(--accent)}
+.stage{position:relative}
+
+/* ---------- hero ---------- */
+.hero{position:relative;height:clamp(420px,52vw,640px);overflow:hidden}
+.slide{position:absolute;inset:0;opacity:0;transition:opacity .9s ease;display:flex;align-items:flex-end}
+.slide.on{opacity:1}
+.slide .art{position:absolute;inset:0;background:
+  radial-gradient(70% 90% at 78% 30%,hsl(var(--h) 70% 38% / .95),transparent 70%),
+  radial-gradient(50% 60% at 95% 90%,hsl(calc(var(--h) + 40) 60% 25% / .9),transparent 70%),
+  linear-gradient(135deg,hsl(var(--h) 40% 14%),hsl(calc(var(--h) + 30) 35% 8%))}
+.slide .art::after{content:"";position:absolute;inset:0;background:
+  linear-gradient(90deg,var(--bg) 0%,rgba(10,12,17,.75) 32%,rgba(10,12,17,0) 65%),
+  linear-gradient(0deg,var(--bg) 0%,rgba(10,12,17,0) 38%)}
+.slide .glyph{position:absolute;right:9%;top:22%;font-size:clamp(5rem,16vw,15rem);font-weight:900;color:hsl(var(--h) 80% 70% / .13);letter-spacing:-.05em;line-height:1;user-select:none}
+.copy{position:relative;padding:0 4% 14%;max-width:min(640px,92%)}
+.kicker{display:flex;gap:10px;align-items:center;font-size:.8rem;text-transform:uppercase;letter-spacing:.14em;color:var(--accent-text);font-weight:700}
+.kicker:before{content:"";width:18px;height:3px;background:var(--accent);border-radius:2px}
+.copy h3{margin:8px 0 10px;font-size:clamp(2rem,5.2vw,4.2rem);line-height:1.02;letter-spacing:-.025em;text-wrap:balance}
+.meta{display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:.9rem;color:var(--muted);margin-bottom:10px}
+.match{color:var(--ok);font-weight:700}
+.badge{border:1px solid var(--line);border-radius:5px;padding:0 6px;font-size:.75rem}
+.why{font-size:.95rem;color:var(--text);opacity:.9;max-width:52ch;margin:0 0 18px;text-wrap:pretty}
+.why em{font-style:normal;color:var(--accent-text)}
+.btns{display:flex;gap:10px;flex-wrap:wrap}
+.btn{font:inherit;font-weight:700;border-radius:var(--radius-sm);padding:11px 20px;border:0;cursor:pointer;display:inline-flex;gap:8px;align-items:center}
+.btn.add{background:var(--accent);color:var(--accent-ink)}
+.btn.ghost{background:rgba(30,35,48,.75);color:var(--text);border:1px solid var(--line)}
+.btn:focus-visible,.arrow:focus-visible,.dot:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.dots{position:absolute;right:4%;bottom:15%;display:flex;gap:8px;z-index:3}
+.dot{width:34px;height:4px;border-radius:2px;background:rgba(255,255,255,.25);border:0;padding:0;position:relative;overflow:hidden;cursor:pointer}
+.dot.on:after{content:"";position:absolute;inset:0;background:var(--accent);transform-origin:left;animation:fill var(--dur,6s) linear forwards}
+.paused .dot.on:after{animation-play-state:paused}
+@keyframes fill{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+
+/* ---------- rows ---------- */
+.rows{position:relative;margin-top:-11%;z-index:2;display:flex;flex-direction:column;gap:26px;padding-bottom:36px}
+.row h4{margin:0 4% 8px;font-size:1.15rem;display:flex;align-items:baseline;gap:10px}
+.row h4 small{font-weight:400;color:var(--muted);font-size:.8rem}
+.track-wrap{position:relative}
+.track{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x proximity;padding:6px 4% 14px;scrollbar-width:none;scroll-padding-inline:4%}
+.track::-webkit-scrollbar{display:none}
+.arrow{position:absolute;top:6px;bottom:14px;width:4%;min-width:36px;border:0;background:rgba(10,12,17,.65);color:var(--text);font-size:1.6rem;cursor:pointer;opacity:0;transition:opacity .2s;z-index:2}
+.track-wrap:hover .arrow,.arrow:focus-visible{opacity:1}
+.arrow.l{left:0}.arrow.r{right:0}
+.card{flex:0 0 clamp(120px,15.2%,210px);scroll-snap-align:start;position:relative;transition:transform .2s ease}
+.card:hover{transform:scale(1.06);z-index:3}
+.poster{aspect-ratio:2/3;border-radius:var(--radius-sm);position:relative;overflow:hidden;border:1px solid var(--line);
+  background:radial-gradient(90% 60% at 30% 10%,hsl(var(--h) 65% 42%),transparent 70%),linear-gradient(160deg,hsl(var(--h) 45% 20%),hsl(calc(var(--h) + 35) 40% 10%))}
+.poster b{position:absolute;left:10px;right:10px;bottom:10px;font-size:.95rem;line-height:1.15;text-wrap:balance;text-shadow:0 1px 8px rgba(0,0,0,.6)}
+.poster .m{position:absolute;top:8px;left:8px;background:rgba(10,12,17,.8);color:var(--ok);font-size:.72rem;font-weight:700;padding:2px 6px;border-radius:6px}
+.poster .lib{position:absolute;top:8px;right:8px;background:var(--accent);color:var(--accent-ink);font-size:.68rem;font-weight:800;padding:2px 6px;border-radius:6px}
+.poster:after{content:"";position:absolute;inset:0;background:linear-gradient(0deg,rgba(0,0,0,.65),transparent 55%)}
+.poster b,.poster .m,.poster .lib{z-index:1}
+.card.wide{flex-basis:clamp(200px,24%,340px)}
+.card.wide .poster{aspect-ratio:16/9}
+.rank{position:absolute;left:-6px;bottom:-6px;font-size:4.5rem;font-weight:900;line-height:1;color:var(--bg);-webkit-text-stroke:2px var(--muted);z-index:2}
+.card.top10{flex-basis:clamp(150px,19%,260px);padding-left:34px}
+
+/* ---------- phone ---------- */
+.phones{display:flex;gap:32px;flex-wrap:wrap;align-items:flex-start}
+.phone{width:min(100%,390px);height:780px;border-radius:34px;border:8px solid #000;background:var(--bg);position:relative;overflow:hidden;color:var(--text);flex:0 0 auto}
+.phone .scroll{height:100%;overflow-y:auto;scrollbar-width:none;padding-bottom:84px}
+.phone .scroll::-webkit-scrollbar{display:none}
+.p-top{position:absolute;z-index:5;inset:0 0 auto 0;display:flex;align-items:center;gap:10px;padding:14px 16px;background:linear-gradient(180deg,rgba(10,12,17,.9),transparent)}
+.p-top .sp{flex:1}
+.p-hero{position:relative;margin:56px 16px 0;aspect-ratio:3/4;border-radius:var(--radius);overflow:hidden;border:1px solid var(--line);
+  background:radial-gradient(80% 60% at 70% 20%,hsl(var(--h) 70% 40%),transparent 70%),linear-gradient(160deg,hsl(var(--h) 45% 20%),hsl(calc(var(--h) + 35) 40% 8%))}
+.p-hero:after{content:"";position:absolute;inset:0;background:linear-gradient(0deg,rgba(10,12,17,.97) 5%,rgba(10,12,17,0) 62%)}
+.p-hero .in{position:absolute;z-index:1;left:16px;right:16px;bottom:16px}
+.p-hero h3{margin:4px 0 6px;font-size:1.8rem;line-height:1.05;letter-spacing:-.02em}
+.p-hero .why{font-size:.85rem;margin-bottom:12px}
+.p-hero .btns .btn{padding:10px 14px;flex:1;justify-content:center}
+.p-dots{display:flex;gap:6px;justify-content:center;margin:12px 0 18px}
+.p-dots i{width:22px;height:4px;border-radius:2px;background:#2a3140}.p-dots i.on{background:var(--accent)}
+.phone .rows{margin-top:0;gap:20px}
+.phone .row h4{margin-inline:16px;font-size:1.02rem}
+.phone .track{padding-inline:16px;gap:8px;scroll-padding-inline:16px}
+.phone .card{flex-basis:112px}
+.phone .card:hover{transform:none}
+.phone .poster b{font-size:.8rem;left:8px;right:8px;bottom:8px}
+.bottom-nav{position:absolute;z-index:6;inset:auto 0 0 0;display:grid;grid-template-columns:repeat(4,1fr);background:var(--surface);border-top:1px solid var(--line);padding:10px 0 14px;font-size:.7rem;color:var(--muted);text-align:center}
+.bottom-nav b{color:var(--accent-text)}
+.bottom-nav span{display:grid;gap:2px}.bottom-nav i{font-style:normal;font-size:1.15rem}
+.side-note{flex:1 1 300px;min-width:0;color:var(--board-muted);font-size:.92rem;display:grid;gap:14px;align-content:start}
+.side-note h3{margin:0;color:var(--board-ink);font-size:1rem}
+.side-note ul{margin:0;padding-left:18px;display:grid;gap:4px}
+
+/* ---------- hover card ---------- */
+.hoverboard{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:32px 4% 40px;display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;color:var(--text)}
+.pop{width:min(100%,330px);background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.6)}
+.pop .poster{border-radius:0;border:0;aspect-ratio:16/9}
+.pop .body{padding:14px;display:grid;gap:10px}
+.pop .acts{display:flex;gap:8px;align-items:center}
+.circ{width:36px;height:36px;border-radius:50%;border:1px solid var(--muted);background:var(--surface-2);color:var(--text);display:grid;place-items:center;font-size:1rem}
+.circ.fill{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:900}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:.75rem;color:var(--muted)}
+.pop p{margin:0;font-size:.85rem;color:var(--muted)}
+.rate{display:flex;gap:2px;color:var(--accent);font-size:1rem;letter-spacing:2px}
+.hoverboard .side-note{color:var(--muted)}
+.hoverboard .side-note h3{color:var(--text)}
+@media (prefers-reduced-motion:reduce){.slide{transition:none}.dot.on:after{animation:none;transform:none}.card{transition:none}}
+@media (max-width:700px){.topbar nav{display:none}}
+</style>
+
+<div class="wrap">
+  <header class="intro">
+    <h1>What's Next: Cinematic home</h1>
+    <p>Mockups only. Nothing has been built. These show a Netflix-style home with a rotating hero and headed carousels, in the same dark amber look the app already has. Posters here are colour placeholders; the real app would use your TMDB images. Titles are samples.</p>
+  </header>
+
+  <!-- ======================= A: DESKTOP ======================= -->
+  <section>
+    <div class="label"><h2>A. Desktop home</h2><span>The hero rotates every 6 seconds and pauses on hover. Hover a poster or the row for the arrows.</span></div>
+    <div class="frame stage" id="desk">
+      <div class="topbar">
+        <div class="brand"><i>W</i>What's Next</div>
+        <nav><b>Home</b><span>Movies</span><span>TV</span><span>Library</span><span>AI picks</span></nav>
+        <div class="sp"></div>
+        <span class="pill on" title="Switch between layouts">View: Cinematic ▾</span>
+        <span class="pill">Settings</span>
+      </div>
+      <div class="hero" id="hero"></div>
+      <div class="rows" id="rows"></div>
+    </div>
+    <ul class="notes">
+      <li>Hero: up to 5 top picks with the match %, the reason from your taste profile, and the same Add to library / More info actions as today.</li>
+      <li>Rows are your existing recommendation data, split into headed carousels. Titles already in your library show an "In library" tag instead of an Add button.</li>
+      <li>"Top 10" style numbered row and a wide-thumbnail row are shown as options for variety.</li>
+    </ul>
+  </section>
+
+  <!-- ======================= B: PHONE ======================= -->
+  <section>
+    <div class="label"><h2>B. Phone home</h2><span>One hero card (swipe to rotate), then the same rows with smaller posters. Existing bottom nav stays.</span></div>
+    <div class="phones">
+      <div class="phone" id="phone1">
+        <div class="p-top"><div class="brand"><i>W</i>What's Next</div><div class="sp"></div><span class="pill on">Cinematic</span></div>
+        <div class="scroll">
+          <div class="p-hero" style="--h:265">
+            <div class="in">
+              <div class="kicker">Top pick for you</div>
+              <h3>Dune: Part Two</h3>
+              <div class="meta"><span class="match">96% match</span><span>2024</span><span class="badge">12A</span><span>2h 46m</span></div>
+              <p class="why">Because you finished <em>Blade Runner 2049</em> and rate sci-fi highly.</p>
+              <div class="btns"><button class="btn add">＋ Add to library</button><button class="btn ghost">Info</button></div>
+            </div>
+          </div>
+          <div class="p-dots"><i class="on"></i><i></i><i></i><i></i><i></i></div>
+          <div class="rows" id="prows"></div>
+        </div>
+        <div class="bottom-nav"><span><i>⌂</i><b>Home</b></span><span><i>▦</i>Library</span><span><i>✦</i>AI</span><span><i>⚙</i>Settings</span></div>
+      </div>
+      <div class="side-note">
+        <h3>Phone behaviour</h3>
+        <ul>
+          <li>Hero is a tall card, not full-bleed, so the page header and bottom nav stay readable.</li>
+          <li>Hero swipes sideways; dots show position. Auto-rotate is off on phones to save battery and avoid surprise jumps.</li>
+          <li>Rows scroll with a thumb. No arrow buttons, and about 3 posters visible with the next one peeking.</li>
+          <li>Tapping a poster opens the detail modal you already have.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= C: HOVER ======================= -->
+  <section>
+    <div class="label"><h2>C. Hover card and detail</h2><span>On desktop, hovering a poster for a moment pops a small preview. On phones, a tap opens the existing detail modal.</span></div>
+    <div class="hoverboard">
+      <div class="pop">
+        <div class="poster" style="--h:20"><span class="m">92% match</span><b>Mad Max: Fury Road</b></div>
+        <div class="body">
+          <div class="acts">
+            <span class="circ fill" title="Add to library">＋</span>
+            <span class="circ" title="Not interested">✕</span>
+            <span class="circ" title="Rate">★</span>
+            <span class="circ" style="margin-left:auto" title="More info">⌄</span>
+          </div>
+          <div class="meta" style="margin:0"><span class="match">92% match</span><span>2015</span><span class="badge">15</span><span>2h</span></div>
+          <div class="chips"><span class="chip">Action</span><span class="chip">Sci-Fi</span><span class="chip">Adventure</span></div>
+          <p>Because you watched <em style="font-style:normal;color:var(--accent-text)">Furiosa</em> and like George Miller.</p>
+        </div>
+      </div>
+      <div class="side-note">
+        <h3>What the buttons do (all already exist in the app)</h3>
+        <ul>
+          <li><b>＋</b> Add to Radarr or Sonarr, in place with an Undo toast.</li>
+          <li><b>✕</b> Dismiss, so it stops being recommended.</li>
+          <li><b>★</b> Personal star rating, from the Library and ratings work.</li>
+          <li><b>⌄</b> Opens the full detail modal.</li>
+        </ul>
+        <h3>Row ideas for the home page</h3>
+        <ul>
+          <li>Recommended for You</li>
+          <li>Because you watched [title]</li>
+          <li>Top 10 picks for you</li>
+          <li>Trending in [your favourite genre]</li>
+          <li>Hidden gems (high match, lower popularity)</li>
+          <li>New in your library (from Plex)</li>
+          <li>AI picks (only if you have run it, since AI stays manual)</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function(){
+  var items=[
+    {t:"Dune: Part Two",h:265,y:2024,r:"12A",d:"2h 46m",m:96,g:"Sci-Fi · Adventure",why:"Because you finished <em>Blade Runner 2049</em> and rate sci-fi highly."},
+    {t:"The Bear",h:12,y:2024,r:"15",d:"3 seasons",m:94,g:"Drama · Comedy",why:"Matches the character-driven TV you binge on weeknights."},
+    {t:"Oppenheimer",h:35,y:2023,r:"15",d:"3h",m:93,g:"Drama · History",why:"You gave <em>Dunkirk</em> five stars and follow Christopher Nolan."},
+    {t:"Severance",h:190,y:2022,r:"15",d:"2 seasons",m:91,g:"Thriller · Mystery",why:"Fits your recent run of slow-burn mysteries."},
+    {t:"Arrival",h:215,y:2016,r:"12A",d:"1h 56m",m:90,g:"Sci-Fi · Drama",why:"High match on thoughtful sci-fi with a strong lead."}
+  ];
+  var pool=[
+    ["Mad Max: Fury Road",20,92],["Ex Machina",160,89],["Sicario",25,88],["Prisoners",200,88],["Annihilation",140,87],
+    ["Parasite",95,87],["Whiplash",350,86],["Edge of Tomorrow",230,85],["Interstellar",250,85],["Heat",15,84],
+    ["Andor",300,84],["Slow Horses",45,83],["Fargo",5,83],["Chernobyl",110,82],["Dark",230,82]
+  ];
+  function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
+  function card(p,i,o){
+    o=o||{};
+    return '<div class="card'+(o.cls?' '+o.cls:'')+'" tabindex="0">'+(o.rank?'<span class="rank">'+o.rank+'</span>':'')+
+      '<div class="poster" style="--h:'+p[1]+'"><span class="m">'+p[2]+'% match</span>'+(i%7===3?'<span class="lib">In library</span>':'')+'<b>'+esc(p[0])+'</b></div></div>';
+  }
+  function rotate(a,n){return a.slice(n).concat(a.slice(0,n))}
+  var rowDefs=[
+    {h:"Recommended for You",s:"Based on your Plex history",n:0},
+    {h:"Because you watched Blade Runner 2049",s:"",n:4},
+    {h:"Top 10 picks for you",s:"",n:2,top:true},
+    {h:"Trending in Sci-Fi",s:"",n:7,wide:true},
+    {h:"Hidden Gems",s:"High match, lower popularity",n:9}
+  ];
+  function rowsHtml(defs,compact){
+    return defs.map(function(d){
+      var list=rotate(pool,d.n);
+      var cards=list.slice(0,d.top?10:12).map(function(p,i){
+        return card(p,i,{cls:d.top?'top10':(d.wide&&!compact?'wide':''),rank:d.top?(i+1):0});
+      }).join('');
+      return '<section class="row"><h4>'+esc(d.h)+(d.s?' <small>'+esc(d.s)+'</small>':'')+'</h4><div class="track-wrap">'+
+        (compact?'':'<button class="arrow l" aria-label="Scroll left">‹</button>')+
+        '<div class="track">'+cards+'</div>'+
+        (compact?'':'<button class="arrow r" aria-label="Scroll right">›</button>')+'</div></section>';
+    }).join('');
+  }
+  document.getElementById('rows').innerHTML=rowsHtml(rowDefs,false);
+  document.getElementById('prows').innerHTML=rowsHtml(rowDefs.slice(0,3).map(function(d){var c=Object.assign({},d);c.wide=false;return c}),true);
+
+  /* hero */
+  var hero=document.getElementById('hero'),dur=6000,cur=0,timer=null;
+  hero.style.setProperty('--dur',dur+'ms');
+  hero.innerHTML=items.map(function(it,i){
+    return '<div class="slide'+(i?'':' on')+'" style="--h:'+it.h+'"><div class="art"></div><div class="glyph" aria-hidden="true">'+esc(it.t.charAt(0))+'</div>'+
+      '<div class="copy"><div class="kicker">Top pick for you</div><h3>'+esc(it.t)+'</h3>'+
+      '<div class="meta"><span class="match">'+it.m+'% match</span><span>'+it.y+'</span><span class="badge">'+it.r+'</span><span>'+it.d+'</span><span>'+esc(it.g)+'</span></div>'+
+      '<p class="why">'+it.why+'</p><div class="btns"><button class="btn add">＋ Add to library</button><button class="btn ghost">ⓘ More info</button></div></div></div>';
+  }).join('')+'<div class="dots" role="tablist" aria-label="Featured picks">'+items.map(function(it,i){return '<button class="dot'+(i?'':' on')+'" role="tab" aria-label="Show '+esc(it.t)+'"></button>'}).join('')+'</div>';
+  var slides=hero.querySelectorAll('.slide'),dots=hero.querySelectorAll('.dot');
+  function show(n){
+    cur=(n+items.length)%items.length;
+    slides.forEach(function(s,i){s.classList.toggle('on',i===cur)});
+    dots.forEach(function(d,i){d.classList.remove('on');if(i===cur){void d.offsetWidth;d.classList.add('on')}});
+  }
+  function start(){stop();if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;timer=setInterval(function(){show(cur+1)},dur)}
+  function stop(){clearInterval(timer)}
+  dots.forEach(function(d,i){d.addEventListener('click',function(){show(i);start()})});
+  hero.addEventListener('mouseenter',function(){stop();hero.classList.add('paused')});
+  hero.addEventListener('mouseleave',function(){hero.classList.remove('paused');show(cur);start()});
+  start();
+
+  /* arrows */
+  document.querySelectorAll('.track-wrap').forEach(function(w){
+    var t=w.querySelector('.track');
+    w.querySelectorAll('.arrow').forEach(function(a){
+      a.addEventListener('click',function(){t.scrollBy({left:(a.classList.contains('l')?-1:1)*t.clientWidth*0.85,behavior:'smooth'})});
+    });
+  });
+})();
+</script>

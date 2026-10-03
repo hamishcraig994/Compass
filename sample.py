@@ -170,6 +170,7 @@ def _details(tmdb_id, now):
         "overview": f"Sample data for {title}.", "poster_url": None, "url": None,
         "genres": genres, "keywords": keywords, "directors": directors, "cast": cast,
         "vote_average": rating, "vote_count": votes, "recommendations": recs,
+        "backdrop_url": None, "poster_large_url": None, "runtime": None, "seasons": None, "certification": None,
     }
 
 
@@ -179,7 +180,7 @@ class SampleTmdb:
     def __init__(self, now=None):
         self.now = now or datetime.now(timezone.utc)
 
-    def details(self, media_type, tmdb_id):
+    def details(self, media_type, tmdb_id, refresh=False):
         entry = _CATALOGUE.get(tmdb_id)
         if not entry or entry[0] != media_type:
             raise KeyError((media_type, tmdb_id))

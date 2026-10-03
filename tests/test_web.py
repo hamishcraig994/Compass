@@ -45,6 +45,14 @@ class TestWeb(unittest.TestCase):
         with urllib.request.urlopen(self.base + path) as r:
             return r.status, r.read().decode()
 
+    def raw_get(self, path):
+        """(status, Location) without following redirects."""
+        try:
+            r = urllib.request.build_opener(NoRedirect).open(self.base + path)
+            return r.status, r.headers.get("Location")
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Location")
+
     def post(self, path, data="", follow=False):
         if follow:
             with urllib.request.urlopen(urllib.request.Request(self.base + path, data=data.encode(), method="POST")) as r:
@@ -55,25 +63,164 @@ class TestWeb(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code
 
+    def get_cookie(self, path, cookie):
+        req = urllib.request.Request(self.base + path, headers={"Cookie": cookie})
+        with urllib.request.urlopen(req) as r:
+            return r.status, r.read().decode()
+
+    def test_appearance_page_defaults_to_amber(self):
+        status, html = self.get("/appearance")
+        self.assertEqual(status, 200)
+        self.assertEqual(html.count('type="radio"'), 6)
+        self.assertEqual(html.count('name="theme"'), 6)
+        self.assertEqual(html.count(" checked"), 1)
+        self.assertIn('value="amber" checked', html)
+        self.assertRegex(html, r'<html[^>]*data-theme="amber"')
+
+    def test_appearance_follows_cookie_and_all_pages_carry_it(self):
+        for path in ("/", "/movies", "/library", "/settings", "/appearance"):
+            status, html = self.get_cookie(path, "wn_theme=ocean")
+            self.assertEqual(status, 200, path)
+            self.assertIn('<html', html)
+            self.assertRegex(html, r'<html[^>]*data-theme="ocean"', path)
+        _, html = self.get_cookie("/appearance", "wn_theme=ocean")
+        self.assertIn('value="ocean" checked', html)
+        self.assertEqual(html.count(" checked"), 1)
+
+    def test_bad_cookie_falls_back_to_amber(self):
+        _, html = self.get_cookie("/appearance", "wn_theme=nope")
+        self.assertRegex(html, r'<html[^>]*data-theme="amber"')
+
+    def test_appearance_tab_row_marks_current(self):
+        _, html = self.get("/appearance")
+        self.assertIn("Appearance", html)
+        # the settings sub-tab row marks the current tab with class "on" (existing markup, no aria-current)
+        self.assertIn('<a class="subtab on" href="/appearance">Appearance</a>', html)
+        _, settings = self.get("/settings")
+        self.assertIn('href="/appearance"', settings)
+        self.assertNotIn('<a class="subtab on" href="/appearance">', settings)
+
+    def test_appearance_escapes_query(self):
+        status, html = self.get("/appearance?x=<script>alert(1)</script>")
+        self.assertEqual(status, 200)
+        self.assertNotIn("<script>alert(1)", html)
+        status, html = self.get("/appearance?msg=%3Cscript%3Ealert(1)%3C/script%3E")
+        self.assertEqual(status, 200)
+        self.assertNotIn("<script>alert(1)", html)
+
+    def test_post_theme_sets_cookie_and_redirects_back(self):
+        opener = urllib.request.build_opener(NoRedirect)
+        try:
+            r = opener.open(urllib.request.Request(self.base + "/theme", data=b"theme=ocean", method="POST"))
+        except urllib.error.HTTPError as e:
+            r = e
+        self.assertEqual(r.code, 303)
+        self.assertIn("wn_theme=ocean", r.headers.get("Set-Cookie", ""))
+        loc = r.headers["Location"]
+        self.assertTrue(loc.startswith("/appearance?msg="), loc)
+        status, html = self.get(loc)
+        self.assertEqual(status, 200)
+        self.assertIn("Theme set to", html)
+
+    def test_post_theme_rejects_unknown_theme(self):
+        opener = urllib.request.build_opener(NoRedirect)
+        try:
+            r = opener.open(urllib.request.Request(self.base + "/theme", data=b"theme=hotpink", method="POST"))
+        except urllib.error.HTTPError as e:
+            r = e
+        self.assertEqual(r.code, 303)
+        self.assertIsNone(r.headers.get("Set-Cookie"))
+        self.assertIn("valid+theme", r.headers["Location"].replace("%20", "+"))
+
+    def test_appearance_msg_crlf_stays_encoded(self):
+        status, loc = self.raw_get("/recommended?msg=a%0d%0aSet-Cookie:%20x=1")
+        self.assertEqual(status, 303)
+        self.assertNotIn("\r", loc)
+        self.assertNotIn("\n", loc)
+        status, html = self.get("/appearance?msg=a%0d%0aSet-Cookie:%20x=1")
+        self.assertEqual(status, 200)
+
     def test_health(self):
         self.assertEqual(self.get("/health"), (200, "ok"))
 
-    def test_home_shows_stat_tiles(self):
+    def test_home_is_a_hero_plus_rows(self):
         status, html = self.get("/")
         self.assertEqual(status, 200)
-        self.assertIn("Recommended", html)
-        self.assertIn("Added to library", html)
-        self.assertIn("Not interested", html)
-        self.assertIn("Watched titles analyzed", html)
-        self.assertIn('href="/recommended"', html)
-        self.assertIn('href="/library?type=added"', html)
+        self.assertIn('class="cinematic"', html)
+        self.assertEqual(html.count('<article class="hero-slide'), 5)
+        self.assertEqual(html.count('data-slide'), 5)
+        for heading in ("Recommended for You", "Top 10 picks for you", "Because you watched Arrival",
+                        "New in your library"):
+            self.assertIn(heading, html)
+        self.assertNotIn("Watched titles analyzed", html)  # stat tiles were dropped
+        self.assertIn("sample data", html)
 
-    def test_home_and_recommended_and_library_all_highlight_their_own_nav_item(self):
-        for path, section_href in (("/", "/"), ("/recommended", "/recommended"), ("/library", "/library"),
+    def test_movies_page_has_no_tv_titles(self):
+        status, html = self.get("/movies")
+        self.assertEqual(status, 200)
+        self.assertIn("Gone Girl", html)
+        self.assertIn("Because you watched Arrival", html)
+        self.assertNotIn("Mindhunter", html)
+        self.assertNotIn("Silo", html)
+
+    def test_tv_page_has_no_movies_or_arrival_row(self):
+        status, html = self.get("/tv")
+        self.assertEqual(status, 200)
+        self.assertIn("Mindhunter", html)
+        self.assertIn("Silo", html)
+        self.assertNotIn("Because you watched Arrival", html)
+        self.assertNotIn("Gone Girl", html)
+
+    def test_nav_has_movies_tv_ai_picks_and_no_recommended(self):
+        for path in ("/", "/library", "/ai", "/settings"):
+            _, html = self.get(path)
+            for label in ("Home", "Movies", "TV", "Library", "AI picks"):
+                self.assertIn(f"<span>{label}</span>", html, path)
+            self.assertNotIn("<span>Recommended</span>", html, path)
+            self.assertNotIn('href="/recommended"', html, path)
+
+    def test_unknown_params_on_browse_pages_are_ignored(self):
+        for path in ("/movies?x=1", "/tv?type=<script>", "/?sort=zzz"):
+            self.assertEqual(self.get(path)[0], 200, path)
+
+    def test_recommended_redirects_to_the_matching_browse_page(self):
+        for query, target in (("type=movie", "/movies"), ("type=tv", "/tv"), ("type=all", "/"), ("type=new", "/"),
+                              ("type=<script>", "/"), ("", "/")):
+            status, location = self.raw_get("/recommended?" + query)
+            self.assertEqual((status, location), (303, target), query)
+
+    def test_recommended_redirect_keeps_msg_and_valid_undo_only(self):
+        self.assertEqual(self.raw_get("/recommended?type=movie&msg=Hi&undo_type=movie&undo_id=5"),
+                         (303, "/movies?msg=Hi&undo_type=movie&undo_id=5"))
+        self.assertEqual(self.raw_get("/recommended?type=tv&msg=Hi&undo_type=tv&undo_id=x"), (303, "/tv?msg=Hi"))
+        self.assertEqual(self.raw_get("/recommended?undo_type=book&undo_id=5"), (303, "/"))
+
+    def test_recommended_redirect_keeps_crlf_encoded(self):
+        _, location = self.raw_get("/recommended?msg=a%0d%0aX-Evil:%201")
+        self.assertNotIn("\r", location)
+        self.assertNotIn("\n", location)
+        self.assertIn("%0D%0A", location)
+
+    def test_recommended_lands_on_home(self):
+        status, html = self.get("/recommended")
+        self.assertEqual(status, 200)
+        self.assertEqual(html.count('<article class="hero-slide'), 5)
+
+    def test_home_movies_tv_library_all_highlight_their_own_nav_item(self):
+        for path, section_href in (("/", "/"), ("/movies", "/movies"), ("/tv", "/tv"), ("/library", "/library"),
                                    ("/library?type=movie", "/library"), ("/library?type=tv", "/library"),
                                    ("/library?type=watched", "/library"), ("/library?type=added", "/library")):
             _, html = self.get(path)
             self.assertEqual(html.count(f'class="nav-item active" href="{section_href}"'), 2, path)
+            self.assertEqual(html.count('aria-current="page"'), 2, path)
+
+    def test_library_ai_and_settings_render_with_the_top_bar(self):
+        for path in ("/library", "/ai", "/settings"):
+            status, html = self.get(path)
+            self.assertEqual(status, 200)
+            self.assertIn('class="topbar"', html, path)
+            self.assertNotIn("app-sidebar", html, path)
+            self.assertNotIn('class="cinematic"', html, path)
 
     def test_nav_has_no_watched_item_and_watched_stays_a_tab(self):
         _, html = self.get("/library?type=watched")
@@ -103,56 +250,25 @@ class TestWeb(unittest.TestCase):
             self.get("/watched")
         self.assertEqual(ctx.exception.code, 404)
 
-    def test_recommended_page_shows_suggestions_and_sample_banner(self):
-        status, html = self.get("/recommended")
-        self.assertEqual(status, 200)
+    def test_home_shows_suggestions_and_hides_library_titles(self):
+        _, html = self.get("/")
         self.assertIn("Gone Girl", html)
         self.assertIn("% match", html)
-        self.assertIn("sample data", html)
-        self.assertNotIn("Dune", html)  # in the library
-
-    def test_recommended_subtabs_filter_by_type(self):
-        _, movies = self.get("/recommended?type=movie")
-        _, shows = self.get("/recommended?type=tv")
-        self.assertIn("Gone Girl", movies)
-        self.assertNotIn("Silo", movies)
-        self.assertIn("Silo", shows)
-        self.assertNotIn("Gone Girl", shows)
-
-    def test_new_and_trending_subtab(self):
-        _, html = self.get("/recommended?type=new")
-        for title in ("The Long Signal", "Harbour Lights", "Orbit Nine", "Heat"):
-            self.assertIn(title, html)
-        self.assertNotIn("Gone Girl", html)   # neither new nor trending
-        self.assertIn(">Trending<", html)
-        self.assertIn(">New<", html)
-        self.assertIn("New &amp; trending", html)
-
-    def test_badges_appear_on_the_all_subtab_too(self):
-        _, html = self.get("/recommended")
-        self.assertIn(">Trending<", html)
-
-    def test_unknown_subtab_falls_back_to_all(self):
-        self.assertEqual(self.get("/recommended?type=<script>")[0], 200)
-
-    def test_subtabs_link_to_recommended_not_the_bare_type_query(self):
-        _, html = self.get("/recommended?type=movie")
-        self.assertIn('href="/recommended?type=movie"', html)
-        self.assertIn('class="subtab on" href="/recommended?type=movie"', html)
+        self.assertNotIn("Dune", html.split("New in your library")[0])  # owned titles aren't recommended
 
     def test_library_page_empty_state(self):
         _, html = self.get("/library?type=added")
         self.assertIn("Nothing added yet", html)
 
     def test_sample_mode_has_no_dismiss_button_and_ignores_dismiss_posts(self):
-        _, html = self.get("/recommended")
+        _, html = self.get("/")
         self.assertNotIn("Not interested", html)
         self.assertEqual(self.post("/dismiss", "type=movie&id=1017&return_to=/recommended%3Ftype%3Dall"), 303)
         self.assertEqual(db.dismissed(), set())  # fake sample ids must never reach the real dismissed list
 
     def test_sample_mode_has_no_add_button_and_ignores_add_posts(self):
-        _, html = self.get("/recommended")
-        self.assertNotIn("Add to library", html)
+        for path in ("/", "/movies", "/tv"):
+            self.assertNotIn("Add to library", self.get(path)[1], path)
         opener = urllib.request.build_opener(NoRedirect)
         try:
             resp = opener.open(urllib.request.Request(self.base + "/add", data=b"type=movie&id=1017", method="POST"))
@@ -182,8 +298,9 @@ class TestWeb(unittest.TestCase):
 
     def test_settings_page_highlights_settings_in_nav(self):
         _, html = self.get("/settings")
-        self.assertEqual(html.count('class="nav-item active" href="/settings"'), 2)
-        self.assertIn("brand-lockup", html)
+        self.assertEqual(html.count('class="nav-item active" href="/settings"'), 1)  # top bar only
+        self.assertEqual(html.count('aria-current="page"'), 1)
+        self.assertIn("brand-name", html)
 
     def test_add_button_shown_only_when_dismissable_and_the_matching_arr_is_configured(self):
         old = (config.RADARR_URL, config.RADARR_API_KEY, config.SONARR_URL, config.SONARR_API_KEY)
@@ -241,9 +358,9 @@ class TestAddDialogIsLazy(unittest.TestCase):
         self._sample_patch.start()
         self.addCleanup(self._sample_patch.stop)
 
-    def test_viewing_the_recommended_list_never_fetches_profiles(self):
+    def test_viewing_the_browse_pages_never_fetches_profiles(self):
         with mock.patch("radarr.RadarrClient.quality_profiles", return_value=[{"id": 1, "name": "HD"}]) as qp:
-            web.render_recommended("all")
+            web.render_browse("all")
         qp.assert_not_called()
 
     def test_opening_the_add_dialog_fetches_profiles_exactly_once(self):

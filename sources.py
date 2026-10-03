@@ -1,6 +1,7 @@
 """Picks where data comes from (real Plex/Tautulli + TMDB, or the built-in sample) and runs the
 recommender on it."""
 import ai
+import browse
 import config
 import db
 import plex
@@ -112,6 +113,27 @@ def ai_client():
     return ai.AiClient(config.AI_TOKEN, config.AI_PROVIDER_URL, config.AI_MODEL) if config.ai_configured() else None
 
 
+def _fill_hero_details(items, client):
+    """Live builds only. Hero picks cached before the cinematic fields existed lack "backdrop_url";
+    re-fetch their details (skipping the cache read) so the hero has real art straight away. At most
+    browse.HERO_MAX per kind (15 in total, deduplicated). One failing title never aborts the rest.
+    Mutates the item dicts in place; returns how many were refreshed."""
+    done, refreshed = set(), 0
+    for kind in browse.KINDS:
+        for item in browse.hero_picks(items, kind):
+            key = (item["media_type"], item["tmdb_id"])
+            if key in done or "backdrop_url" in item:
+                continue
+            done.add(key)
+            try:
+                fresh = client.details(item["media_type"], item["tmdb_id"], refresh=True)
+                item.update({k: fresh.get(k) for k in browse.HERO_FIELDS})
+            except Exception:
+                continue
+            refreshed += 1
+    return refreshed
+
+
 def run(sample_mode, limit=200):
     """Returns the recommender's result dict, plus 'sample' (bool) telling which data was used.
     Never uses AI - that's a separate, deliberate action (see generate_ai_recommendations()),
@@ -128,6 +150,7 @@ def run(sample_mode, limit=200):
         result = recommend.recommend(profile.apply_ratings(watched, ratings), library_keys, client,
                                      dismissed=db.dismissed(), limit=limit,
                                      disliked={k: s for k, s in ratings.items() if s <= profile.DISLIKE_MAX_STARS})
+        _fill_hero_details(result["items"], client)
         snapshot = _snapshot(watched, library, client)  # raw history: your ratings are overlaid when shown
     result["library"], result["watched"], result["thumbs"] = snapshot
     result["notes"] = notes + result["notes"]

@@ -178,6 +178,75 @@ class TestTmdb(unittest.TestCase):
         self.assertEqual(tv_params["first_air_date.gte"], "2026-03-01")
         self.assertEqual(movie_params["sort_by"], "popularity.desc")
 
+    def test_normalize_new_image_fields(self):
+        d = tmdb.normalize({**RAW_MOVIE, "backdrop_path": "/b.jpg"}, "movie")
+        self.assertEqual(d["backdrop_url"], "https://image.tmdb.org/t/p/w1280/b.jpg")
+        self.assertEqual(d["poster_large_url"], "https://image.tmdb.org/t/p/w780/p.jpg")
+        self.assertEqual(d["poster_url"], "https://image.tmdb.org/t/p/w342/p.jpg")
+        d = tmdb.normalize({"id": 1}, "movie")
+        for key in ("backdrop_url", "poster_large_url", "runtime", "seasons", "certification"):
+            self.assertIsNone(d[key], key)
+
+    def test_normalize_runtime_and_seasons(self):
+        self.assertEqual(tmdb.normalize({"id": 1, "runtime": 166}, "movie")["runtime"], 166)
+        self.assertIsNone(tmdb.normalize({"id": 1, "runtime": 0}, "movie")["runtime"])
+        self.assertIsNone(tmdb.normalize({"id": 1, "runtime": 50, "number_of_seasons": 3}, "tv")["runtime"])
+        tv = tmdb.normalize({"id": 1, "number_of_seasons": 3, "runtime": 50}, "tv")
+        self.assertEqual(tv["seasons"], 3)
+        self.assertIsNone(tmdb.normalize({"id": 1, "number_of_seasons": 0}, "tv")["seasons"])
+        self.assertIsNone(tmdb.normalize({"id": 1, "number_of_seasons": 3}, "movie")["seasons"])
+
+    def test_movie_certification_prefers_gb_then_us(self):
+        def rd(country, *certs):
+            return {"iso_3166_1": country, "release_dates": [{"certification": c} for c in certs]}
+        both = {"release_dates": {"results": [rd("US", "R"), rd("GB", "15")]}}
+        self.assertEqual(tmdb.normalize({"id": 1, **both}, "movie")["certification"], "15")
+        us_only = {"release_dates": {"results": [rd("FR", "12"), rd("US", "PG-13")]}}
+        self.assertEqual(tmdb.normalize({"id": 1, **us_only}, "movie")["certification"], "PG-13")
+        skip_empty = {"release_dates": {"results": [rd("GB", "", ""), rd("US", "", "PG")]}}
+        self.assertEqual(tmdb.normalize({"id": 1, **skip_empty}, "movie")["certification"], "PG")
+        in_gb = {"release_dates": {"results": [rd("GB", "", " 12A ")]}}
+        self.assertEqual(tmdb.normalize({"id": 1, **in_gb}, "movie")["certification"], "12A")
+        none = {"release_dates": {"results": [rd("FR", "12")]}}
+        self.assertIsNone(tmdb.normalize({"id": 1, **none}, "movie")["certification"])
+        self.assertIsNone(tmdb.normalize({"id": 1, "release_dates": None}, "movie")["certification"])
+
+    def test_tv_certification_prefers_gb_then_us(self):
+        both = {"content_ratings": {"results": [{"iso_3166_1": "US", "rating": "TV-MA"},
+                                                {"iso_3166_1": "GB", "rating": "18"}]}}
+        self.assertEqual(tmdb.normalize({"id": 1, **both}, "tv")["certification"], "18")
+        us = {"content_ratings": {"results": [{"iso_3166_1": "GB", "rating": ""},
+                                              {"iso_3166_1": "US", "rating": "TV-14"}]}}
+        self.assertEqual(tmdb.normalize({"id": 1, **us}, "tv")["certification"], "TV-14")
+        self.assertIsNone(tmdb.normalize({"id": 1, "content_ratings": {"results": []}}, "tv")["certification"])
+        # a movie-shaped field on a show (or vice versa) is ignored
+        self.assertIsNone(tmdb.normalize({"id": 1, "release_dates": {"results": [
+            {"iso_3166_1": "GB", "release_dates": [{"certification": "15"}]}]}}, "tv")["certification"])
+
+    def test_details_append_to_response_per_type(self):
+        client = tmdb.TmdbClient("k" * 32)
+        with mock.patch.object(tmdb, "get_json", return_value=RAW_MOVIE) as fake:
+            client.details("movie", 10)
+        self.assertEqual(fake.call_args.kwargs["params"]["append_to_response"],
+                         "keywords,credits,recommendations,release_dates")
+        with mock.patch.object(tmdb, "get_json", return_value=RAW_TV) as fake:
+            client.details("tv", 30)
+        self.assertEqual(fake.call_args.kwargs["params"]["append_to_response"],
+                         "keywords,credits,recommendations,content_ratings")
+
+    def test_details_refresh_skips_cache_read_but_writes_it(self):
+        client = tmdb.TmdbClient("k" * 32)
+        with mock.patch.object(tmdb, "get_json", return_value=RAW_MOVIE) as fake:
+            client.details("movie", 10)
+            client.details("movie", 10, refresh=True)
+            self.assertEqual(fake.call_count, 2)
+            newer = {**RAW_MOVIE, "backdrop_path": "/new.jpg"}
+            fake.return_value = newer
+            client.details("movie", 10, refresh=True)
+            self.assertEqual(fake.call_count, 3)
+            self.assertIn("new.jpg", client.details("movie", 10)["backdrop_url"])  # served from the updated cache
+            self.assertEqual(fake.call_count, 3)
+
     def test_normalize_survives_sparse_data(self):
         d = tmdb.normalize({"id": 1}, "movie")
         self.assertEqual((d["title"], d["year"], d["genres"], d["vote_count"]), ("?", None, [], 0))

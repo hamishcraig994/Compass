@@ -538,17 +538,49 @@ class TestStatic(AsyncCase):
 class TestGetPassesPageParams(AsyncCase):
     """Only the routing: what do_GET hands the (frontend-owned) render functions."""
 
-    def test_recommended_gets_msg_and_undo(self):
-        with mock.patch.object(web, "render_recommended", return_value="page") as render:
-            self.request("GET", "/recommended?type=tv&msg=Hi&undo_type=movie&undo_id=12")
-            render.assert_called_once_with("tv", msg="Hi", undo=("movie", 12))
+    def test_browse_pages_get_msg_and_undo(self):
+        with mock.patch.object(web, "render_home", return_value="page") as home, \
+                mock.patch.object(web, "render_browse", return_value="page") as browse:
+            self.request("GET", "/?msg=Hi&undo_type=movie&undo_id=12")
+            home.assert_called_once_with(msg="Hi", undo=("movie", 12))
+            self.request("GET", "/movies?msg=Hi&undo_type=tv&undo_id=3")
+            browse.assert_called_once_with("movie", msg="Hi", undo=("tv", 3))
+            browse.reset_mock()
+            self.request("GET", "/tv?msg=Yo&undo_type=movie&undo_id=4")
+            browse.assert_called_once_with("tv", msg="Yo", undo=("movie", 4))
 
     def test_invalid_undo_is_none(self):
-        with mock.patch.object(web, "render_recommended", return_value="page") as render:
+        with mock.patch.object(web, "render_home", return_value="page") as home, \
+                mock.patch.object(web, "render_browse", return_value="page") as browse:
             for query in ("", "&undo_type=book&undo_id=1", "&undo_type=movie&undo_id=x", "&undo_type=movie"):
-                render.reset_mock()
-                self.request("GET", "/recommended?type=all" + query)
-                render.assert_called_once_with("all", msg="", undo=None)
+                for path, render, args in (("/", home, ()), ("/movies", browse, ("movie",)),
+                                           ("/tv", browse, ("tv",))):
+                    render.reset_mock()
+                    self.request("GET", path + "?x=1" + query)
+                    render.assert_called_once_with(*args, msg="", undo=None)
+
+    def _recommended_location(self, query):
+        opener = urllib.request.build_opener(NoRedirect)
+        try:
+            resp = opener.open(self.base + "/recommended" + query)
+            return resp.status, resp.headers.get("Location")
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Location")
+
+    def test_recommended_redirects_per_type(self):
+        self.assertEqual(self._recommended_location("?type=movie&msg=Hi&undo_type=movie&undo_id=5"),
+                         (303, "/movies?msg=Hi&undo_type=movie&undo_id=5"))
+        self.assertEqual(self._recommended_location("?type=tv"), (303, "/tv"))
+        for query in ("?type=new", "?type=all", "?type=%3Cscript%3E", ""):
+            self.assertEqual(self._recommended_location(query), (303, "/"), query)
+
+    def test_recommended_redirect_drops_invalid_undo_and_keeps_crlf_encoded(self):
+        self.assertEqual(self._recommended_location("?type=tv&msg=Hi&undo_type=tv&undo_id=x"), (303, "/tv?msg=Hi"))
+        _, location = self._recommended_location("?msg=a%0d%0aSet-Cookie:%20x")
+        self.assertTrue(location.startswith("/?msg="))
+        self.assertNotIn("\r", location)
+        self.assertNotIn("\n", location)
+        self.assertIn("%0D%0A", location)
 
     def test_ai_page_gets_msg_and_undo(self):
         with mock.patch.object(web, "render_ai_page", return_value="page") as render:
@@ -1039,7 +1071,7 @@ class TestReview7Hardening(AsyncCase):
 
 POST_ROUTES = (("/settings?section=arr", "action=save&RADARR_URL=http%3A%2F%2Fevil"),
                ("/rate", "type=movie&id=1&stars=3"), ("/add", "type=movie&id=1"), ("/dismiss", "type=movie&id=1"), ("/undismiss", "type=movie&id=1"),
-               ("/refresh", ""), ("/ai/generate", ""))
+               ("/refresh", ""), ("/ai/generate", ""), ("/theme", "theme=crimson"))
 
 
 class TestCsrf(AsyncCase):
@@ -1074,6 +1106,7 @@ class TestCsrf(AsyncCase):
             self.assertEqual(status, 403, (path, headers))
             self.assertIn("another site", body)
             self.assertIsNone(resp_headers.get("Location"))
+            self.assertIsNone(resp_headers.get("Set-Cookie"))
         self.assertIsNone(db.get_setting("RADARR_URL"))
         self.assertEqual(db.dismissed(), set())
         self.assertEqual(db.ratings(), {})
@@ -1164,6 +1197,83 @@ class TestCrossSiteHelper(unittest.TestCase):
     def test_neither_header(self):
         self.assertFalse(self.check({}))
         self.assertFalse(self.check({"Host": "arr:8091"}))
+
+
+class TestTheme(AsyncCase):
+    COOKIE = "wn_theme=crimson; Path=/; Max-Age=34560000; SameSite=Lax"
+
+    def post_form(self, data, json_mode=False):
+        return self.request("POST", "/theme", data, as_json=json_mode)
+
+    def test_json_sets_cookie(self):
+        status, headers, body = self.post_form("theme=crimson", True)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"ok": True, "message": "Theme set to Crimson", "theme": "crimson"})
+        self.assertEqual(headers.get("Set-Cookie"), self.COOKIE)
+        self.assertEqual(headers.get("Content-Type"), "application/json")
+
+    def test_no_js_redirects_with_cookie(self):
+        status, headers, _ = self.post_form("theme=crimson")
+        self.assertEqual(status, 303)
+        self.assertEqual(headers.get("Location"), "/appearance?msg=Theme+set+to+Crimson")
+        self.assertEqual(headers.get("Set-Cookie"), self.COOKIE)
+
+    def test_return_to(self):
+        _, headers, _ = self.post_form("theme=teal&return_to=/library")
+        self.assertEqual(headers.get("Location"), "/library?msg=Theme+set+to+Teal+Night")
+        for bad in ("//evil.example", "http://evil.example", "/a\\b"):
+            _, headers, _ = self.post_form("theme=teal&return_to=" + urllib.parse.quote(bad))
+            self.assertTrue(headers.get("Location").startswith("/appearance?msg="), bad)
+
+    def test_invalid_theme(self):
+        for data in ("theme=Crimson", "theme=", "", "theme=evil", "theme=%3Cscript%3E", "other=crimson"):
+            status, headers, body = self.post_form(data, True)
+            self.assertEqual(status, 400, data)
+            self.assertEqual(json.loads(body), {"ok": False, "message": "That isn't a valid theme"})
+            self.assertIsNone(headers.get("Set-Cookie"))
+            status, headers, _ = self.post_form(data)
+            self.assertEqual(status, 303)
+            self.assertEqual(headers.get("Location"), "/appearance?msg=That+isn%27t+a+valid+theme")
+            self.assertIsNone(headers.get("Set-Cookie"))
+
+    def test_sample_and_live_both_set_cookie(self):
+        self.assertTrue(web._is_sample())
+        self.assertEqual(self.post_form("theme=crimson", True)[1].get("Set-Cookie"), self.COOKIE)
+        self.live()
+        self.assertFalse(web._is_sample())
+        self.assertEqual(self.post_form("theme=crimson", True)[1].get("Set-Cookie"), self.COOKIE)
+
+    def test_touches_no_state(self):
+        with mock.patch.object(web, "invalidate_cache") as inv, \
+                mock.patch.object(web, "_log_action") as log, \
+                mock.patch.object(db, "set_setting") as set_setting:
+            self.post_form("theme=ocean", True)
+            self.post_form("theme=ocean")
+        inv.assert_not_called()
+        log.assert_not_called()
+        set_setting.assert_not_called()
+        self.assertEqual(db.dismissed(), set())
+        self.assertEqual(db.ratings(), {})
+        self.assertIsNone(db.get_setting("RADARR_URL"))
+        self.assertFalse(web._actions)
+
+    def test_current_theme_outside_request(self):
+        self.assertEqual(web.current_theme(), "amber")
+
+    def test_current_theme_per_request(self):
+        with mock.patch.object(web, "render_home", lambda **kw: web.current_theme()):
+            for cookie, want in (("wn_theme=crimson", "crimson"), (None, "amber"), ("wn_theme=bad", "amber"),
+                                 ("a=1; wn_theme=lime", "lime"), (None, "amber")):
+                headers = {"Cookie": cookie} if cookie else {}
+                status, _, body = self.request("GET", "/", extra_headers=headers)
+                self.assertEqual((status, body), (200, want), cookie)
+
+    def test_post_sets_thread_local_too(self):
+        seen = []
+        with mock.patch.object(web.Handler, "_post_theme",
+                               lambda self, form, as_json: (seen.append(web.current_theme()), self._json({}))):
+            self.request("POST", "/theme", "theme=lime", extra_headers={"Cookie": "wn_theme=mono"})
+        self.assertEqual(seen, ["mono"])
 
 
 if __name__ == "__main__":

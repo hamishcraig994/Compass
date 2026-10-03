@@ -161,6 +161,26 @@ class TestSettingsPageForm(unittest.TestCase):
                 self.assertIn(f'value="test_{section}"', html)
 
 
+class TestSubtabs(unittest.TestCase):
+    def test_render_has_appearance_tab_and_unchanged_section_tabs(self):
+        html = settings_page.render("plex")
+        self.assertIn('href="/appearance">Appearance</a>', html)
+        for key, label in settings_page.SECTIONS:
+            on = " on" if key == "plex" else ""
+            self.assertIn(f'<a class="subtab{on}" href="/settings?section={key}">{escape(label)}</a>', html)
+        self.assertEqual(html.count("subtab on"), 1)
+
+    def test_appearance_marks_only_itself(self):
+        html = settings_page.subtabs_html("appearance")
+        self.assertEqual(html.count("subtab on"), 1)
+        self.assertIn('<a class="subtab on" href="/appearance">Appearance</a>', html)
+        self.assertTrue(html.startswith('<nav class="subtabs" aria-label="Settings sections">'))
+        self.assertTrue(html.index("Appearance") > html.index("Radarr &amp; Sonarr"))
+
+    def test_sections_whitelist_unchanged(self):
+        self.assertNotIn("appearance", dict(settings_page.SECTIONS))
+
+
 class TestArrDropdowns(unittest.TestCase):
     def setUp(self):
         self._old_db = db.DB_PATH

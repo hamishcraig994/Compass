@@ -6,6 +6,7 @@ from http_util import get_json
 BASE = "https://api.themoviedb.org/3"
 DETAILS_MAX_AGE = 30 * 24 * 3600
 GENRES_MAX_AGE = 30 * 24 * 3600
+CERT_COUNTRIES = ("GB", "US")  # age-rating countries to try, in order
 
 # TMDB uses different genre names for TV. Fold them into the movie names so "sci-fi" is one taste, not two.
 GENRE_ALIASES = {"Sci-Fi & Fantasy": "Science Fiction", "Action & Adventure": "Action", "War & Politics": "War"}
@@ -14,6 +15,28 @@ _REVERSE_ALIASES = {v: k for k, v in GENRE_ALIASES.items()}
 
 def canonical_genre(name):
     return GENRE_ALIASES.get(name, name)
+
+
+def _positive_int(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _certification(raw, media_type):
+    """First non-empty age rating for CERT_COUNTRIES (GB, then US), or None."""
+    key, field = ("release_dates", None) if media_type == "movie" else ("content_ratings", "rating")
+    results = (raw.get(key) or {}).get("results") or []
+    for country in CERT_COUNTRIES:
+        for entry in results:
+            if not isinstance(entry, dict) or entry.get("iso_3166_1") != country:
+                continue
+            if field:
+                values = [entry.get(field)]
+            else:
+                values = [r.get("certification") for r in entry.get("release_dates") or [] if isinstance(r, dict)]
+            for value in values:
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    return None
 
 
 def normalize(raw, media_type):
@@ -26,7 +49,7 @@ def normalize(raw, media_type):
         title, date = raw.get("name"), raw.get("first_air_date")
         keywords = (raw.get("keywords") or {}).get("results", [])
         directors = [c["name"] for c in raw.get("created_by") or []]  # a show's "director" is its creator
-    poster = raw.get("poster_path")
+    poster, backdrop = raw.get("poster_path"), raw.get("backdrop_path")
     return {
         "media_type": media_type,
         "tmdb_id": raw["id"],
@@ -43,6 +66,11 @@ def normalize(raw, media_type):
         "vote_average": raw.get("vote_average") or 0,
         "vote_count": raw.get("vote_count") or 0,
         "recommendations": [r["id"] for r in (raw.get("recommendations") or {}).get("results", [])],
+        "backdrop_url": f"https://image.tmdb.org/t/p/w1280{backdrop}" if backdrop else None,
+        "poster_large_url": f"https://image.tmdb.org/t/p/w780{poster}" if poster else None,
+        "runtime": _positive_int(raw.get("runtime")) if media_type == "movie" else None,
+        "seasons": _positive_int(raw.get("number_of_seasons")) if media_type != "movie" else None,
+        "certification": _certification(raw, media_type),
     }
 
 
@@ -72,12 +100,15 @@ class TmdbClient:
         """Details from the local cache only - never makes a request. None if not cached."""
         return db.cache_get(f"details:v2:{media_type}:{tmdb_id}", DETAILS_MAX_AGE)
 
-    def details(self, media_type, tmdb_id):
+    def details(self, media_type, tmdb_id, refresh=False):
+        """refresh=True skips the cache read (but still writes the fresh result back)."""
         key = f"details:v2:{media_type}:{tmdb_id}"  # v2: added release_date
-        cached = db.cache_get(key, DETAILS_MAX_AGE)
+        cached = None if refresh else db.cache_get(key, DETAILS_MAX_AGE)
         if cached:
             return cached
-        raw = self._get(f"/{media_type}/{tmdb_id}", {"append_to_response": "keywords,credits,recommendations"})
+        extra = "release_dates" if media_type == "movie" else "content_ratings"
+        raw = self._get(f"/{media_type}/{tmdb_id}",
+                        {"append_to_response": f"keywords,credits,recommendations,{extra}"})
         result = normalize(raw, media_type)
         db.cache_put(key, result)
         return result

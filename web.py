@@ -10,17 +10,20 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
 
+import browse
 import config
 import db
 import plex
 import profile
 import settings_page
 import sources
+import themes
 
 # Page rendering lives in pages.py (frontend-owned). Imported back for the handler, and for
 # tests that call or patch web.render_* / web._card / web._shell.
 from pages import (  # noqa: E402
-    SUBTABS, _card, _shell, render_add_dialog, render_ai_page, render_home, render_library, render_recommended,
+    _card, _shell, render_add_dialog, render_ai_page, render_appearance, render_browse, render_home,
+    render_library,
 )
 
 CACHE_SECONDS = 3600       # reuse the last result for an hour (finding suggestions takes a while)
@@ -359,6 +362,30 @@ def library_items(result, tab):
     return (result or {}).get("library")
 
 
+def owned_keys(result):
+    """{(media_type, tmdb_id)} of titles already in the Plex snapshot, plus (live mode only) the ones
+    added through this app."""
+    keys = {(e["media_type"], e["tmdb_id"]) for e in (result or {}).get("library") or [] if e.get("tmdb_id")}
+    if not _is_sample():
+        keys |= {(a["media_type"], a["tmdb_id"]) for a in db.added_items()}
+    return keys
+
+
+def browse_view(result, kind):
+    """The rows/hero for one browse page (cheap: no I/O beyond the local DB)."""
+    view = browse.view(result, kind, owned_keys(result))
+    mine = {} if _is_sample() else db.ratings()
+
+    def stars(items):
+        return [{**i, "stars": mine.get((i.get("media_type"), i["tmdb_id"])) if i.get("tmdb_id") else None}
+                for i in items]
+
+    view["hero"] = stars(view["hero"])
+    for row in view["rows"]:
+        row["items"] = stars(row["items"])
+    return view
+
+
 def _find_item(media_type, tmdb_id):
     """Checks both the main Recommended cache and the AI page's - an action (add/dismiss) can come
     from either."""
@@ -451,6 +478,14 @@ def _item_from(fields, type_key="type", id_key="id"):
     return (media_type, tmdb_id) if media_type in ("movie", "tv") and tmdb_id is not None else (None, None)
 
 
+_request = threading.local()  # per-request state; the Handler sets .theme first thing
+
+
+def current_theme():
+    """Theme key for the request being handled (themes.DEFAULT outside a request)."""
+    return getattr(_request, "theme", themes.DEFAULT)
+
+
 SAMPLE_MESSAGE = "Sample data - not saved"
 
 
@@ -498,7 +533,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _redirect(self, path, msg=None, extra=None):
+    def _redirect(self, path, msg=None, extra=None, headers=None):
         """extra: more query params to add (the non-JS Undo's undo_type/undo_id). Any of those
         already on the path are replaced rather than repeated - parse_qs would read the first,
         stale one."""
@@ -511,14 +546,15 @@ class Handler(BaseHTTPRequestHandler):
                 kept = [(k, v) for k, v in parse_qsl(url.query, keep_blank_values=True) if k not in params]
                 path = url.path + ("?" + urlencode(kept) if kept else "")
             path += ("&" if "?" in path else "?") + urlencode(params)
-        self._send(303, "", headers={"Location": path})
+        self._send(303, "", headers={"Location": path, **(headers or {})})
 
     def _wants_json(self):
         """The JS sends Accept: application/json; a plain form post (no JS) never does."""
         return "application/json" in (self.headers.get("Accept") or "")
 
-    def _json(self, payload, status=200):
-        self._send(status, json.dumps(payload), "application/json", headers={"Cache-Control": "no-store"})
+    def _json(self, payload, status=200, headers=None):
+        self._send(status, json.dumps(payload), "application/json",
+                   headers={"Cache-Control": "no-store", **(headers or {})})
 
     def _static(self, name):
         content_type = self.STATIC_FILES.get(name)
@@ -532,6 +568,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, body, content_type, headers={"Cache-Control": "no-cache"})
 
     def do_GET(self):
+        _request.theme = themes.from_cookie(self.headers.get("Cookie"))
         url = urlparse(self.path)
         if url.path == "/health":
             return self._send(200, "ok", "text/plain")
@@ -542,18 +579,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(build_status())
         if url.path.startswith("/static/"):
             return self._static(url.path[len("/static/"):])
-        if url.path == "/":
-            return self._send(200, render_home())
-        if url.path == "/recommended":
+        if url.path in ("/", "/movies", "/tv"):
             query = parse_qs(url.query)
-            tab = query.get("type", ["all"])[0]
-            msg = query.get("msg", [""])[0]
             undo = _item_from(query, "undo_type", "undo_id")
-            return self._send(200, render_recommended(tab if tab in dict(SUBTABS) else "all", msg=msg,
-                                                      undo=undo if undo[0] else None))
+            msg = query.get("msg", [""])[0]
+            undo = undo if undo[0] else None
+            if url.path == "/":
+                return self._send(200, render_home(msg=msg, undo=undo))
+            return self._send(200, render_browse("movie" if url.path == "/movies" else "tv", msg=msg, undo=undo))
+        if url.path == "/recommended":
+            # Old grid page: redirect to the browse page for that type (keeps msg and a valid undo).
+            query = parse_qs(url.query)
+            target = {"movie": "/movies", "tv": "/tv"}.get(query.get("type", [""])[0], "/")
+            undo_type, undo_id = _item_from(query, "undo_type", "undo_id")
+            extra = {"undo_type": undo_type, "undo_id": undo_id} if undo_type else None
+            return self._redirect(target, query.get("msg", [""])[0] or None, extra=extra)
         if url.path == "/library":
             query = parse_qs(url.query)
             return self._send(200, render_library(**parse_list_query(query), msg=query.get("msg", [""])[0]))
+        if url.path == "/appearance":
+            return self._send(200, render_appearance(msg=parse_qs(url.query).get("msg", [""])[0]))
         if url.path == "/poster":
             return self._poster(parse_qs(url.query))
         if url.path == "/ai":
@@ -576,6 +621,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, "Not found", "text/plain")
 
     def do_POST(self):
+        _request.theme = themes.from_cookie(self.headers.get("Cookie"))
         if _cross_site(self.headers):  # before reading the body - see _cross_site()
             if self._wants_json():
                 return self._json({"ok": False, "message": "Blocked: request came from another site"}, 403)
@@ -628,6 +674,8 @@ class Handler(BaseHTTPRequestHandler):
                 body = settings_page.render(section, test_result=test_result, overrides=overrides)
                 return self._send(200, _shell(body, "settings"))
             return self._redirect(f"/settings?section={section}")
+        if path == "/theme":
+            return self._post_theme(form, as_json)
         if path == "/rate":
             return self._post_rate(form, form.get("return_to", ["/library?type=watched"])[0], as_json)
         if path == "/add":
@@ -675,6 +723,22 @@ class Handler(BaseHTTPRequestHandler):
         if content_type not in self.POSTER_TYPES or not isinstance(data, bytes):
             return self._send(404, "Not found", "text/plain")
         return self._send(200, data, content_type, headers={"Cache-Control": "private, max-age=86400"})
+
+    def _post_theme(self, form, as_json):
+        """Sets the per-device colour theme cookie. Deliberately works in sample mode too: it only
+        sets a cookie and never touches db, config or the cached state."""
+        key = form.get("theme", [""])[0]
+        if not themes.is_valid(key):
+            if as_json:
+                return self._json({"ok": False, "message": "That isn't a valid theme"}, 400)
+            return self._redirect(_safe_path(form.get("return_to", ["/appearance"])[0], "/appearance"),
+                                  "That isn't a valid theme")
+        message = f"Theme set to {themes.get(key)['label']}"
+        cookie = {"Set-Cookie": themes.set_cookie_value(key)}
+        if as_json:
+            return self._json({"ok": True, "message": message, "theme": key}, headers=cookie)
+        return self._redirect(_safe_path(form.get("return_to", ["/appearance"])[0], "/appearance"),
+                              message, headers=cookie)
 
     def _post_rate(self, form, return_to, as_json):
         """Your own 1-5 star rating of something you've watched (0 clears it). Local only - nothing

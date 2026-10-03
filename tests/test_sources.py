@@ -12,6 +12,7 @@ import radarr
 import sonarr
 import sources
 import tautulli
+import tmdb
 
 WATCHED_TAUTULLI = [{"media_type": "movie", "tmdb_id": 1, "title": "A", "year": 2020,
                     "last_viewed": None, "user_rating": None, "view_count": 1, "progress": None}]
@@ -295,6 +296,117 @@ class TestRunSnapshotAndRatings(unittest.TestCase):
             sources.generate_ai_recommendations()
         self.assertEqual({w["tmdb_id"]: w["user_rating"] for w in rec.call_args.args[0]}[1], 4)
         self.assertEqual(rec.call_args.kwargs["disliked"], {("movie", 1): 2})
+
+
+class TestFillHeroDetails(unittest.TestCase):
+    HERO = {"backdrop_url": "https://image.tmdb.org/b.jpg", "poster_large_url": "https://image.tmdb.org/l.jpg",
+            "runtime": 120, "seasons": None, "certification": "15"}
+
+    def items(self, n_movie, n_tv, with_fields=()):
+        out = [{"media_type": "movie", "tmdb_id": i, "title": f"M{i}"} for i in range(n_movie)]
+        out += [{"media_type": "tv", "tmdb_id": 1000 + i, "title": f"T{i}"} for i in range(n_tv)]
+        for item in out:
+            if item["tmdb_id"] in with_fields:
+                item["backdrop_url"] = None
+        return sorted(out, key=lambda i: (i["tmdb_id"] % 2, i["tmdb_id"]))  # interleave-ish; order is kept
+
+    def test_refreshes_only_hero_picks_missing_the_field_at_most_15(self):
+        items = [{"media_type": "movie" if i % 2 else "tv", "tmdb_id": i, "title": f"X{i}"} for i in range(40)]
+        client = mock.Mock()
+        client.details.side_effect = lambda t, i, refresh=False: {**self.HERO, "title": "ignored"}
+        n = sources._fill_hero_details(items, client)
+        self.assertLessEqual(n, 15)
+        self.assertEqual(n, client.details.call_count)
+        # kind all: first 5; movie: first 5 movies; tv: first 5 tvs; deduplicated
+        wanted = {(i["media_type"], i["tmdb_id"]) for kind in ("all", "movie", "tv")
+                  for i in sources.browse.hero_picks(items, kind)}
+        called = {(c.args[0], c.args[1]) for c in client.details.call_args_list}
+        self.assertEqual(called, wanted)
+        self.assertEqual(len(wanted), n)
+        for c in client.details.call_args_list:
+            self.assertIs(c.kwargs["refresh"], True)
+
+    def test_dedupes_across_kinds(self):
+        items = [{"media_type": "movie", "tmdb_id": i, "title": f"M{i}"} for i in range(8)]
+        client = mock.Mock()
+        client.details.return_value = dict(self.HERO)
+        self.assertEqual(sources._fill_hero_details(items, client), 5)  # all == movie; tv is empty
+
+    def test_updates_the_five_fields_and_nothing_else(self):
+        items = [{"media_type": "movie", "tmdb_id": 1, "title": "Keep", "reason": "r", "match": 90}]
+        client = mock.Mock()
+        client.details.return_value = {**self.HERO, "title": "Other", "reason": "x", "match": 1}
+        sources._fill_hero_details(items, client)
+        self.assertEqual(items[0]["title"], "Keep")
+        self.assertEqual((items[0]["reason"], items[0]["match"]), ("r", 90))
+        for key, value in self.HERO.items():
+            self.assertEqual(items[0][key], value)
+
+    def test_missing_keys_in_fresh_details_become_none(self):
+        items = [{"media_type": "movie", "tmdb_id": 1, "title": "A"}]
+        client = mock.Mock()
+        client.details.return_value = {"backdrop_url": None}
+        sources._fill_hero_details(items, client)
+        self.assertEqual(items[0]["runtime"], None)
+        self.assertIn("backdrop_url", items[0])
+        self.assertEqual(sources._fill_hero_details(items, client), 0)  # now has the key: skipped
+
+    def test_skips_items_that_already_have_the_key_even_if_none(self):
+        items = [{"media_type": "movie", "tmdb_id": 1, "title": "A", "backdrop_url": None},
+                 {"media_type": "movie", "tmdb_id": 2, "title": "B"}]
+        client = mock.Mock()
+        client.details.return_value = dict(self.HERO)
+        self.assertEqual(sources._fill_hero_details(items, client), 1)
+        client.details.assert_called_once_with("movie", 2, refresh=True)
+
+    def test_one_failure_does_not_abort_the_rest(self):
+        items = [{"media_type": "movie", "tmdb_id": i, "title": f"M{i}"} for i in range(3)]
+        client = mock.Mock()
+
+        def details(t, i, refresh=False):
+            if i == 1:
+                raise RuntimeError("boom")
+            return dict(self.HERO)
+        client.details.side_effect = details
+        self.assertEqual(sources._fill_hero_details(items, client), 2)
+        self.assertNotIn("backdrop_url", items[1])
+        self.assertIn("backdrop_url", items[0])
+        self.assertIn("backdrop_url", items[2])
+
+    def test_empty_items(self):
+        self.assertEqual(sources._fill_hero_details([], mock.Mock()), 0)
+
+
+class TestRunHeroDetails(unittest.TestCase):
+    def test_sample_run_never_fills_and_sample_items_carry_the_five_keys(self):
+        with mock.patch.object(sources, "_fill_hero_details", side_effect=AssertionError("live only")), \
+             mock.patch("tmdb.TmdbClient.details", side_effect=AssertionError("network")):
+            result = sources.run(sample_mode=True)
+        self.assertTrue(result["items"])
+        for item in result["items"]:
+            for key in sources.browse.HERO_FIELDS:
+                self.assertIn(key, item)
+                self.assertIsNone(item[key])
+
+    def test_live_run_fills_hero_picks_with_the_client(self):
+        old = {k: getattr(config, k) for k in CONFIG_KEYS + ("TMDB_TOKEN",)}
+        self.addCleanup(lambda: [setattr(config, k, v) for k, v in old.items()])
+        config.HISTORY_SOURCE, config.PLEX_TOKEN, config.TMDB_TOKEN = "plex", "t", "t" * 32
+        config.RADARR_URL = config.SONARR_URL = ""
+        olddb = db.DB_PATH
+        db.DB_PATH = os.path.join(tempfile.mkdtemp(), "t.db")
+        self.addCleanup(setattr, db, "DB_PATH", olddb)
+        recs = {"items": [{"media_type": "movie", "tmdb_id": i, "title": f"M{i}"} for i in range(8)],
+                "profile": {}, "notes": []}
+        fresh = {"backdrop_url": "https://image.tmdb.org/b.jpg", "poster_large_url": None, "runtime": 99,
+                 "seasons": None, "certification": "PG"}
+        with mock.patch.object(plex.PlexClient, "load", return_value=([], set(), 0, [])), \
+             mock.patch("tmdb.TmdbClient.cached_details", return_value=None), \
+             mock.patch("recommend.recommend", return_value=recs), \
+             mock.patch.object(tmdb.TmdbClient, "details", return_value=fresh) as details:
+            result = sources.run(sample_mode=False)
+        self.assertEqual(details.call_count, 5)
+        self.assertEqual([i.get("runtime") for i in result["items"]], [99] * 5 + [None] * 3)
 
 
 if __name__ == "__main__":
