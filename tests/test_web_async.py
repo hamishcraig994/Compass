@@ -1200,7 +1200,7 @@ class TestCrossSiteHelper(unittest.TestCase):
 
 
 class TestTheme(AsyncCase):
-    COOKIE = "wn_theme=crimson; Path=/; Max-Age=34560000; SameSite=Lax"
+    COOKIE = "compass_theme=crimson; Path=/; Max-Age=34560000; SameSite=Lax"
 
     def post_form(self, data, json_mode=False):
         return self.request("POST", "/theme", data, as_json=json_mode)
@@ -1262,8 +1262,8 @@ class TestTheme(AsyncCase):
 
     def test_current_theme_per_request(self):
         with mock.patch.object(web, "render_home", lambda **kw: web.current_theme()):
-            for cookie, want in (("wn_theme=crimson", "crimson"), (None, "amber"), ("wn_theme=bad", "amber"),
-                                 ("a=1; wn_theme=lime", "lime"), (None, "amber")):
+            for cookie, want in (("compass_theme=crimson", "crimson"), (None, "amber"), ("compass_theme=bad", "amber"),
+                                 ("a=1; compass_theme=lime", "lime"), (None, "amber")):
                 headers = {"Cookie": cookie} if cookie else {}
                 status, _, body = self.request("GET", "/", extra_headers=headers)
                 self.assertEqual((status, body), (200, want), cookie)
@@ -1272,7 +1272,7 @@ class TestTheme(AsyncCase):
         seen = []
         with mock.patch.object(web.Handler, "_post_theme",
                                lambda self, form, as_json: (seen.append(web.current_theme()), self._json({}))):
-            self.request("POST", "/theme", "theme=lime", extra_headers={"Cookie": "wn_theme=mono"})
+            self.request("POST", "/theme", "theme=lime", extra_headers={"Cookie": "compass_theme=mono"})
         self.assertEqual(seen, ["mono"])
 
 

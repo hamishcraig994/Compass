@@ -1,9 +1,9 @@
 ---
 name: api-conventions
-description: What's Next's HTTP conventions - the route table, the JSON-vs-redirect response pattern, error format and status codes, CSRF protection, input validation helpers, naming and locking rules (stdlib http.server in web.py). Use when adding or changing a route, a form, a JSON response or anything app.js calls, and when reviewing those changes.
+description: Compass's HTTP conventions - the route table, the JSON-vs-redirect response pattern, error format and status codes, CSRF protection, input validation helpers, naming and locking rules (stdlib http.server in web.py). Use when adding or changing a route, a form, a JSON response or anything app.js calls, and when reviewing those changes.
 ---
 
-# What's Next API conventions
+# Compass API conventions
 
 Server: stdlib `http.server` - `Handler` in `web.py` (backend-owned). Pages are rendered by `pages.py` (frontend-owned). No framework, no external dependencies.
 
@@ -14,7 +14,7 @@ Server: stdlib `http.server` - `Handler` in `web.py` (backend-owned). Pages are 
 | GET | `/movies?...`, `/tv?...` | same layout, one kind; same `msg`/undo params |
 | GET | `/recommended?type=movie\|tv&msg=&undo_type=&undo_id=` | legacy: 303 to `/movies`, `/tv` or `/` (any other `type`); keeps `msg` and a valid undo |
 | GET | `/library` | |
-| GET | `/appearance?msg=` | theme picker (Settings tab); cookie `wn_theme` selects the theme on every page |
+| GET | `/appearance?msg=` | theme picker (Settings tab); cookie `compass_theme` selects the theme on every page |
 | GET | `/ai?msg=&undo_type=&undo_id=` | |
 | GET | `/add-dialog?type=&id=&return_to=&partial=1` | `partial=1` returns just the fragment for the JS modal; bad type/id gives 404 |
 | GET | `/settings?section=<settings_page.SECTIONS>` | |
@@ -22,7 +22,7 @@ Server: stdlib `http.server` - `Handler` in `web.py` (backend-owned). Pages are 
 | GET | `/health` | `ok`, text/plain (Docker healthcheck) |
 | GET | `/static/app.css`, `/static/app.js` | whitelist `Handler.STATIC_FILES` only; anything else gives 404 |
 | POST | `/refresh`, `/dismiss`, `/undismiss`, `/add`, `/ai/generate` | item routes take form fields `type`, `id`, `return_to` |
-| POST | `/theme` | `theme` (whitelist in `themes.py`), `return_to` (default `/appearance`); sets cookie `wn_theme` (Path=/, SameSite=Lax, 1 year), JSON or 303; works in sample mode; never touches db/cache |
+| POST | `/theme` | `theme` (whitelist in `themes.py`), `return_to` (default `/appearance`); sets cookie `compass_theme` (Path=/, SameSite=Lax, 1 year), JSON or 303; works in sample mode; never touches db/cache |
 | POST | `/rate` | `type`, `id`, `stars` (0 clears, 1-5), `return_to`; works for any title incl. unwatched recommendations; sample mode answers "not saved" |
 | GET | `/poster?...` | Plex poster proxy (token stays server-side) |
 | POST | `/settings?section=` | `action=save` or `action=test_<app>`; unknown section redirects to `/settings` |

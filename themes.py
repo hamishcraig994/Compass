@@ -1,8 +1,8 @@
-"""Colour theme registry: keys, labels, browser-chrome colours and the wn_theme cookie.
+"""Colour theme registry: keys, labels, browser-chrome colours and the compass_theme cookie.
 Pure - no I/O, no imports from web/pages/db. The swatch/preview colours live in static/app.css."""
 
 DEFAULT = "amber"
-COOKIE = "wn_theme"
+COOKIE = "compass_theme"
 COOKIE_MAX_AGE = 34560000  # 400 days, the browser cap
 TOKENS = ("--bg", "--bg-2", "--surface", "--surface-2", "--line", "--text", "--muted",
           "--accent", "--accent-ink", "--accent-hover", "--focus", "--accent-text",

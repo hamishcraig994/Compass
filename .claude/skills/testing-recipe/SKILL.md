@@ -1,16 +1,16 @@
 ---
 name: testing-recipe
-description: How to run and write tests for What's Next - exact unittest commands and timings, the fast vs full suite, fixtures and mocking patterns, threading helpers, sample-mode smoke testing, and what can't be tested here. Use before running or writing tests, before reporting work as done, and when reviewing test coverage.
+description: How to run and write tests for Compass - exact unittest commands and timings, the fast vs full suite, fixtures and mocking patterns, threading helpers, sample-mode smoke testing, and what can't be tested here. Use before running or writing tests, before reporting work as done, and when reviewing test coverage.
 ---
 
-# What's Next testing recipe
+# Compass testing recipe
 
 Stdlib `unittest` only - no pytest, no pip, no third-party packages. Run everything from the repo root (`/home/ops/whatsnext`).
 
 ## Commands
 | What | Command | Time |
 |---|---|---|
-| Full suite (run before reporting done) | `python3 -m unittest discover -s tests` | ~71s, 590 tests |
+| Full suite (run before reporting done) | `python3 -m unittest discover -s tests` | ~71s, 597 tests |
 | One module | `python3 -m unittest tests.test_ui` | |
 | One test | `python3 -m unittest tests.test_web_async.TestCsrf.test_cross_site_fetch_is_blocked_on_every_route` (pattern: `tests.<module>.<Class>.<method>`) | |
 | Fast set (what the after-edit hook runs) | every module except `test_web` and `test_web_async` | ~5s |

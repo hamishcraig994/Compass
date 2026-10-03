@@ -476,6 +476,10 @@ class TestBrowseShell(PatchedState):
         self.assertIn('<a class="brand" href="/">', html)
         self.assertIn('<nav class="topnav" aria-label="Main">', html)
         self.assertIn('<div class="topbar-actions">', html)
+        self.assertNotIn("brand-mark", html)
+        self.assertIn('<h1 class="brand-name">Compass</h1>', html)
+        self.assertIn("<title>Movies - Compass</title>", html)
+        self.assertNotIn("What", html)
         self.assertNotIn("app-sidebar", html)
         self.assertNotIn("app-shell", html)
         top = re.search(r'<nav class="topnav".*?</nav>', html, re.S).group(0)
@@ -980,7 +984,7 @@ class TestThemeCss(unittest.TestCase):
                 self.assertEqual(len(found), 1, (t["key"], light))
                 self.assertEqual(sorted(self.decls(found[0][2])), sorted(self.themes.TOKENS), (t["key"], light))
 
-    def test_no_unknown_theme_keys(self):
+    def test_no_unknocompass_theme_keys(self):
         keys = set(re.findall(r'data-theme="([^"]*)"', self.css))
         self.assertLessEqual(keys, set(self.themes.BY_KEY))
 
@@ -1008,7 +1012,6 @@ class TestThemeCss(unittest.TestCase):
 
     def test_new_tokens_used(self):
         rules = {sel: body for sel, body, _ in _blocks(self.css)}
-        self.assertIn("var(--accent-glow)", rules[".brand-mark"])
         self.assertIn("var(--match-text)", rules[".match"])
 
     def test_no_brand_names(self):
@@ -1018,7 +1021,7 @@ class TestThemeCss(unittest.TestCase):
 class TestThemeJs(unittest.TestCase):
     def test_hooks(self):
         js = read_static("app.js")
-        for needle in ("data-enhance=theme", "pageshow", "wn_theme", "theme-color"):
+        for needle in ("data-enhance=theme", "pageshow", "compass_theme", "theme-color"):
             self.assertIn(needle, js)
         self.assertEqual(js.count("innerHTML"), 1)
         self.assertNotRegex(js, r"https?://")

@@ -1,4 +1,4 @@
-/* What's Next - progressive enhancement. Plain JS, no libraries.
+/* Compass - progressive enhancement. Plain JS, no libraries.
  *
  * Every form and link on the page works without this file (POST + 303 redirect). This only
  * intercepts them to work in place: forms marked data-enhance="dismiss|undismiss|add|refresh|generate|rate|theme",
@@ -601,7 +601,7 @@
   // Back/forward cache restores the old DOM: re-sync with the cookie the server set.
   window.addEventListener("pageshow", function (e) {
     if (!e.persisted) return;
-    var match = /(?:^|;\s*)wn_theme=([^;]*)/.exec(doc.cookie || "");
+    var match = /(?:^|;\s*)compass_theme=([^;]*)/.exec(doc.cookie || "");
     if (!match || !/^[a-z]{1,20}$/.test(match[1])) return;
     savedTheme = match[1];
     root.setAttribute("data-theme", savedTheme);

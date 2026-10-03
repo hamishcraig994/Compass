@@ -13,7 +13,7 @@ class TestRegistry(unittest.TestCase):
     def test_keys_and_default(self):
         self.assertEqual([t["key"] for t in themes.THEMES], ["amber", "crimson", "lime", "ocean", "teal", "mono"])
         self.assertEqual(themes.DEFAULT, "amber")
-        self.assertEqual(themes.COOKIE, "wn_theme")
+        self.assertEqual(themes.COOKIE, "compass_theme")
 
     def test_fields(self):
         for t in themes.THEMES:
@@ -39,7 +39,7 @@ class TestRegistry(unittest.TestCase):
 
     def test_set_cookie_value(self):
         self.assertEqual(themes.set_cookie_value("crimson"),
-                         "wn_theme=crimson; Path=/; Max-Age=34560000; SameSite=Lax")
+                         "compass_theme=crimson; Path=/; Max-Age=34560000; SameSite=Lax")
         for bad in ("evil", "Crimson", "", None):
             with self.assertRaises(ValueError):
                 themes.set_cookie_value(bad)
@@ -47,17 +47,17 @@ class TestRegistry(unittest.TestCase):
 
 class TestFromCookie(unittest.TestCase):
     def test_cases(self):
-        cases = [(None, "amber"), ("", "amber"), ("wn_theme=lime", "lime"), ("a=1; wn_theme=ocean", "ocean"),
-                 ('junk="a,b; c"; wn_theme=mono', "mono"), ("wn_theme=Crimson", "amber"),
-                 ("wn_theme=evil", "amber"), ("wn_theme=<script>", "amber"), ("theme=crimson", "amber"),
-                 ("wn_theme=", "amber"), ("wn_theme=evil; wn_theme=teal", "teal"),
-                 ("wn_theme=lime; wn_theme=teal", "lime"), ("  wn_theme=mono  ", "mono"),
-                 (";;=;wn_theme", "amber")]
+        cases = [(None, "amber"), ("", "amber"), ("compass_theme=lime", "lime"), ("a=1; compass_theme=ocean", "ocean"),
+                 ('junk="a,b; c"; compass_theme=mono', "mono"), ("compass_theme=Crimson", "amber"),
+                 ("compass_theme=evil", "amber"), ("compass_theme=<script>", "amber"), ("theme=crimson", "amber"),
+                 ("compass_theme=", "amber"), ("compass_theme=evil; compass_theme=teal", "teal"),
+                 ("compass_theme=lime; compass_theme=teal", "lime"), ("  compass_theme=mono  ", "mono"),
+                 (";;=;compass_theme", "amber")]
         for header, want in cases:
             self.assertEqual(themes.from_cookie(header), want, header)
 
     def test_never_raises(self):
-        for header in (123, b"wn_theme=lime", object()):
+        for header in (123, b"compass_theme=lime", object()):
             self.assertEqual(themes.from_cookie(header), "amber")
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PostToolUse hook (Edit|Write) for What's Next - runs after every file edit, by any agent.
+"""PostToolUse hook (Edit|Write) for Compass - runs after every file edit, by any agent.
 
 - *.py: syntax check (python3 -m py_compile) on the edited file, then the fast test modules
   (~5s - everything except test_web and test_web_async, which take ~50s; run those via the

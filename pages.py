@@ -777,7 +777,7 @@ def _shell(body, section, subtitle="", show_refresh=False, return_to="/", status
     """status_html: trusted markup (e.g. UPDATING_HTML) appended to the subtitle. auto_refresh: the
     no-JS fallback for the building screens - app.js polls /api/status instead. cinematic: a ready
     browse page - the hero sits under the transparent top bar and the title strip moves below the rows."""
-    heading = dict((key, label) for key, label, _ in NAV_SECTIONS).get(section, "What's Next")
+    heading = dict((key, label) for key, label, _ in NAV_SECTIONS).get(section, "Compass")
     nav_html = _nav_html(section)
     refresh = _refresh_form(return_to) if show_refresh else ""
     meta_refresh = '<noscript><meta http-equiv="refresh" content="5"></noscript>' if auto_refresh else ""
@@ -790,7 +790,7 @@ def _shell(body, section, subtitle="", show_refresh=False, return_to="/", status
                 f'<div class="top-actions">{refresh}</div></div>{body}')
     theme = themes.get(web.current_theme())
     return (f'<!doctype html><html lang="en" data-theme="{escape(theme["key"])}"><head><meta charset="utf-8">'
-            f'<title>{escape(heading)} - What&#39;s Next</title>'
+            f'<title>{escape(heading)} - Compass</title>'
             f'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
             f'<meta name="color-scheme" content="dark light">'
             f'<meta name="theme-color" media="(prefers-color-scheme: dark)" content="{escape(theme["bg"])}">'
@@ -798,8 +798,8 @@ def _shell(body, section, subtitle="", show_refresh=False, return_to="/", status
             f'<link rel="stylesheet" href="/static/app.css"><script src="/static/app.js" defer></script>'
             f'{meta_refresh}</head><body{body_class}>'
             f'<a class="skip-link" href="#main">Skip to content</a>'
-            f'<header class="topbar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">W</span>'
-            f'<h1 class="brand-name">What&#39;s Next</h1></a>'
+            f'<header class="topbar"><a class="brand" href="/">'
+            f'<h1 class="brand-name">Compass</h1></a>'
             f'<nav class="topnav" aria-label="Main">{nav_html}</nav>'
             f'<div class="topbar-actions">{_nav_html(section, ("settings",))}</div></header>'
             f'<main class="app-main" id="main" tabindex="-1">{main}</main>'

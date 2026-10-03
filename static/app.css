@@ -1,4 +1,4 @@
-/* What's Next - dark-first media UI. No web fonts, no external assets. */
+/* Compass - dark-first media UI. No web fonts, no external assets. */
 /* Colour themes: each theme block declares the same 15 tokens, in dark then light.
    Selectors share specificity, so file order decides; every light block restates every token. */
 :root, [data-theme="amber"] {
@@ -15,7 +15,7 @@
   --focus: #ffb224;           /* focus ring: 3:1+ on --bg and --surface */
   --accent-text: #ffc557;     /* accent-coloured text on --bg/--surface */
   --accent-soft: rgba(255, 178, 36, .14);
-  --accent-glow: rgba(255, 178, 36, .3);   /* brand-mark glow */
+  --accent-glow: rgba(255, 178, 36, .3);   /* reserved glow tint */
   --match-text: #ffc557;      /* match % on the always-dark poster chip */
 }
 @media (prefers-color-scheme: light) {
@@ -312,12 +312,9 @@ form.inline { display: inline; margin: 0; }
   display: flex; align-items: center; gap: 10px; flex: none; min-width: 0; border-radius: 10px;
   color: var(--accent-text); text-decoration: none;
 }
-.brand-mark {
-  width: 34px; height: 34px; flex: none; display: grid; place-items: center; border-radius: 10px;
-  background: var(--accent); color: var(--accent-ink); font-weight: 900; font-size: 1.1rem;
-  box-shadow: 0 4px 14px var(--accent-glow);
-}
-.brand-name { margin: 0; font-size: 1.12rem; font-weight: 850; letter-spacing: -.01em; white-space: nowrap; }
+.brand-name { margin: 0; font-size: 1.3rem; font-weight: 850; line-height: 1; letter-spacing: .01em; white-space: nowrap; }
+.brand { min-height: 44px; padding: 0 4px; }   /* text-only brand: keep a 44px tap target */
+@media (max-width: 420px) { .brand-name { font-size: 1.2rem; } }
 .topnav { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }
 .nav-item {

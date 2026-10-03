@@ -1,4 +1,4 @@
-# What's Next
+# Compass
 
 Suggests movies and TV shows you *don't* have yet, based on what you've watched in Plex.
 
@@ -60,7 +60,7 @@ Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gent
 - **Themes.** Settings -> Appearance (`/appearance`) lets you pick a colour theme: Amber (the default),
   Crimson, Lime, Ocean, Teal Night or Mono (pure black, good for OLED screens). Each swatch previews its
   own colours and, with JavaScript, applies instantly. The choice is remembered per device in a cookie
-  (`wn_theme`), so your phone and TV can differ; there's no flash on load and it works without JS.
+  (`compass_theme`), so your phone and TV can differ; there's no flash on load and it works without JS.
   Every theme still follows your device's light/dark setting. Nothing is stored in the database.
 - **Library** (top bar) shows what's in your Plex library as a poster grid, with tabs for All,
   Movies, TV shows, **Watched** and "Added here" (what you added through Radarr/Sonarr), plus
@@ -148,7 +148,7 @@ Two rules keep this from being a black box or a liability:
   everything else in this list - it competes on fit and quality, not on where it came from.
 
 ## Deploy with Docker / Portainer
-1. Build the image `whatsnext:latest` on the Docker host (`docker build -t whatsnext:latest .`) or via
+1. Build the image `compass:latest` on the Docker host (`docker build -t compass:latest .`) or via
    Portainer -> Images -> Build a new image.
 2. Portainer -> Stacks -> Add stack -> Web editor -> paste `docker-compose.yml`. Deploy.
 3. Open http://<arr-vm-ip>:8091 -> Settings, and fill everything in there (no environment

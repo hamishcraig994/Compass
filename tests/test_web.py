@@ -79,16 +79,16 @@ class TestWeb(unittest.TestCase):
 
     def test_appearance_follows_cookie_and_all_pages_carry_it(self):
         for path in ("/", "/movies", "/library", "/settings", "/appearance"):
-            status, html = self.get_cookie(path, "wn_theme=ocean")
+            status, html = self.get_cookie(path, "compass_theme=ocean")
             self.assertEqual(status, 200, path)
             self.assertIn('<html', html)
             self.assertRegex(html, r'<html[^>]*data-theme="ocean"', path)
-        _, html = self.get_cookie("/appearance", "wn_theme=ocean")
+        _, html = self.get_cookie("/appearance", "compass_theme=ocean")
         self.assertIn('value="ocean" checked', html)
         self.assertEqual(html.count(" checked"), 1)
 
     def test_bad_cookie_falls_back_to_amber(self):
-        _, html = self.get_cookie("/appearance", "wn_theme=nope")
+        _, html = self.get_cookie("/appearance", "compass_theme=nope")
         self.assertRegex(html, r'<html[^>]*data-theme="amber"')
 
     def test_appearance_tab_row_marks_current(self):
@@ -115,14 +115,14 @@ class TestWeb(unittest.TestCase):
         except urllib.error.HTTPError as e:
             r = e
         self.assertEqual(r.code, 303)
-        self.assertIn("wn_theme=ocean", r.headers.get("Set-Cookie", ""))
+        self.assertIn("compass_theme=ocean", r.headers.get("Set-Cookie", ""))
         loc = r.headers["Location"]
         self.assertTrue(loc.startswith("/appearance?msg="), loc)
         status, html = self.get(loc)
         self.assertEqual(status, 200)
         self.assertIn("Theme set to", html)
 
-    def test_post_theme_rejects_unknown_theme(self):
+    def test_post_theme_rejects_unknocompass_theme(self):
         opener = urllib.request.build_opener(NoRedirect)
         try:
             r = opener.open(urllib.request.Request(self.base + "/theme", data=b"theme=hotpink", method="POST"))

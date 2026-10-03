@@ -8,12 +8,43 @@ import time
 from datetime import datetime, timezone
 
 DB_PATH = os.path.join(os.environ.get("DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")),
-                       "whatsnext.db")
+                       "compass.db")
+_LEGACY_NAME = "whatsnext.db"   # the database's name before the app was renamed to Compass
+_SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def _resolve_path():
+    """The file to open. For the default name (compass.db) a pre-rename whatsnext.db in the same folder
+    is moved over once, with its -wal/-shm/-journal files. Never overwrites anything; if the move
+    cannot be completed it is undone and the old file keeps being used, so no data is lost."""
+    path = DB_PATH
+    if os.path.basename(path) != "compass.db":
+        return path                      # custom path: used exactly as given
+    old = os.path.join(os.path.dirname(path), _LEGACY_NAME)
+    if os.path.exists(path) or not os.path.exists(old):
+        return path
+    pairs = [(old + sfx, path + sfx) for sfx in _SIDECARS if os.path.exists(old + sfx)] + [(old, path)]
+    if any(os.path.lexists(dst) for _, dst in pairs):
+        return old                       # stray leftovers at the new name: don't touch, keep the old db
+    done = []
+    try:
+        for src, dst in pairs:           # main file last, so a half-done move never looks complete
+            os.rename(src, dst)
+            done.append((src, dst))
+        return path
+    except OSError:
+        for src, dst in reversed(done):
+            try:
+                os.rename(dst, src)
+            except OSError:
+                pass
+        return old
 
 
 def _connect():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    path = _resolve_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, fetched_at REAL NOT NULL, body TEXT NOT NULL)")
     conn.execute("CREATE TABLE IF NOT EXISTS dismissed (media_type TEXT NOT NULL, tmdb_id INTEGER NOT NULL, "
                  "PRIMARY KEY (media_type, tmdb_id))")
