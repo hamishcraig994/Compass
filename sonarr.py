@@ -2,10 +2,46 @@
 in Sonarr and (by default) starts a search for missing episodes right away.
 
 Sonarr's own primary key for a show is its TVDB id, not TMDB's - see tmdb.py's external_ids()."""
+import arr_library
 import db
 from http_util import get_json, post_json
 
 PROFILES_MAX_AGE = 600  # quality profiles/root folders rarely change; see radarr.py's PROFILES_MAX_AGE
+
+
+def _positive_int(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _count(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _added_at(raw):
+    added = raw.get("added")
+    return added if isinstance(added, str) and added and not added.startswith("0001-") else None
+
+
+def normalize_series(raw):
+    """One Sonarr /api/v3/series entry -> the slim "ArrItem" the Library uses (see arr_library)."""
+    tmdb_id, monitored = _positive_int(raw.get("tmdbId")), bool(raw.get("monitored"))
+    stats = raw.get("statistics") if isinstance(raw.get("statistics"), dict) else {}
+    have, total = _count(stats.get("episodeFileCount")), _count(stats.get("episodeCount"))
+    if total > 0 and have >= total:
+        state = "downloaded"
+    elif have > 0:
+        state = "partial"
+    elif not monitored:
+        state = "unmonitored"
+    elif raw.get("status") == "upcoming" or total == 0:
+        state = "upcoming"
+    else:
+        state = "missing"
+    return {"media_type": "tv", "service": "sonarr", "tmdb_id": tmdb_id, "tvdb_id": _positive_int(raw.get("tvdbId")),
+            "title": raw.get("title") or "?", "year": _positive_int(raw.get("year")), "added_at": _added_at(raw),
+            "monitored": monitored, "arr_state": state, "episodes": {"have": have, "total": total},
+            "poster_url": arr_library.poster_url(raw.get("images")),
+            "url": f"https://www.themoviedb.org/tv/{tmdb_id}" if tmdb_id else None}
 
 
 class SonarrClient:
@@ -56,6 +92,10 @@ class SonarrClient:
             return self._root_folder
         folders = self.root_folders()
         return folders[0]["path"] if folders else None
+
+    def library(self):
+        """Every show in Sonarr as normalized items - one GET. Raises on failure."""
+        return [normalize_series(s) for s in self._get("/api/v3/series") if isinstance(s, dict)]
 
     def existing_tmdb_ids(self):
         """TMDB ids of shows already in Sonarr, for exclusion. Sonarr keys shows by TVDB id, but

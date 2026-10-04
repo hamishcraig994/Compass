@@ -19,27 +19,31 @@ def use_sample(force=None):
     return force if force is not None else not config.live_configured()
 
 
-def _arr_exclusions(notes):
-    """Titles already tracked in Radarr/Sonarr, so they're excluded from recommendations even
-    before they've been downloaded and shown up in Plex."""
-    keys = set()
-    if config.radarr_configured():
+def _arr_library(notes):
+    """One library() call per configured Radarr/Sonarr. Returns (keys, arr): keys are the (media_type,
+    tmdb_id) pairs already tracked there, so they're excluded from recommendations even before they've
+    been downloaded and shown up in Plex; arr is what the Library page shows (result["arr"]). A service
+    that can't be reached gets state "error" plus a note, never an exception."""
+    items = []
+    arr = {"radarr": {"state": "off", "count": 0}, "sonarr": {"state": "off", "count": 0}}
+    for name, configured, make in (
+            ("radarr", config.radarr_configured, lambda: radarr.RadarrClient(config.RADARR_URL, config.RADARR_API_KEY)),
+            ("sonarr", config.sonarr_configured, lambda: sonarr.SonarrClient(config.SONARR_URL, config.SONARR_API_KEY))):
+        if not configured():
+            continue
         try:
-            client = radarr.RadarrClient(config.RADARR_URL, config.RADARR_API_KEY)
-            keys |= {("movie", i) for i in client.existing_tmdb_ids()}
+            found = make().library()
+            items.extend(found)
+            arr[name] = {"state": "ok", "count": len(found)}
         except Exception as e:
-            notes.append(f"Couldn't reach Radarr: {e}")
-    if config.sonarr_configured():
-        try:
-            client = sonarr.SonarrClient(config.SONARR_URL, config.SONARR_API_KEY)
-            keys |= {("tv", i) for i in client.existing_tmdb_ids()}
-        except Exception as e:
-            notes.append(f"Couldn't reach Sonarr: {e}")
-    return keys
+            arr[name] = {"state": "error", "count": 0}
+            notes.append(f"Couldn't reach {name.capitalize()}: {e}")
+    arr["items"] = items
+    return {(i["media_type"], i["tmdb_id"]) for i in items if i.get("tmdb_id")}, arr
 
 
 def _load_live():
-    """Returns (watched, library_keys, notes, library). library is Plex's full item list (raw
+    """Returns (watched, library_keys, notes, library, arr). arr is _arr_library()'s result["arr"] dict. library is Plex's full item list (raw
     parse_library_item() dicts, thumbs included), or None when there's no PLEX_TOKEN to read it with."""
     notes = []
     if config.HISTORY_SOURCE == "tautulli":
@@ -58,8 +62,8 @@ def _load_live():
         watched, library_keys, skipped, library = plex.PlexClient(config.PLEX_URL, config.PLEX_TOKEN).load()
         if skipped:
             notes.append(f"{skipped} Plex titles have no TMDB id and were ignored (try Plex's newer 'Plex Movie/TV' agents).")
-    library_keys = set(library_keys) | _arr_exclusions(notes)
-    return watched, library_keys, notes, library
+    arr_keys, arr = _arr_library(notes)
+    return watched, set(library_keys) | arr_keys, notes, library, arr
 
 
 def _valid_thumb(thumb):
@@ -140,11 +144,13 @@ def run(sample_mode, limit=200):
     since every AI request has a real cost and this runs automatically on every cache refresh."""
     if sample_mode:
         watched, library_keys = sample.load()
+        arr = sample.arr_library()
+        library_keys = set(library_keys) | {(i["media_type"], i["tmdb_id"]) for i in arr["items"] if i.get("tmdb_id")}
         result = recommend.recommend(watched, library_keys, sample.SampleTmdb(), limit=limit)
         snapshot = _snapshot(watched, sample.library_items())  # sample mode ignores stored ratings and the TMDB cache
         notes = ["Showing made-up sample data. Add PLEX_TOKEN/TAUTULLI_* and TMDB_TOKEN to use your own library."]
     else:
-        watched, library_keys, notes, library = _load_live()
+        watched, library_keys, notes, library, arr = _load_live()
         client = tmdb.TmdbClient(config.TMDB_TOKEN)
         ratings = db.ratings()
         result = recommend.recommend(profile.apply_ratings(watched, ratings), library_keys, client,
@@ -153,6 +159,7 @@ def run(sample_mode, limit=200):
         _fill_hero_details(result["items"], client)
         snapshot = _snapshot(watched, library, client)  # raw history: your ratings are overlaid when shown
     result["library"], result["watched"], result["thumbs"] = snapshot
+    result["arr"] = arr
     result["notes"] = notes + result["notes"]
     result["sample"] = sample_mode
     result["watched_count"] = len(watched)
@@ -168,7 +175,7 @@ def generate_ai_recommendations(limit=50):
     if not config.ai_configured():
         return {"items": [], "profile": empty_profile, "notes": ["AI isn't configured - add a token in "
                 "Settings -> AI first."], "sample": False, "watched_count": 0}
-    watched, library_keys, notes, _ = _load_live()
+    watched, library_keys, notes, _, _ = _load_live()
     ratings = db.ratings()
     result = recommend.recommend(profile.apply_ratings(watched, ratings), library_keys, tmdb.TmdbClient(config.TMDB_TOKEN),
                                  dismissed=db.dismissed(), limit=limit, ai=ai_client(), ai_only=True,

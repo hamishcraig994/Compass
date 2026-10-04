@@ -10,7 +10,7 @@ Stdlib `unittest` only - no pytest, no pip, no third-party packages. Run everyth
 ## Commands
 | What | Command | Time |
 |---|---|---|
-| Full suite (run before reporting done) | `python3 -m unittest discover -s tests` | ~71s, 597 tests |
+| Full suite (run before reporting done) | `python3 -m unittest discover -s tests` | ~76s, 741 tests |
 | One module | `python3 -m unittest tests.test_ui` | |
 | One test | `python3 -m unittest tests.test_web_async.TestCsrf.test_cross_site_fetch_is_blocked_on_every_route` (pattern: `tests.<module>.<Class>.<method>`) | |
 | Fast set (what the after-edit hook runs) | every module except `test_web` and `test_web_async` | ~5s |

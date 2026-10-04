@@ -13,7 +13,9 @@ Server: stdlib `http.server` - `Handler` in `web.py` (backend-owned). Pages are 
 | GET | `/?msg=&undo_type=&undo_id=` | Home (cinematic hero + rows, movies and TV mixed) |
 | GET | `/movies?...`, `/tv?...` | same layout, one kind; same `msg`/undo params |
 | GET | `/recommended?type=movie\|tv&msg=&undo_type=&undo_id=` | legacy: 303 to `/movies`, `/tv` or `/` (any other `type`); keeps `msg` and a valid undo |
-| GET | `/library` | |
+| GET | `/library?type=&show=&sort=&q=&page=&source=` | `source` (all, plex, arr, wanted; validated per tab, bad value -> all) filters the merged Plex + Radarr + Sonarr list |
+| GET | `/search?q=&type=all\|movie\|tv&msg=` | live search page; `q` <=100 chars, >=2 to search; never 400 (bad `type` -> all) |
+| GET | `/search?...&partial=1` | ONLY the results fragment (`.search-fragment`, `Cache-Control: no-store`, no `<html`), identical to the fragment inside the full page; any other `partial` value -> full page |
 | GET | `/appearance?msg=` | theme picker (Settings tab); cookie `compass_theme` selects the theme on every page |
 | GET | `/ai?msg=&undo_type=&undo_id=` | |
 | GET | `/add-dialog?type=&id=&return_to=&partial=1` | `partial=1` returns just the fragment for the JS modal; bad type/id gives 404 |

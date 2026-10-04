@@ -244,6 +244,14 @@
   --scrim-wash: color-mix(in srgb, var(--bg) 24%, transparent);   /* even tint over the whole backdrop */
   --topbar-bg: color-mix(in srgb, var(--bg) 94%, transparent);
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Tags that sit on posters (status tags, download-state badges). Posters are dark in both colour modes,
+     so these are fixed dark chips with light text (all 7:1+), independent of theme. */
+  --chip-bg: #0b0e14;   --chip-ink: #ffffff;
+  --tone-ok-bg: #0c3a26;   --tone-ok-ink: #8ff0c0;
+  --tone-bad-bg: #431511;  --tone-bad-ink: #ffb3a6;
+  --tone-warn-bg: #3d2a05; --tone-warn-ink: #ffd27a;
+  --tone-info-bg: #11284a; --tone-info-ink: #aacdff;
+  --tone-off-bg: #272b35;  --tone-off-ink: #d3d8e3;
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -727,6 +735,124 @@ dialog.modal[open] { animation: modal-in .2s ease; }
 .theme-submit { justify-self: start; margin-top: 4px; }
 html.js .theme-submit { display: none; }   /* with JS the theme applies on change */
 
+/* ---------- Search: top-bar box, page, live states ---------- */
+/* Top bar: inline box on wide screens; an icon/link below 1100px (the bar runs out of room at 821px) */
+.topbar-search {
+  position: relative; flex: 0 1 auto; width: 210px; min-width: 0; margin: 0;
+  transition: width .2s ease;
+}
+.topbar-search:focus-within { width: 270px; }
+.topbar-search .search-input {
+  -webkit-appearance: none; appearance: none; min-height: 40px; padding: 6px 40px 6px 16px; border-radius: 999px;
+  font-size: .9rem;
+  /* translucent over the transparent cinematic bar (which has a --bg scrim behind it), solid enough on the solid bar */
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--muted) 70%, transparent);
+}
+.topbar-search .search-input::placeholder, .search-page .search-input::placeholder { color: var(--muted); opacity: 1; }
+.topbar-search .search-input:focus { border-color: var(--accent-text); }
+.topbar-search .search-input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+.topbar-search .search-submit {
+  position: absolute; right: 3px; top: 50%; width: 34px; min-height: 0; height: 34px; padding: 0; margin-top: -17px;
+  border: 0; border-radius: 50%; background: transparent; color: var(--muted);
+}
+.topbar-search .search-submit:hover { background: var(--accent-soft); color: var(--text); border-color: transparent; }
+.topbar-search .search-submit svg { width: 18px; height: 18px; }
+.search-link { display: none; }
+@media (max-width: 1100px) {
+  .topbar-search { display: none; }
+  .topbar-actions .search-link { display: flex; }   /* <=820px: the icon-only .nav-item rules above apply */
+}
+
+/* Search page */
+.search-page { max-width: 960px; min-width: 0; }
+.search-form { display: grid; gap: 14px; margin: 0 0 20px; }
+.search-label { font-size: 1.05rem; font-weight: 750; }
+.search-row { position: relative; display: flex; align-items: center; gap: 10px; }
+.search-page .search-input {
+  -webkit-appearance: none; appearance: none; flex: 1 1 auto; min-width: 0; min-height: 52px;
+  padding: 10px 46px 10px 20px; border-radius: 999px; font-size: 1.15rem;
+  border-color: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+.search-page .search-input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+.search-row .btn-add { flex: none; min-width: 104px; min-height: 52px; padding: 0 22px; font-size: 1rem; }
+/* The spinner overlays the right end of the input (just left of the button), so showing it never moves anything */
+.search-spinner {
+  position: absolute; top: 50%; right: calc(104px + 10px + 16px); width: 18px; height: 18px; margin-top: -9px;
+  border-width: 2px; pointer-events: none;
+}
+.search-types { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; border: 0; background: none; }
+.search-types .search-type {
+  position: relative; display: inline-flex; align-items: center; min-height: 40px; padding: 0 16px; gap: 0;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--text);
+  font-size: .9rem; font-weight: 600; cursor: pointer;
+}
+.search-types .search-type:hover { border-color: var(--muted); }
+.search-type input {   /* invisible but focusable; the whole pill is the hit area */
+  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer;
+}
+.search-types .search-type:has(input:checked) { background: var(--text); border-color: var(--text); color: var(--bg); font-weight: 750; }
+.search-type:has(input:checked)::before { content: "\2713"; margin-right: 6px; font-weight: 900; }   /* not colour-only */
+.search-type:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+@supports selector(:has(*)) { .search-type input:focus-visible { outline: none; } }
+@supports not selector(:has(*)) {   /* no :has (Firefox < 121): show the native radios so checked and focus state stay visible */
+  .search-type input {
+    position: static; inset: auto; width: 18px; height: 18px; margin: 0 8px 0 0; opacity: 1; accent-color: var(--accent);
+  }
+  .theme-picker .theme-radio {
+    inset: auto; top: 12px; left: 12px; width: 22px; height: 22px; opacity: 1; z-index: 2; accent-color: var(--accent);
+  }
+  .theme-picker .theme-radio:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+}
+.search-status { margin: 0; }   /* the aria-live line stays .visually-hidden: the summary below says the same */
+
+.search-results-region { min-width: 0; transition: opacity .15s ease; }
+.search-results-region.is-loading { opacity: .55; pointer-events: none; cursor: progress; user-select: none; }
+.search-fragment { display: grid; gap: 4px; min-width: 0; }
+.search-fragment > .note { max-width: 720px; margin-bottom: 8px; }
+.search-hint { margin: 8px 2px; font-size: 1rem; max-width: 60ch; }
+.search-summary { margin: 0 0 12px; }
+.search-results { margin-top: 6px; }
+.search-card .card-poster[data-open-detail] { cursor: pointer; }
+.card-sub.arr-line { margin: -2px 0 0; font-weight: 650; color: var(--text); }
+
+/* Status tags (search): variants of .lib-tag with their own opaque fill, so contrast never depends on the poster */
+.lib-tag.status-tag { border: 1px solid transparent; }
+.status-tag.status-radarr, .status-tag.status-sonarr {
+  background: var(--chip-bg); color: var(--chip-ink); border-color: color-mix(in srgb, var(--chip-ink) 55%, transparent);
+}
+.status-tag.status-added { background: var(--tone-ok-bg); color: var(--tone-ok-ink); border-color: var(--tone-ok-ink); }
+/* status-plex keeps the .lib-tag accent fill */
+
+/* Library: download-state badges and source chips */
+.badge.arr-state {
+  border: 1px solid currentColor; text-transform: none; letter-spacing: .02em; font-size: .68rem; font-weight: 800; white-space: nowrap;
+}
+.badge.arr-state.state-downloaded  { background: var(--tone-ok-bg);   color: var(--tone-ok-ink); }
+.badge.arr-state.state-missing     { background: var(--tone-bad-bg);  color: var(--tone-bad-ink); }
+.badge.arr-state.state-partial     { background: var(--tone-warn-bg); color: var(--tone-warn-ink); }
+.badge.arr-state.state-upcoming    { background: var(--tone-info-bg); color: var(--tone-info-ink); }
+.badge.arr-state.state-unmonitored { background: var(--tone-off-bg);  color: var(--tone-off-ink); }
+.card-sources { display: flex; flex-wrap: wrap; gap: 4px; margin: -2px 0 0; }
+.src {
+  padding: 1px 7px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-2); color: var(--text);
+  font-size: .68rem; font-weight: 750; letter-spacing: .03em; text-transform: uppercase;
+}
+.src-plex { border-color: var(--accent-text); color: var(--accent-text); }
+.src-radarr, .src-sonarr { border-color: var(--muted); }
+
+@media (max-width: 520px) {
+  .search-form { gap: 12px; }
+  .search-row .btn-add { min-width: 88px; padding: 0 16px; }
+  .search-spinner { right: calc(88px + 10px + 14px); }
+  .search-page .search-input { font-size: 1rem; padding-left: 16px; }
+  .search-types .search-type { flex: 1 1 0; justify-content: center; padding: 0 10px; }
+  /* Library toolbar: two selects per row, the third (Source) and the button get their own full rows */
+  .toolbar label:has(select) { flex: 1 1 calc(50% - 6px); max-width: none; }
+  .toolbar label:has(select[name="source"]) { flex-basis: 100%; }
+  .toolbar .btn-ghost { flex: 1 1 100%; }
+}
+
 /* ---------- Phones ---------- */
 @media (max-width: 520px) {
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 12px; }
@@ -1053,4 +1179,5 @@ body.cinematic .top.browse-top {
   .hero-dot.on::after { animation: none; transform: none; }
   .hero-slide, .hero-slide:not(.on) { transition: none; }
   .preview, .preview.is-open { transform: none; transition: none; }
+  .search-results-region, .topbar-search { transition: none; }
 }

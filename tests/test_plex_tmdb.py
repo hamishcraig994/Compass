@@ -344,3 +344,163 @@ class TestSearch(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTmdbSearchTitles(unittest.TestCase):
+    def setUp(self):
+        self._old = db.DB_PATH
+        db.DB_PATH = os.path.join(tempfile.mkdtemp(), "t.db")
+        self.addCleanup(setattr, db, "DB_PATH", self._old)
+        self.client = tmdb.TmdbClient("k" * 32)
+
+    @staticmethod
+    def movie(i, **extra):
+        return {"id": i, "title": f"M{i}", "release_date": "2020-03-04", "poster_path": "/p.jpg", "overview": "o",
+                "vote_average": 7.5, "vote_count": 10, **extra}
+
+    def test_all_uses_multi_and_drops_people(self):
+        raw = {"results": [self.movie(1, media_type="movie"), {"id": 2, "name": "Person", "media_type": "person"},
+                           {"id": 3, "name": "S", "first_air_date": "2019-01-01", "media_type": "tv"}], "total_pages": 1}
+        with mock.patch.object(tmdb, "get_json", return_value=raw) as get:
+            found = self.client.search_titles("dune")
+        self.assertTrue(get.call_args.args[0].endswith("/search/multi"))
+        self.assertEqual([(r["media_type"], r["tmdb_id"]) for r in found["results"]], [("movie", 1), ("tv", 3)])
+        self.assertFalse(found["capped"])
+
+    def test_movie_and_tv_use_their_own_path_and_ignore_media_type_field(self):
+        for kind in ("movie", "tv"):
+            with mock.patch.object(tmdb, "get_json", return_value={"results": [{"id": 4, "name": "X", "title": "X"}]}) as get:
+                found = self.client.search_titles("x y", kind)
+            self.assertTrue(get.call_args.args[0].endswith(f"/search/{kind}"))
+            self.assertEqual(found["results"][0]["media_type"], kind)
+
+    def test_params_timeout_and_retries(self):
+        with mock.patch.object(tmdb, "get_json", return_value={"results": []}) as get:
+            self.client.search_titles("dune")
+        params = get.call_args.kwargs["params"]
+        self.assertEqual((params["query"], params["include_adult"], params["page"]), ("dune", "false", 1))
+        self.assertEqual((get.call_args.kwargs["timeout"], get.call_args.kwargs["retries"]), (8, 1))
+
+    def test_capped_at_twenty_and_flag_follows_total_pages(self):
+        raw = {"results": [self.movie(i) for i in range(1, 26)], "total_pages": 3}
+        with mock.patch.object(tmdb, "get_json", return_value=raw):
+            found = self.client.search_titles("a b", "movie")
+        self.assertEqual(len(found["results"]), 20)
+        self.assertEqual(found["results"][0]["tmdb_id"], 1)  # TMDB's relevance order kept
+        self.assertTrue(found["capped"])
+
+    def test_cache_written_under_prefix_and_cached_search_never_requests(self):
+        with mock.patch.object(tmdb, "get_json") as get:
+            self.assertIsNone(self.client.cached_search("Dune  Part", "all"))
+        get.assert_not_called()
+        with mock.patch.object(tmdb, "get_json", return_value={"results": [self.movie(1)]}):
+            found = self.client.search_titles("Dune  Part", "movie")
+        self.assertEqual(db.cache_get("tmdbsearch:v1:movie:dune part", 60), found)
+        with mock.patch.object(tmdb, "get_json") as get:
+            self.assertEqual(self.client.cached_search("dune PART", "movie"), found)
+            self.assertIsNone(self.client.cached_search("dune part", "tv"))  # per kind
+        get.assert_not_called()
+
+    def test_second_search_titles_call_writes_the_cache_again(self):
+        with mock.patch.object(tmdb, "get_json", return_value={"results": [self.movie(1, media_type="movie")]}):
+            self.client.search_titles("dune")
+        with mock.patch.object(tmdb, "get_json", return_value={"results": [self.movie(2, media_type="movie")]}):
+            self.client.search_titles("dune")
+        self.assertEqual(self.client.cached_search("dune")["results"][0]["tmdb_id"], 2)
+
+    def test_errors_propagate(self):
+        with mock.patch.object(tmdb, "get_json", side_effect=RuntimeError("HTTP 500")):
+            with self.assertRaises(RuntimeError):
+                self.client.search_titles("dune")
+        self.assertIsNone(self.client.cached_search("dune"))
+
+    def test_get_passes_timeout_and_retries_through(self):
+        with mock.patch.object(tmdb, "get_json", return_value={}) as get:
+            self.client._get("/x")
+            self.client._get("/x", timeout=3, retries=0)
+        self.assertEqual((get.call_args_list[0].kwargs["timeout"], get.call_args_list[0].kwargs["retries"]), (20, 2))
+        self.assertEqual((get.call_args_list[1].kwargs["timeout"], get.call_args_list[1].kwargs["retries"]), (3, 0))
+
+    def test_existing_search_for_the_ai_resolver_is_unchanged(self):
+        with mock.patch.object(tmdb, "get_json", return_value={"results": [{"id": 9, "release_date": "2020-01-01"}]}):
+            self.assertEqual(self.client.search("movie", "Dune", 2021), 9)
+        self.assertIsNotNone(db.cache_get("search:movie:dune:2021", 60))
+
+
+class TestNormalizeSearch(unittest.TestCase):
+    def test_movie(self):
+        item = tmdb.normalize_search({"id": 1, "title": "Dune", "release_date": "2021-10-22", "poster_path": "/p.jpg",
+                                      "overview": "o", "vote_average": 7.8, "vote_count": 5}, "movie")
+        self.assertEqual(item, {"media_type": "movie", "tmdb_id": 1, "title": "Dune", "year": 2021,
+                                "release_date": "2021-10-22", "overview": "o",
+                                "poster_url": "https://image.tmdb.org/t/p/w342/p.jpg",
+                                "url": "https://www.themoviedb.org/movie/1", "vote_average": 7.8, "vote_count": 5})
+
+    def test_tv_uses_name_and_first_air_date(self):
+        item = tmdb.normalize_search({"id": 2, "name": "Dark", "first_air_date": "2017-12-01"}, "tv")
+        self.assertEqual((item["title"], item["year"], item["release_date"]), ("Dark", 2017, "2017-12-01"))
+
+    def test_missing_poster_date_and_title(self):
+        item = tmdb.normalize_search({"id": 3, "release_date": ""}, "movie")
+        self.assertEqual((item["title"], item["year"], item["release_date"], item["poster_url"], item["overview"],
+                          item["vote_count"]), ("?", None, None, None, "", 0))
+
+
+class TestSearchMalformedRows(unittest.TestCase):
+    def setUp(self):
+        self._old = db.DB_PATH
+        db.DB_PATH = os.path.join(tempfile.mkdtemp(), "t.db")
+        self.addCleanup(setattr, db, "DB_PATH", self._old)
+        self.client = tmdb.TmdbClient("k" * 32)
+
+    BAD = [
+        {"id": 2, "media_type": "movie", "title": 5, "overview": 5, "release_date": "²０２¹4-01-01",
+         "poster_path": 7, "vote_average": "high", "vote_count": [1]},
+        {"media_type": "movie", "title": "No id"},
+        {"id": "3", "media_type": "movie", "title": "String id"},
+        {"id": True, "media_type": "movie", "title": "Bool id"},
+        {"id": 4, "media_type": ["movie"], "title": "Bad type"},
+        "not a dict", None, 12,
+        {"id": 5, "media_type": "movie", "title": "Poster", "poster_path": "/a b\n.jpg", "release_date": {"x": 1}},
+        {"id": 6, "media_type": "movie", "title": {"a": 1}, "overview": None, "release_date": "٢٠٢١-01-01"},
+    ]
+
+    def test_bad_rows_degrade_or_are_skipped_and_good_rows_survive(self):
+        good = {"id": 1, "media_type": "movie", "title": "Good", "release_date": "2020-01-02", "overview": "ok"}
+        with mock.patch.object(tmdb, "get_json", return_value={"results": self.BAD + [good]}):
+            found = self.client.search_titles("x y")
+        by_id = {r["tmdb_id"]: r for r in found["results"]}
+        self.assertEqual(set(by_id), {1, 2, 5, 6})
+        self.assertEqual(by_id[1]["title"], "Good")
+        two = by_id[2]
+        self.assertEqual((two["title"], two["overview"], two["year"], two["release_date"], two["poster_url"],
+                          two["vote_average"], two["vote_count"]), ("?", "", None, None, None, 0, 0))
+        self.assertIsNone(by_id[5]["poster_url"])
+        self.assertEqual((by_id[6]["title"], by_id[6]["year"]), ("?", None))
+        for r in found["results"]:
+            for key in ("title", "overview", "url"):
+                self.assertIsInstance(r[key], str)
+            self.assertIsInstance(r["tmdb_id"], int)
+        import json
+        json.dumps(found)
+        self.assertEqual(self.client.cached_search("x y"), found)
+
+    def test_malformed_results_container(self):
+        for raw in ({"results": None}, {"results": "x"}, {}):
+            with mock.patch.object(tmdb, "get_json", return_value=raw):
+                try:
+                    found = self.client.search_titles("x y", "movie")
+                except TypeError:
+                    self.fail("results container of wrong type should degrade")
+            self.assertEqual(found["results"], [])
+
+    def test_ascii_year_parse(self):
+        self.assertEqual(tmdb._year("2020-01-01"), 2020)
+        self.assertIsNone(tmdb._year("²²²²"))
+        self.assertIsNone(tmdb._year(None))
+        self.assertIsNone(tmdb._year("202"))
+
+    def test_details_accepts_timeout_and_retries(self):
+        with mock.patch.object(tmdb, "get_json", return_value={"id": 1, "title": "T"}) as get:
+            self.client.details("movie", 1, timeout=8, retries=1)
+        self.assertEqual((get.call_args.kwargs["timeout"], get.call_args.kwargs["retries"]), (8, 1))

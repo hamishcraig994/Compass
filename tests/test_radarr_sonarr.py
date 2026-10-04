@@ -224,3 +224,98 @@ class TestSonarrClient(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRadarrNormalize(unittest.TestCase):
+    def test_every_state_branch(self):
+        n = radarr.normalize_movie
+        self.assertEqual(n({"hasFile": True, "monitored": False})["arr_state"], "downloaded")
+        self.assertEqual(n({"monitored": False})["arr_state"], "unmonitored")
+        self.assertEqual(n({"monitored": True, "isAvailable": False})["arr_state"], "upcoming")
+        self.assertEqual(n({"monitored": True, "isAvailable": True, "status": "announced"})["arr_state"], "missing")
+        self.assertEqual(n({"monitored": True, "status": "announced"})["arr_state"], "upcoming")
+        self.assertEqual(n({"monitored": True, "status": "tba"})["arr_state"], "upcoming")
+        self.assertEqual(n({"monitored": True, "status": "released"})["arr_state"], "missing")
+        self.assertEqual(n({"monitored": True})["arr_state"], "missing")
+
+    def test_fields(self):
+        item = radarr.normalize_movie({"tmdbId": 11, "title": "Dune", "year": 2021, "monitored": True, "hasFile": True,
+                                       "added": "2024-05-01T10:00:00Z"})
+        self.assertEqual(item, {
+            "media_type": "movie", "service": "radarr", "tmdb_id": 11, "tvdb_id": None, "title": "Dune",
+            "year": 2021, "added_at": "2024-05-01T10:00:00Z", "monitored": True, "arr_state": "downloaded",
+            "episodes": None, "poster_url": None, "url": "https://www.themoviedb.org/movie/11"})
+
+    def test_missing_or_zero_values(self):
+        for raw in ({}, {"tmdbId": 0, "year": 0, "added": "0001-01-01T00:00:00Z", "title": ""}):
+            item = radarr.normalize_movie(raw)
+            self.assertEqual((item["tmdb_id"], item["year"], item["added_at"], item["title"], item["url"]),
+                             (None, None, None, "?", None))
+
+    def test_poster_is_filtered(self):
+        raw = {"images": [{"coverType": "poster", "remoteUrl": "https://image.tmdb.org/t/p/original/p.jpg",
+                           "url": "/MediaCover/1/poster.jpg"}]}
+        self.assertEqual(radarr.normalize_movie(raw)["poster_url"], "https://image.tmdb.org/t/p/w342/p.jpg")
+        raw["images"][0]["remoteUrl"] = "http://evil.example/p.jpg"
+        self.assertIsNone(radarr.normalize_movie(raw)["poster_url"])
+
+    def test_library_makes_one_get_with_the_key_and_leaks_nothing(self):
+        client = RadarrClient("http://arr:7878", "secretkey")
+        with mock.patch.object(radarr, "get_json", return_value=[{"tmdbId": 1, "title": "A"}, {"tmdbId": 2}]) as get:
+            items = client.library()
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(get.call_args.args[0], "http://arr:7878/api/v3/movie")
+        self.assertEqual(get.call_args.kwargs["headers"], {"X-Api-Key": "secretkey"})
+        self.assertEqual([i["tmdb_id"] for i in items], [1, 2])
+        self.assertNotIn("secretkey", repr(items))
+
+    def test_library_raises_on_failure(self):
+        with mock.patch.object(radarr, "get_json", side_effect=RuntimeError("down")):
+            with self.assertRaises(RuntimeError):
+                RadarrClient("http://arr", "k").library()
+
+
+class TestSonarrNormalize(unittest.TestCase):
+    @staticmethod
+    def raw(have=None, total=None, **extra):
+        stats = {}
+        if have is not None:
+            stats["episodeFileCount"] = have
+        if total is not None:
+            stats["episodeCount"] = total
+        return {"monitored": True, "statistics": stats, **extra}
+
+    def test_every_state_branch(self):
+        n = sonarr.normalize_series
+        self.assertEqual(n(self.raw(10, 10, monitored=False))["arr_state"], "downloaded")
+        self.assertEqual(n(self.raw(11, 10))["arr_state"], "downloaded")
+        self.assertEqual(n(self.raw(5, 10))["arr_state"], "partial")
+        self.assertEqual(n(self.raw(1, 0))["arr_state"], "partial")  # have > 0 but total unknown
+        self.assertEqual(n(self.raw(0, 10, monitored=False))["arr_state"], "unmonitored")
+        self.assertEqual(n(self.raw(0, 10, status="upcoming"))["arr_state"], "upcoming")
+        self.assertEqual(n(self.raw(0, 0))["arr_state"], "upcoming")
+        self.assertEqual(n(self.raw(0, 10, status="continuing"))["arr_state"], "missing")
+        self.assertEqual(n(self.raw(None, 10))["arr_state"], "missing")
+
+    def test_episodes_and_missing_statistics(self):
+        self.assertEqual(sonarr.normalize_series(self.raw(3, 8))["episodes"], {"have": 3, "total": 8})
+        self.assertEqual(sonarr.normalize_series({"monitored": True})["episodes"], {"have": 0, "total": 0})
+        self.assertEqual(sonarr.normalize_series({"statistics": None})["episodes"], {"have": 0, "total": 0})
+
+    def test_fields_and_empty_values(self):
+        item = sonarr.normalize_series({"tmdbId": 5, "tvdbId": 99, "title": "Show", "year": 2020, "monitored": True,
+                                        "added": "2023-01-01T00:00:00Z"})
+        self.assertEqual((item["media_type"], item["service"], item["tmdb_id"], item["tvdb_id"], item["url"]),
+                         ("tv", "sonarr", 5, 99, "https://www.themoviedb.org/tv/5"))
+        empty = sonarr.normalize_series({"tmdbId": 0, "added": "0001-01-01T00:00:00Z"})
+        self.assertEqual((empty["tmdb_id"], empty["added_at"], empty["title"], empty["url"]), (None, None, "?", None))
+
+    def test_library_makes_one_get_with_the_key_and_leaks_nothing(self):
+        client = SonarrClient("http://arr:8989", "secretkey")
+        with mock.patch.object(sonarr, "get_json", return_value=[{"tmdbId": 1, "title": "A"}]) as get:
+            items = client.library()
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(get.call_args.args[0], "http://arr:8989/api/v3/series")
+        self.assertEqual(get.call_args.kwargs["headers"], {"X-Api-Key": "secretkey"})
+        self.assertEqual(len(items), 1)
+        self.assertNotIn("secretkey", repr(items))

@@ -337,6 +337,97 @@ class TestWeb(unittest.TestCase):
         self.assertNotIn("javascript:", card)
 
 
+class TestSearchAndArrLibrarySample(unittest.TestCase):
+    """Sample mode end to end: search page + fragment, and the Radarr/Sonarr-merged Library."""
+    setUpClass, tearDownClass, get = (TestWeb.__dict__[n] for n in ("setUpClass", "tearDownClass", "get"))
+
+    def titles_on(self, path):
+        _, body = self.get(path)
+        import re
+        return [re.sub(r"<[^>]+>", "", t) for t in re.findall(r'<h3 class="title">(.*?)</h3>', body)]
+
+    def test_search_dune_is_in_library(self):
+        _, body = self.get("/search?q=dune")
+        self.assertIn("Dune", body)
+        self.assertIn("In library", body)
+        self.assertIn('data-search-state="ok"', body)
+
+    def test_search_low_tide_is_in_sonarr_and_missing(self):
+        _, body = self.get("/search?q=low+tide")
+        self.assertIn("In Sonarr", body)
+        self.assertIn("Missing", body)
+
+    def test_search_paper_is_in_radarr(self):
+        _, body = self.get("/search?q=paper")
+        self.assertIn("Paper Moons", body)
+        self.assertIn("In Radarr", body)
+
+    def test_short_none_and_hostile_queries(self):
+        self.assertIn("Type at least 2 characters", self.get("/search?q=x")[1])
+        self.assertIn("No matches", self.get("/search?q=zzzz")[1])
+        _, body = self.get("/search?q=%3Cscript%3E")
+        self.assertNotIn("<script>", body)
+        self.assertIn("&lt;script&gt;", body)
+
+    def test_no_add_buttons_in_sample_mode(self):
+        for path in ("/search?q=low+tide", "/search?q=paper", "/search?q=moons", "/search?q=ni", "/search?q=e&type=tv"):
+            self.assertNotIn("Add to library", self.get(path)[1], path)
+            self.assertNotIn("data-add-dialog", self.get(path)[1], path)
+
+    def test_partial_fragment(self):
+        status, body = self.get("/search?q=dune&partial=1")
+        self.assertEqual(status, 200)
+        self.assertTrue(body.startswith('<div class="search-fragment"'))
+        for bad in ("<html", "topbar", "search-form"):
+            self.assertNotIn(bad, body)
+        self.assertIn('data-search-state="ok"', body)
+        self.assertIn("Dune", body)
+        self.assertIn("In library", body)
+        with urllib.request.urlopen(self.base + "/search?q=dune&partial=1") as r:
+            self.assertEqual(r.headers["Cache-Control"], "no-store")
+            self.assertEqual(r.headers["Content-Type"], "text/html; charset=utf-8")
+        self.assertIn('data-search-state="short"', self.get("/search?q=x&partial=1")[1])
+        self.assertIn('data-search-state="empty"', self.get("/search?partial=1")[1])
+        self.assertEqual(self.get("/search?type=bogus&partial=1")[0], 200)
+
+    def test_partial_escapes_q_in_body_and_announce(self):
+        _, body = self.get("/search?q=%3Cscript%3E&partial=1")
+        self.assertNotIn("<script>", body)
+        self.assertIn("&lt;script&gt;", body)
+        self.assertIn('data-announce="No matches for &quot;&lt;script&gt;&quot;"', body)
+
+    def test_full_page_embeds_the_exact_fragment(self):
+        _, page = self.get("/search?q=dune")
+        _, fragment = self.get("/search?q=dune&partial=1")
+        self.assertIn(fragment, page)
+        self.assertEqual(self.get("/search?q=dune&partial=0")[1], page)
+
+    def test_library_movie_source_arr(self):
+        found = self.titles_on("/library?type=movie&source=arr")
+        self.assertIn("Paper Moons", found)
+        self.assertIn("Dune", found)
+        self.assertNotIn("Arrival", found)
+
+    def test_library_wanted(self):
+        found = self.titles_on("/library?source=wanted")
+        for title in ("Tiny New Thing", "Coming Soon", "Night Shift Diaries", "Low Tide"):
+            self.assertIn(title, found)
+        self.assertNotIn("Dune", found)
+
+    def test_dune_once_and_badges_and_source_select(self):
+        found = self.titles_on("/library?type=movie")
+        self.assertEqual(sum(1 for t in found if t.startswith("Dune")), 1)
+        _, body = self.get("/library?source=wanted")
+        self.assertIn("Missing", body)
+        self.assertIn("5/10 episodes", body)
+        self.assertIn('name="source"', body)
+        self.assertIn("Radarr", body)
+
+    def test_bad_source_falls_back_to_everywhere(self):
+        self.assertEqual(self.get("/library?source=bogus")[0], 200)
+        self.assertEqual(self.titles_on("/library?source=bogus"), self.titles_on("/library"))
+
+
 class TestAddDialogIsLazy(unittest.TestCase):
     """Forces sample mode off by patching sources.use_sample - same as TestAddRecordsToLibrary,
     since this file's shared server always runs in sample mode. _is_sample() is checked fresh

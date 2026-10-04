@@ -5,8 +5,8 @@
  * "Add to library" links (data-add-dialog), card details (a modal instead of the inline <details>),
  * and the "Finding your recommendations..." / "Updating..." states (data-poll), which poll /api/status.
  *
- * DOM is built with createElement/textContent. The one exception is the add dialog fragment from
- * our own server (/add-dialog?...&partial=1), which is rendered and escaped server-side.
+ * DOM is built with createElement/textContent. The one exception is setFragment(): the add dialog and
+ * the live search results are fragments from our own server (...&partial=1), escaped server-side.
  */
 (function () {
   "use strict";
@@ -276,6 +276,18 @@
        focus: ".detail-main .btn-add, .detail-main form[data-enhance=dismiss] button[type=submit]" });
   }
 
+  /* ---------------- server fragments ---------------- */
+
+  /* The one place markup from the server goes into the page. It only ever receives text fetched
+   * same-origin from our own partial=1 endpoints (/add-dialog, /search), which escape every untrusted
+   * string server-side. Returns false, without touching node, when the text is a whole page
+   * (a server without partial support): the caller then navigates instead. */
+  function setFragment(node, html) {
+    if (/<html[\s>]/i.test(html)) return false;
+    node.innerHTML = html;
+    return true;
+  }
+
   /* ---------------- add-to-library dialog ---------------- */
 
   function openAddDialog(link) {
@@ -297,11 +309,10 @@
       return response.text();
     }).then(function (html) {
       if (!modal || !modal.open) return;  // closed while loading
-      if (/<html[\s>]/i.test(html)) { window.location.href = href; return; }  // no partial support: use the page
-      openModal(function (body) {
-        // Trusted: our own server's fragment, escaped server-side (see render_add_dialog).
-        body.innerHTML = html;
-      }, { narrow: true, focus: "select, input:not([type=hidden]), .btn-add" });
+      var filled = false;
+      openModal(function (body) { filled = setFragment(body, html); },
+                { narrow: true, focus: "select, input:not([type=hidden]), .btn-add" });
+      if (!filled) window.location.href = href;  // no partial support: use the page
     }).catch(function () {
       window.location.href = href;  // the plain page version
     });
@@ -415,6 +426,34 @@
       syncEmpty(place.parent);
       return place;
     });
+  }
+
+  /* A search card stays after a successful add (data-keep-on-add): no more Add link, and an "Added" tag. */
+  function markAdded(card) {
+    Array.prototype.forEach.call(card.querySelectorAll("a[data-add-dialog]"), function (link) {
+      if (link.parentNode) link.parentNode.removeChild(link);
+    });
+    var actions = card.querySelector(".card-actions");
+    if (actions && !actions.children.length) actions.parentNode.removeChild(actions);
+    var tag = card.querySelector(".status-tag");
+    if (tag) {
+      tag.className = "lib-tag status-tag status-added";
+      tag.textContent = "Added";
+      return;
+    }
+    var badges = card.querySelector(".poster-top .badges");
+    if (badges) badges.insertBefore(el("span", { className: "lib-tag status-tag status-added", text: "Added" }), badges.firstChild);
+  }
+
+  function focusCard(card) {
+    var active = doc.activeElement;
+    if (active && active !== doc.body && active.id !== "main" && doc.contains(active)) return;
+    var target = card.querySelector(".card-details > summary, [data-open-detail][role=button], .title a, a[href], button");
+    if (!target || !visible(target)) {
+      card.setAttribute("tabindex", "-1");
+      target = card;
+    }
+    target.focus();
   }
 
   function removeCards(cards) {
@@ -647,7 +686,13 @@
         if (!data.ok) { toast(data.message || "Couldn't add that.", { error: true }); return; }
         closeModal();
         toast(data.message || "Added");
-        removeCards(findCards(type, id));
+        var kept = [];
+        findCards(type, id).forEach(function (card) {
+          if (card.hasAttribute("data-keep-on-add")) { markAdded(card); kept.push(card); } else removeCard(card);
+        });
+        // closeModal() tried to return focus to the Add link, which markAdded just removed: land on the card.
+        // Deferred so the dialog's own close handling has run; skipped if focus already went somewhere useful.
+        if (kept.length) setTimeout(function () { focusCard(kept[0]); }, 0);
       }).catch(function (err) { setBusy(form, false); failed(form, err); });
     },
 
@@ -1088,6 +1133,113 @@
     window.addEventListener("scroll", syncTopbar, { passive: true });
     syncTopbar();
   }
+
+  /* ---------------- live search (the /search page's own box) ---------------- */
+
+  var SEARCH_DEBOUNCE_MS = 400;
+  var SEARCH_MIN = 2;
+
+  /* Typing swaps in the server-rendered fragment from /search?...&partial=1. Nothing happens on load:
+   * the server already rendered the current results. Enter is a normal submit (full page). */
+  function initLiveSearch(form) {
+    var input = form.elements.q;
+    var region = doc.querySelector("[data-search-results]");
+    var spinner = doc.querySelector("[data-search-spinner]");
+    var status = doc.querySelector("[data-search-status]");
+    if (!input || !region) return;
+    var timer = null, seq = 0, controller = null, composing = false;
+
+    function normalize(text) { return text.replace(/\s+/g, " ").trim(); }
+    function kind() {
+      var checked = form.querySelector("input[name=type]:checked");
+      return checked ? checked.value : "all";
+    }
+    function keyOf(q, type) { return type + "|" + q; }
+    var lastKey = keyOf(normalize(input.value), kind());  // what the server rendered
+
+    function urlFor(q, type) {
+      var params = new URLSearchParams();
+      if (q) params.set("q", q);
+      params.set("type", type);
+      return (form.getAttribute("action") || "/search") + "?" + params.toString();
+    }
+
+    function setLoading(on) {
+      region.setAttribute("aria-busy", on ? "true" : "false");
+      region.classList.toggle("is-loading", on);
+      if (spinner) spinner.hidden = !on;
+    }
+
+    function showError() {
+      setLoading(false);
+      region.textContent = "";
+      region.appendChild(el("p", { className: "note error", role: "alert", text: "Couldn't reach the server - try again." }));
+      if (status) status.textContent = "";
+      lastKey = null;  // no automatic retry; the next input (even the same text) asks again
+    }
+
+    function send(q, type) {
+      var mine = ++seq;
+      if (controller) controller.abort();
+      controller = window.AbortController ? new AbortController() : null;
+      var url = urlFor(q, type);
+      var options = { credentials: "same-origin", headers: { "Accept": "text/html" } };
+      if (controller) options.signal = controller.signal;
+      setLoading(true);
+      fetch(url + "&partial=1", options).then(function (response) {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.text();
+      }).then(function (html) {
+        if (mine !== seq) return;  // a newer search has started: drop this one
+        if (/<html[\s>]/i.test(html)) { window.location.href = url; return; }  // no partial support: the page
+        if (html.indexOf("data-search-fragment") === -1 || !setFragment(region, html)) throw new Error("Not a fragment");
+        setLoading(false);
+        var fragment = region.querySelector("[data-search-fragment]");
+        if (status) status.textContent = (fragment && fragment.getAttribute("data-announce")) || "";
+        if (window.history && history.replaceState) history.replaceState(null, "", url);
+      }).catch(function () {
+        if (mine !== seq) return;  // aborted or superseded
+        showError();
+      });
+    }
+
+    function run() {
+      timer = null;
+      var q = normalize(input.value), type = kind();
+      if (q.length > 0 && q.length < SEARCH_MIN) return;  // one character: keep what's showing
+      var key = keyOf(q, type);
+      if (key === lastKey) return;
+      lastKey = key;
+      send(q, type);
+    }
+
+    function schedule() {
+      clearTimeout(timer);
+      timer = setTimeout(run, SEARCH_DEBOUNCE_MS);
+    }
+
+    input.addEventListener("input", function (e) {
+      if (e.isComposing || composing) return;
+      schedule();
+    });
+    input.addEventListener("compositionstart", function () { composing = true; });
+    input.addEventListener("compositionend", function () { composing = false; schedule(); });
+    input.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape" || e.isComposing) return;
+      e.preventDefault();
+      input.value = "";
+      clearTimeout(timer);
+      run();
+    });
+    form.addEventListener("change", function (e) {
+      if (!e.target || e.target.name !== "type") return;
+      clearTimeout(timer);
+      run();
+    });
+    form.addEventListener("submit", function () { clearTimeout(timer); });
+  }
+
+  Array.prototype.forEach.call(doc.querySelectorAll("form[data-search-live]"), initLiveSearch);
 
   /* ---------------- status polling ---------------- */
 

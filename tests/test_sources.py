@@ -20,6 +20,12 @@ WATCHED_PLEX = [{"media_type": "movie", "tmdb_id": 2, "title": "B", "year": 2021
                 "last_viewed": None, "user_rating": None, "view_count": 1, "progress": None}]
 
 
+def arr_item(media_type, tmdb_id, **extra):
+    return {"media_type": media_type, "service": "radarr" if media_type == "movie" else "sonarr",
+            "tmdb_id": tmdb_id, "tvdb_id": None, "title": f"T{tmdb_id}", "year": 2020, "added_at": None,
+            "monitored": True, "arr_state": "missing", "episodes": None, "poster_url": None, "url": None, **extra}
+
+
 CONFIG_KEYS = ("HISTORY_SOURCE", "PLEX_TOKEN", "TAUTULLI_URL", "TAUTULLI_API_KEY",
               "RADARR_URL", "RADARR_API_KEY", "RADARR_QUALITY_PROFILE_ID", "RADARR_ROOT_FOLDER",
               "SONARR_URL", "SONARR_API_KEY", "SONARR_QUALITY_PROFILE_ID", "SONARR_ROOT_FOLDER",
@@ -35,7 +41,7 @@ class TestLoadLive(unittest.TestCase):
         config.HISTORY_SOURCE = "plex"
         config.PLEX_TOKEN = "t"
         with mock.patch.object(plex.PlexClient, "load", return_value=(WATCHED_PLEX, {("movie", 9)}, 3, [])):
-            watched, library_keys, notes, _ = sources._load_live()
+            watched, library_keys, notes, _, _ = sources._load_live()
         self.assertEqual(watched, WATCHED_PLEX)
         self.assertEqual(library_keys, {("movie", 9)})
         self.assertTrue(any("3 Plex titles" in n for n in notes))
@@ -45,7 +51,7 @@ class TestLoadLive(unittest.TestCase):
         config.TAUTULLI_URL, config.TAUTULLI_API_KEY = "http://x", "k"
         with mock.patch.object(tautulli.TautulliClient, "load", return_value=(WATCHED_TAUTULLI, 0)), \
              mock.patch.object(plex.PlexClient, "load", return_value=([], {("movie", 9)}, 0, [])):
-            watched, library_keys, notes, _ = sources._load_live()
+            watched, library_keys, notes, _, _ = sources._load_live()
         self.assertEqual(watched, WATCHED_TAUTULLI)
         self.assertEqual(library_keys, {("movie", 9)})
         self.assertEqual(notes, [])
@@ -54,7 +60,7 @@ class TestLoadLive(unittest.TestCase):
         config.HISTORY_SOURCE, config.PLEX_TOKEN = "tautulli", ""
         config.TAUTULLI_URL, config.TAUTULLI_API_KEY = "http://x", "k"
         with mock.patch.object(tautulli.TautulliClient, "load", return_value=(WATCHED_TAUTULLI, 2)):
-            watched, library_keys, notes, _ = sources._load_live()
+            watched, library_keys, notes, _, _ = sources._load_live()
         self.assertEqual(watched, WATCHED_TAUTULLI)
         self.assertEqual(library_keys, set())
         self.assertTrue(any("PLEX_TOKEN not set" in n for n in notes))
@@ -71,26 +77,121 @@ class TestArrExclusions(unittest.TestCase):
         config.RADARR_URL, config.RADARR_API_KEY = "http://r", "k"
         config.SONARR_URL, config.SONARR_API_KEY = "http://s", "k"
         with mock.patch.object(plex.PlexClient, "load", return_value=([], {("movie", 1)}, 0, [])), \
-             mock.patch.object(radarr.RadarrClient, "existing_tmdb_ids", return_value={10, 11}), \
-             mock.patch.object(sonarr.SonarrClient, "existing_tmdb_ids", return_value={20}):
-            _, library_keys, notes, _ = sources._load_live()
+             mock.patch.object(radarr.RadarrClient, "library", return_value=[arr_item("movie", 10), arr_item("movie", 11)]), \
+             mock.patch.object(sonarr.SonarrClient, "library", return_value=[arr_item("tv", 20)]):
+            _, library_keys, notes, _, _ = sources._load_live()
         self.assertEqual(library_keys, {("movie", 1), ("movie", 10), ("movie", 11), ("tv", 20)})
         self.assertEqual(notes, [])
 
     def test_unconfigured_arr_is_skipped_silently(self):
         config.RADARR_URL = config.SONARR_URL = ""
         with mock.patch.object(plex.PlexClient, "load", return_value=([], {("movie", 1)}, 0, [])):
-            _, library_keys, notes, _ = sources._load_live()
+            _, library_keys, notes, _, _ = sources._load_live()
         self.assertEqual(library_keys, {("movie", 1)})
         self.assertEqual(notes, [])
 
     def test_arr_failure_is_a_note_not_a_crash(self):
         config.RADARR_URL, config.RADARR_API_KEY = "http://r", "k"
         with mock.patch.object(plex.PlexClient, "load", return_value=([], set(), 0, [])), \
-             mock.patch.object(radarr.RadarrClient, "existing_tmdb_ids", side_effect=RuntimeError("down")):
-            _, library_keys, notes, _ = sources._load_live()
+             mock.patch.object(radarr.RadarrClient, "library", side_effect=RuntimeError("down")):
+            _, library_keys, notes, _, _ = sources._load_live()
         self.assertEqual(library_keys, set())
         self.assertTrue(any("Radarr" in n and "down" in n for n in notes))
+
+
+class TestArrLibrary(unittest.TestCase):
+    def setUp(self):
+        self._old = {k: getattr(config, k) for k in CONFIG_KEYS}
+        self.addCleanup(lambda: [setattr(config, k, v) for k, v in self._old.items()])
+        config.HISTORY_SOURCE, config.PLEX_TOKEN = "plex", "t"
+        config.RADARR_URL = config.SONARR_URL = ""
+
+    def load(self):
+        with mock.patch.object(plex.PlexClient, "load", return_value=([], {("movie", 1)}, 0, [])):
+            return sources._load_live()
+
+    def test_one_library_call_per_configured_service_and_shape(self):
+        config.RADARR_URL, config.RADARR_API_KEY = "http://r", "k"
+        config.SONARR_URL, config.SONARR_API_KEY = "http://s", "k"
+        movies, shows = [arr_item("movie", 10), arr_item("movie", 11)], [arr_item("tv", 20), arr_item("tv", None)]
+        with mock.patch.object(radarr.RadarrClient, "library", return_value=movies) as rl, \
+             mock.patch.object(sonarr.SonarrClient, "library", return_value=shows) as sl, \
+             mock.patch.object(radarr.RadarrClient, "existing_tmdb_ids") as re, \
+             mock.patch.object(sonarr.SonarrClient, "existing_tmdb_ids") as se:
+            _, keys, notes, _, arr = self.load()
+        self.assertEqual((rl.call_count, sl.call_count, re.call_count, se.call_count), (1, 1, 0, 0))
+        self.assertEqual(keys, {("movie", 1), ("movie", 10), ("movie", 11), ("tv", 20)})
+        self.assertEqual(arr, {"items": movies + shows, "radarr": {"state": "ok", "count": 2},
+                               "sonarr": {"state": "ok", "count": 2}})
+        self.assertEqual(notes, [])
+
+    def test_unconfigured_is_off_and_makes_no_call(self):
+        with mock.patch.object(radarr.RadarrClient, "library", side_effect=AssertionError("no")):
+            _, _, notes, _, arr = self.load()
+        self.assertEqual(arr, {"items": [], "radarr": {"state": "off", "count": 0}, "sonarr": {"state": "off", "count": 0}})
+        self.assertEqual(notes, [])
+
+    def test_failure_is_error_state_and_a_note_and_the_other_service_still_works(self):
+        config.RADARR_URL, config.RADARR_API_KEY = "http://r", "k"
+        config.SONARR_URL, config.SONARR_API_KEY = "http://s", "k"
+        with mock.patch.object(radarr.RadarrClient, "library", side_effect=RuntimeError("down")), \
+             mock.patch.object(sonarr.SonarrClient, "library", return_value=[arr_item("tv", 20)]):
+            _, keys, notes, _, arr = self.load()
+        self.assertEqual((arr["radarr"], arr["sonarr"]), ({"state": "error", "count": 0}, {"state": "ok", "count": 1}))
+        self.assertEqual(keys, {("movie", 1), ("tv", 20)})
+        self.assertTrue(any("Radarr" in n and "down" in n for n in notes))
+
+    def test_ai_generation_still_works_with_the_five_tuple(self):
+        config.AI_TOKEN = "sk-x"
+        with mock.patch.object(plex.PlexClient, "load", return_value=([], set(), 0, [])), \
+             mock.patch("recommend.recommend", return_value={"items": [], "profile": {}, "notes": []}):
+            result = sources.generate_ai_recommendations()
+        self.assertEqual(result["items"], [])
+
+    def test_run_keeps_arr_in_the_result_live_and_sample(self):
+        config.RADARR_URL, config.RADARR_API_KEY = "http://r", "k"
+        movies = [arr_item("movie", 10)]
+        old_tmdb, old_db = config.TMDB_TOKEN, db.DB_PATH
+        config.TMDB_TOKEN, db.DB_PATH = "t" * 32, os.path.join(tempfile.mkdtemp(), "t.db")
+        self.addCleanup(setattr, config, "TMDB_TOKEN", old_tmdb)
+        self.addCleanup(setattr, db, "DB_PATH", old_db)
+        with mock.patch.object(plex.PlexClient, "load", return_value=([], set(), 0, [])), \
+             mock.patch.object(radarr.RadarrClient, "library", return_value=movies), \
+             mock.patch("recommend.recommend", return_value={"items": [], "profile": {}, "notes": []}) as rec:
+            result = sources.run(sample_mode=False)
+        self.assertEqual(result["arr"]["items"], movies)
+        self.assertIn(("movie", 10), rec.call_args.args[1])
+        sample_result = sources.run(sample_mode=True)
+        import sample
+        self.assertEqual(set(sample_result["arr"]), {"items", "radarr", "sonarr"})
+        self.assertEqual([(i["service"], i["title"]) for i in sample_result["arr"]["items"]],
+                         [(i["service"], i["title"]) for i in sample.arr_library()["items"]])
+
+
+class TestSampleRecommendationsUnchangedByArrFixtures(unittest.TestCase):
+    """The arr fixtures must not change what sample mode recommends (same items, same order), with or
+    without their tmdb ids in library_keys."""
+    # What sample mode recommended before the arr fixtures were added (ids, in order).
+    def test_arr_keys_change_nothing_and_no_fixture_is_a_candidate(self):
+        import recommend
+        import sample
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        watched, keys = sample.load(now)
+        arr_keys = {(i["media_type"], i["tmdb_id"]) for i in sample.arr_library(now)["items"] if i["tmdb_id"]}
+        plain = recommend.recommend(watched, keys, sample.SampleTmdb(now), limit=200)["items"]
+        with_arr = recommend.recommend(watched, keys | arr_keys, sample.SampleTmdb(now), limit=200)["items"]
+        ids = [(i["media_type"], i["tmdb_id"]) for i in plain]
+        self.assertEqual(ids, [(i["media_type"], i["tmdb_id"]) for i in with_arr])
+        self.assertTrue(ids)
+        fixture_ids = {1040, 1041, 2040, 2041, 1034, 1035}
+        self.assertFalse(fixture_ids & {i for _, i in ids})
+
+    def test_run_sample_recommendation_keys_are_the_known_set(self):
+        result = sources.run(sample_mode=True)
+        ids = {i["tmdb_id"] for i in result["items"]}
+        self.assertFalse({1040, 1041, 2040, 2041} & ids)
+        self.assertEqual(len(result["items"]), 22)
 
 
 class TestAddToLibrary(unittest.TestCase):
@@ -283,7 +384,7 @@ class TestRunSnapshotAndRatings(unittest.TestCase):
         w = dict(WATCHED_TAUTULLI[0], rating_key=77, thumb="/library/metadata/77/thumb/1")
         with mock.patch.object(tautulli.TautulliClient, "load", return_value=([w], 0)):
             result, _ = self.run_live()
-            _, _, _, library = sources._load_live()
+            _, _, _, library, _ = sources._load_live()
         self.assertIsNone(library)
         self.assertIsNone(result["library"])
         self.assertEqual(result["thumbs"], {})  # /poster needs PLEX_TOKEN, so no keys that would 404

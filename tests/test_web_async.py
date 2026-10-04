@@ -466,6 +466,63 @@ class TestAddJson(AsyncCase):
             self.assertEqual(self.location("/add", "type=movie&id=1&return_to=%2Fai"), "/ai?msg=Added")
 
 
+class TestAddFromSearch(AsyncCase):
+    """A title that isn't a recommendation (e.g. from the search page) is recorded via lookup_item, and
+    only after the add itself succeeded."""
+
+    def setUp(self):
+        super().setUp()
+        self.live()
+        self._tok = config.TMDB_TOKEN
+        config.TMDB_TOKEN = "t" * 32
+        self.addCleanup(setattr, config, "TMDB_TOKEN", self._tok)
+        with web._budget_lock:
+            web._budget_uses[:] = []
+        self.addCleanup(web._budget_uses.clear)
+        web._state.update(result=fake_result([]), time=time.time())
+
+    def test_success_records_a_title_in_no_cache(self):
+        details = dict(item(77, "tv", "Found"), poster_url="https://image.tmdb.org/p.jpg")
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")), \
+             mock.patch.object(web.tmdb.TmdbClient, "cached_details", return_value=None), \
+             mock.patch.object(web.tmdb.TmdbClient, "details", return_value=details) as fetch:
+            status, body = self.post_json("/add", "type=tv&id=77")
+        self.assertEqual((status, body["ok"]), (200, True))
+        fetch.assert_called_once_with("tv", 77, timeout=web.tmdb.SEARCH_TIMEOUT, retries=1)
+        (added,) = db.added_items()
+        self.assertEqual((added["media_type"], added["tmdb_id"], added["title"]), ("tv", 77, "Found"))
+
+    def test_failed_add_makes_no_tmdb_call_and_records_nothing(self):
+        with mock.patch.object(sources, "add_to_library", return_value=(False, "Already in Radarr")), \
+             mock.patch.object(web.tmdb.TmdbClient, "cached_details", side_effect=AssertionError("no TMDB")), \
+             mock.patch.object(web.tmdb.TmdbClient, "details", side_effect=AssertionError("no TMDB")):
+            _, body = self.post_json("/add", "type=movie&id=78")
+            self.assertEqual(self.location("/add", "type=movie&id=78&return_to=%2Fsearch%3Fq%3Dx"), "/search?q=x&msg=Already+in+Radarr")
+        self.assertFalse(body["ok"])
+        self.assertEqual(db.added_items(), [])
+
+    def test_lookup_failure_does_not_fail_the_add(self):
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")), \
+             mock.patch.object(web.tmdb.TmdbClient, "cached_details", return_value=None), \
+             mock.patch.object(web.tmdb.TmdbClient, "details", side_effect=RuntimeError("down")):
+            _, body = self.post_json("/add", "type=movie&id=79")
+        self.assertTrue(body["ok"])
+        self.assertEqual(db.added_items(), [])
+
+    def test_recommendation_is_still_recorded_without_tmdb(self):
+        web._state.update(result=fake_result([item(5, title="Rec")]))
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")), \
+             mock.patch.object(web.tmdb.TmdbClient, "details", side_effect=AssertionError("no TMDB")):
+            self.post_json("/add", "type=movie&id=5")
+        self.assertEqual([a["title"] for a in db.added_items()], ["Rec"])
+
+    def test_sample_mode_add_still_refuses_and_never_looks_up(self):
+        with mock.patch.object(sources, "use_sample", return_value=True), \
+             mock.patch.object(web, "lookup_item", side_effect=AssertionError("no")):
+            _, body = self.post_json("/add", "type=movie&id=1")
+        self.assertEqual(body, {"ok": False, "message": web.SAMPLE_MESSAGE})
+
+
 class TestAiGenerate(AsyncCase):
     def setUp(self):
         super().setUp()
@@ -593,13 +650,55 @@ class TestGetPassesPageParams(AsyncCase):
     def test_library_gets_parsed_params_and_msg(self):
         with mock.patch.object(web, "render_library", return_value="page") as render:
             self.request("GET", "/library?type=watched&q=%20dune%20&sort=rating&show=rated&page=3&msg=Hi")
-            render.assert_called_once_with(tab="watched", q="dune", sort="rating", show="rated", page=3, msg="Hi")
+            render.assert_called_once_with(tab="watched", q="dune", sort="rating", show="rated", page=3, source="all", msg="Hi")
             render.reset_mock()
             self.request("GET", "/library")
-            render.assert_called_once_with(tab="all", q="", sort="added", show="all", page=1, msg="")
+            render.assert_called_once_with(tab="all", q="", sort="added", show="all", page=1, source="all", msg="")
             render.reset_mock()
             self.request("GET", "/library?type=%3Cscript%3E&sort=zzz&show=zzz&page=-1")
-            render.assert_called_once_with(tab="all", q="", sort="added", show="all", page=1, msg="")
+            render.assert_called_once_with(tab="all", q="", sort="added", show="all", page=1, source="all", msg="")
+
+    def test_library_source_param(self):
+        with mock.patch.object(web, "render_library", return_value="page") as render:
+            self.request("GET", "/library?source=wanted&type=tv")
+            render.assert_called_once_with(tab="tv", q="", sort="added", show="all", page=1, source="wanted", msg="")
+            render.reset_mock()
+            self.request("GET", "/library?source=bogus&type=tv")
+            self.assertEqual(render.call_args.kwargs["source"], "all")
+            render.reset_mock()
+            self.request("GET", "/library?source=wanted&type=watched")  # not offered on that tab
+            self.assertEqual(render.call_args.kwargs["source"], "all")
+
+    def test_search_passes_query_through(self):
+        with mock.patch.object(web, "render_search", return_value="page") as render:
+            status, _, body = self.request("GET", "/search?q=%20the%20%20dune%20&type=tv&msg=Hi")
+            self.assertEqual((status, body), (200, "page"))
+            render.assert_called_once_with(q="the dune", kind="tv", msg="Hi")
+            render.reset_mock()
+            self.request("GET", "/search?type=bogus")
+            render.assert_called_once_with(q="", kind="all", msg="")
+            render.reset_mock()
+            self.request("GET", "/search?q=" + "x" * 300)
+            self.assertEqual(render.call_args.kwargs["q"], "x" * 100)
+
+    def test_search_partial(self):
+        with mock.patch.object(web, "render_search", return_value="FULL") as full, \
+             mock.patch.object(web, "render_search_results", return_value="<div>frag</div>") as part:
+            status, headers, body = self.request("GET", "/search?q=dune&type=movie&partial=1&msg=ignored")
+            self.assertEqual((status, body), (200, "<div>frag</div>"))
+            self.assertEqual(headers["Content-Type"], "text/html; charset=utf-8")
+            self.assertEqual(headers["Cache-Control"], "no-store")
+            part.assert_called_once_with(q="dune", kind="movie")
+            full.assert_not_called()
+            part.reset_mock()
+            status, _, _ = self.request("GET", "/search?type=bogus&partial=1")
+            self.assertEqual(status, 200)
+            part.assert_called_once_with(q="", kind="all")
+            part.reset_mock()
+            for qs in ("partial=0", "partial=yes", "partial=", ""):
+                _, _, body = self.request("GET", f"/search?q=dune&{qs}")
+                self.assertEqual(body, "FULL", qs)
+            part.assert_not_called()
 
     def test_watched_route_stays_404(self):
         self.assertEqual(self.request("GET", "/watched")[0], 404)

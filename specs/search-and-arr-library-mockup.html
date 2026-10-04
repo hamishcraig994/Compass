@@ -1,0 +1,161 @@
+<title>Compass Search Mockups</title>
+<style>
+/* Layout: labelled artboards (search page, phone, library) on a neutral board. App tokens copied from static/app.css (Amber, dark). */
+:root{
+  --board:#e4e6ec;--board-ink:#10131a;--board-muted:#535c6c;
+  --bg:#0a0c11;--bg-2:#10131a;--surface:#161a23;--surface-2:#1e2330;--line:#2a3140;
+  --text:#f3f5f9;--muted:#a3acbd;--accent:#ffb224;--accent-ink:#1a1200;--accent-text:#ffc557;
+  --accent-soft:rgba(255,178,36,.14);--ok:#6ee7a8;--danger:#ff8a7a;--info:#7cc4ff;
+  --radius:14px;--radius-sm:10px;--font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--board:#06070a;--board-ink:#f3f5f9;--board-muted:#a3acbd}}
+:root[data-theme="dark"]{--board:#06070a;--board-ink:#f3f5f9;--board-muted:#a3acbd}
+body{background:var(--board);color:var(--board-ink);font-family:var(--font);padding-inline:16px;padding-block:32px;line-height:1.5}
+.wrap{max-width:1240px;margin:0 auto;display:flex;flex-direction:column;gap:48px}
+h1{font-size:1.6rem;margin:0 0 6px}.intro p{margin:0;color:var(--board-muted);max-width:70ch}
+.label{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:12px}.label h2{margin:0;font-size:1.05rem}.label span{color:var(--board-muted);font-size:.9rem}
+.notes{margin:12px 0 0;padding-left:18px;color:var(--board-muted);font-size:.9rem;display:grid;gap:2px}
+.frame{background:var(--bg);color:var(--text);border-radius:12px;overflow:hidden;border:1px solid var(--line);box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.topbar{display:flex;align-items:center;gap:22px;padding:14px 4%;background:var(--bg-2);border-bottom:1px solid var(--line)}
+.brand{font-weight:850;font-size:1.3rem;color:var(--accent-text);letter-spacing:.01em}
+.topbar nav{display:flex;gap:18px;font-size:.9rem;color:var(--muted)}.topbar nav b{color:var(--text);font-weight:600}
+.sp{flex:1}
+.search-box{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:6px 12px;min-width:220px;color:var(--muted);font-size:.85rem}
+.search-box svg,.ico svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
+.pill{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:.8rem;color:var(--muted)}
+.page{padding:28px 4% 40px;display:grid;gap:18px}
+.page h3.title{margin:0;font-size:1.5rem}
+.search-row{display:flex;gap:10px;max-width:760px}
+.input{flex:1;min-width:0;background:var(--surface);border:2px solid var(--accent);border-radius:var(--radius-sm);padding:12px 14px;font-size:1.05rem;color:var(--text)}
+.btn{font:inherit;font-weight:700;border-radius:var(--radius-sm);padding:11px 20px;border:0;background:var(--accent);color:var(--accent-ink);cursor:pointer}
+.btn.ghost{background:var(--surface-2);color:var(--text);border:1px solid var(--line);padding:7px 14px;font-size:.85rem}
+.types{display:flex;gap:8px;flex-wrap:wrap}
+.type{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 14px;font-size:.88rem;color:var(--muted)}
+.type.on{border-color:var(--accent);color:var(--accent-text);background:var(--accent-soft);font-weight:700}
+.type.on:before{content:"\2713\00a0"}
+.summary{color:var(--muted);font-size:.9rem;margin:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:16px}
+.card{display:grid;gap:8px;align-content:start;min-width:0}
+.poster{aspect-ratio:2/3;border-radius:var(--radius-sm);position:relative;overflow:hidden;border:1px solid var(--line);
+  background:radial-gradient(90% 60% at 30% 10%,hsl(var(--h) 65% 42%),transparent 70%),linear-gradient(160deg,hsl(var(--h) 45% 20%),hsl(calc(var(--h) + 35) 40% 10%))}
+.poster:after{content:"";position:absolute;inset:0;background:linear-gradient(0deg,rgba(0,0,0,.65),transparent 55%)}
+.poster b{position:absolute;z-index:1;left:10px;right:10px;bottom:10px;font-size:.95rem;line-height:1.15;text-wrap:balance}
+.kind{position:absolute;z-index:1;top:8px;left:8px;background:rgba(10,12,17,.8);font-size:.7rem;font-weight:700;padding:2px 7px;border-radius:6px;letter-spacing:.04em;text-transform:uppercase}
+.tags{position:absolute;z-index:1;top:8px;right:8px;display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+.tag{font-size:.68rem;font-weight:800;padding:2px 7px;border-radius:6px;background:var(--accent);color:var(--accent-ink)}
+.tag.plex{background:#e5a00d;color:#1a1200}.tag.arr{background:var(--info);color:#06121d}.tag.added{background:var(--ok);color:#052013}
+.tag.dim{background:rgba(10,12,17,.85);color:var(--muted);border:1px solid var(--line)}
+.meta{font-size:.82rem;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.meta .ttl{color:var(--text);font-weight:650;font-size:.92rem;flex-basis:100%}
+.row-actions{display:flex;gap:6px;flex-wrap:wrap}
+.states{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:6px}
+.state{border:1px dashed var(--line);border-radius:var(--radius);padding:14px;font-size:.88rem;display:grid;gap:6px;align-content:start}
+.state small{color:var(--muted);text-transform:uppercase;letter-spacing:.1em;font-size:.68rem}
+.note{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:var(--radius-sm);padding:9px 12px;font-size:.88rem}
+.note.err{border-left-color:var(--danger)}
+.phones{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start}
+.phone{width:min(100%,380px);height:760px;border-radius:34px;border:8px solid #000;background:var(--bg);overflow:hidden;position:relative;flex:0 0 auto}
+.phone .scroll{height:100%;overflow-y:auto;scrollbar-width:none;padding-bottom:84px}
+.p-top{display:flex;align-items:center;gap:10px;padding:14px 16px;background:var(--bg-2);border-bottom:1px solid var(--line)}
+.p-top .ico{width:38px;height:38px;border-radius:50%;border:1px solid var(--line);background:var(--surface);display:grid;place-items:center}
+.phone .page{padding:18px 16px 20px}.phone .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.phone .search-row{flex-direction:column}.phone .btn{width:100%}
+.bottom-nav{position:absolute;inset:auto 0 0 0;display:grid;grid-template-columns:repeat(5,1fr);background:var(--surface);border-top:1px solid var(--line);padding:10px 0 14px;font-size:.68rem;color:var(--muted);text-align:center}.bottom-nav b{color:var(--accent-text)}
+.side{flex:1 1 280px;min-width:0;color:var(--board-muted);font-size:.92rem;display:grid;gap:12px;align-content:start}.side h3{margin:0;color:var(--board-ink);font-size:1rem}.side ul{margin:0;padding-left:18px;display:grid;gap:4px}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.subtabs{display:flex;gap:6px;flex-wrap:wrap}.subtab{padding:6px 14px;border-radius:999px;font-size:.88rem;color:var(--muted);border:1px solid transparent}.subtab.on{background:var(--accent-soft);color:var(--accent-text);border-color:var(--accent);font-weight:700}
+.select{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-sm);padding:7px 10px;font-size:.85rem;color:var(--text);display:inline-flex;gap:6px;align-items:center}.select span{color:var(--muted)}.select.hl{border-color:var(--accent)}
+.srcs{display:flex;gap:4px;flex-wrap:wrap}.src{font-size:.66rem;font-weight:800;padding:1px 6px;border-radius:5px;border:1px solid var(--line);color:var(--muted)}
+.src.plex{border-color:#e5a00d;color:#ffcc5c}.src.radarr,.src.sonarr{border-color:var(--info);color:var(--info)}
+.state-b{font-size:.68rem;font-weight:700;padding:1px 7px;border-radius:5px;background:var(--surface-2);border:1px solid var(--line)}
+.state-b.missing{color:var(--danger);border-color:var(--danger)}.state-b.partial{color:var(--accent-text);border-color:var(--accent)}.state-b.upcoming{color:var(--info);border-color:var(--info)}.state-b.off{color:var(--muted)}.state-b.ok{color:var(--ok);border-color:var(--ok)}
+.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+@media (max-width:700px){.topbar nav,.search-box{display:none}}
+</style>
+
+<div class="wrap">
+<header class="intro"><h1>Compass: Search and Library mockups</h1>
+<p>Mockups only, nothing is built yet. Dark Amber theme shown; every theme would use its own colours. Posters are placeholders and titles are samples. Three areas: the search page, the phone view, and the Library with Radarr and Sonarr titles.</p></header>
+
+<!-- A: SEARCH DESKTOP -->
+<section>
+<div class="label"><h2>A. Search page (desktop)</h2><span>Search box in the top bar on every page. Press Enter to search; it works without JavaScript.</span></div>
+<div class="frame">
+ <div class="topbar"><div class="brand">Compass</div>
+  <nav><span>Home</span><span>Movies</span><span>TV</span><span>Library</span><span>AI picks</span></nav><div class="sp"></div>
+  <div class="search-box"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></span>Search movies &amp; TV</div>
+  <span class="pill">Settings</span></div>
+ <div class="page">
+  <h3 class="title">Search</h3>
+  <div class="search-row"><div class="input">dune</div><button class="btn">Search</button></div>
+  <div class="types"><span class="type on">All</span><span class="type">Movies</span><span class="type">TV shows</span></div>
+  <p class="summary">8 matches for &ldquo;dune&rdquo;</p>
+  <div class="grid">
+   <div class="card"><div class="poster" style="--h:35"><span class="kind">Movie</span><span class="tags"><span class="tag plex">In Plex</span></span><b>Dune: Part Two</b></div><div class="meta"><span class="ttl">Dune: Part Two</span><span>2024</span><span>&#9733; 8.2</span></div></div>
+   <div class="card"><div class="poster" style="--h:25"><span class="kind">Movie</span><b>Dune</b></div><div class="meta"><span class="ttl">Dune</span><span>2021</span><span>&#9733; 7.8</span></div><div class="row-actions"><button class="btn ghost">+ Add to Radarr</button></div></div>
+   <div class="card"><div class="poster" style="--h:48"><span class="kind">Movie</span><span class="tags"><span class="tag arr">In Radarr</span></span><b>Dune</b></div><div class="meta"><span class="ttl">Dune</span><span>1984</span><span>&#9733; 6.3</span></div></div>
+   <div class="card"><div class="poster" style="--h:300"><span class="kind">TV</span><span class="tags"><span class="tag added">Added</span></span><b>Dune: Prophecy</b></div><div class="meta"><span class="ttl">Dune: Prophecy</span><span>2024</span><span>&#9733; 7.6</span></div></div>
+   <div class="card"><div class="poster" style="--h:200"><span class="kind">Movie</span><span class="tags"><span class="tag dim">Not interested</span></span><b>Dune: Drifter</b></div><div class="meta"><span class="ttl">Dune: Drifter</span><span>2011</span></div><div class="row-actions"><button class="btn ghost">Show in recommendations again</button></div></div>
+   <div class="card"><div class="poster" style="--h:120"><span class="kind">TV</span><b>Frank Herbert's Dune</b></div><div class="meta"><span class="ttl">Frank Herbert's Dune</span><span>2000</span></div><div class="row-actions"><button class="btn ghost">+ Add to Sonarr</button></div></div>
+  </div>
+  <div class="states">
+   <div class="state"><small>Before searching</small><span class="summary">Find any movie or show and send it to Radarr or Sonarr.</span></div>
+   <div class="state"><small>Too short</small><div class="note">Type at least 2 characters.</div></div>
+   <div class="state"><small>No results</small><b>No matches for &ldquo;dunee&rdquo;</b><span class="summary">Check the spelling or try the original title.</span></div>
+   <div class="state"><small>TMDB unavailable or rate limited</small><div class="note err">Search is busy right now. Try again in a minute.</div></div>
+   <div class="state"><small>Library still loading</small><div class="note">Your library is still loading, so some &ldquo;In library&rdquo; labels may be missing.</div></div>
+  </div>
+ </div>
+</div>
+<ul class="notes"><li>Status tags tell you at a glance what you already have: In Plex, In Radarr, In Sonarr, or Added (just now through Compass). Titles you have no copy of show a clear Add button, which opens the same Add dialog you already know (quality profile and folder).</li>
+<li>Titles you marked &ldquo;Not interested&rdquo; can still be found, with a tag and a button to bring them back.</li>
+<li>Results show the top 20. Add a year or more words to narrow it down.</li></ul>
+</section>
+
+<!-- B: PHONE -->
+<section>
+<div class="label"><h2>B. Search on a phone</h2><span>A magnifier in the top bar replaces the box. Results are a 2-column grid.</span></div>
+<div class="phones">
+ <div class="phone"><div class="scroll">
+  <div class="p-top"><div class="brand">Compass</div><div class="sp"></div><span class="ico"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></span></div>
+  <div class="page"><h3 class="title">Search</h3>
+   <div class="search-row"><div class="input">severance</div><button class="btn">Search</button></div>
+   <div class="types"><span class="type">All</span><span class="type">Movies</span><span class="type on">TV shows</span></div>
+   <p class="summary">3 matches for &ldquo;severance&rdquo;</p>
+   <div class="grid">
+    <div class="card"><div class="poster" style="--h:190"><span class="kind">TV</span><span class="tags"><span class="tag arr">In Sonarr</span></span><b>Severance</b></div><div class="meta"><span class="ttl">Severance</span><span>2022</span></div></div>
+    <div class="card"><div class="poster" style="--h:330"><span class="kind">TV</span><b>Severance: Shorts</b></div><div class="meta"><span class="ttl">Severance: Shorts</span><span>2023</span></div><div class="row-actions"><button class="btn ghost">+ Add</button></div></div>
+    <div class="card"><div class="poster" style="--h:60"><span class="kind">Movie</span><b>The Severance Game</b></div><div class="meta"><span class="ttl">The Severance Game</span><span>2006</span></div><div class="row-actions"><button class="btn ghost">+ Add</button></div></div>
+   </div></div></div>
+  <div class="bottom-nav"><span><b>Home</b></span><span>Movies</span><span>TV</span><span>Library</span><span>AI</span></div></div>
+ <div class="side"><h3>Phone notes</h3><ul><li>Search is not in the bottom nav (it is already full); it lives in the top bar as a magnifier.</li><li>The keyboard shows a Search key.</li><li>Tapping a poster opens the detail modal; Add opens the usual dialog.</li></ul></div>
+</div>
+</section>
+
+<!-- C: LIBRARY -->
+<section>
+<div class="label"><h2>C. Library with Radarr and Sonarr titles</h2><span>One list for everything you have, with where it lives and its download state.</span></div>
+<div class="frame">
+ <div class="topbar"><div class="brand">Compass</div><nav><span>Home</span><span>Movies</span><span>TV</span><b>Library</b><span>AI picks</span></nav><div class="sp"></div><div class="search-box"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></span>Search movies &amp; TV</div><span class="pill">Settings</span></div>
+ <div class="page">
+  <h3 class="title">Library</h3>
+  <div class="subtabs"><span class="subtab on">All</span><span class="subtab">Movies</span><span class="subtab">TV shows</span><span class="subtab">Watched</span><span class="subtab">Added here</span></div>
+  <div class="toolbar"><span class="select"><span>Search</span> title&hellip;</span><span class="select"><span>Sort</span> Recently added &#9662;</span><span class="select hl"><span>Source</span> Everywhere &#9662;</span></div>
+  <div class="note err">Sonarr could not be reached, so its shows are missing from this list. Everything else is up to date.</div>
+  <div class="grid">
+   <div class="card"><div class="poster" style="--h:35"><span class="kind">Movie</span><b>Dune: Part Two</b></div><div class="meta"><span class="ttl">Dune: Part Two</span><span>2024</span></div><div class="srcs"><span class="src plex">Plex</span><span class="src radarr">Radarr</span></div></div>
+   <div class="card"><div class="poster" style="--h:210"><span class="kind">Movie</span><b>Project Hail Mary</b></div><div class="meta"><span class="ttl">Project Hail Mary</span><span>2026</span></div><div class="srcs"><span class="src radarr">Radarr</span><span class="state-b upcoming">Upcoming</span></div></div>
+   <div class="card"><div class="poster" style="--h:15"><span class="kind">Movie</span><b>Heat</b></div><div class="meta"><span class="ttl">Heat</span><span>1995</span></div><div class="srcs"><span class="src radarr">Radarr</span><span class="state-b missing">Missing</span></div></div>
+   <div class="card"><div class="poster" style="--h:300"><span class="kind">TV</span><b>Andor</b></div><div class="meta"><span class="ttl">Andor</span><span>2022</span></div><div class="srcs"><span class="src plex">Plex</span><span class="src sonarr">Sonarr</span></div></div>
+   <div class="card"><div class="poster" style="--h:110"><span class="kind">TV</span><b>Slow Horses</b></div><div class="meta"><span class="ttl">Slow Horses</span><span>2022</span></div><div class="srcs"><span class="src sonarr">Sonarr</span><span class="state-b partial">5/10 episodes</span></div></div>
+   <div class="card"><div class="poster" style="--h:5"><span class="kind">TV</span><b>Fargo</b></div><div class="meta"><span class="ttl">Fargo</span><span>2014</span></div><div class="srcs"><span class="src sonarr">Sonarr</span><span class="state-b off">Unmonitored</span></div></div>
+   <div class="card"><div class="poster" style="--h:250"><span class="kind">Movie</span><b>Arrival</b></div><div class="meta"><span class="ttl">Arrival</span><span>2016</span></div><div class="srcs"><span class="src radarr">Radarr</span><span class="state-b ok">Downloaded</span></div></div>
+  </div>
+ </div>
+</div>
+<ul class="notes"><li>Plex titles, Radarr movies and Sonarr shows merge into one entry per title, with small badges for where it lives.</li>
+<li>Download state comes from Radarr and Sonarr: Missing, Upcoming, partial seasons like 5/10 episodes, Unmonitored. The Downloaded badge is hidden when the title is also in Plex.</li>
+<li>A new Source filter: Everywhere, In Plex, In Radarr or Sonarr, or Wanted (not downloaded yet). The existing tabs keep working.</li>
+<li>If Radarr or Sonarr is unreachable you see a note and the rest of the library still loads.</li></ul>
+</section>
+</div>

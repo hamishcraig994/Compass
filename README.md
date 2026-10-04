@@ -62,11 +62,19 @@ Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gent
   own colours and, with JavaScript, applies instantly. The choice is remembered per device in a cookie
   (`compass_theme`), so your phone and TV can differ; there's no flash on load and it works without JS.
   Every theme still follows your device's light/dark setting. Nothing is stored in the database.
-- **Library** (top bar) shows what's in your Plex library as a poster grid, with tabs for All,
-  Movies, TV shows, **Watched** and "Added here" (what you added through Radarr/Sonarr), plus
-  search, filters, sorting and paging. Posters are fetched through the app (`/poster`), so your Plex
-  token never reaches the browser. No new Plex requests are made per page view; it uses the
-  snapshot from the last build.
+- **Search.** The search box (top bar; an icon on narrow screens) opens `/search`, which searches all of
+  TMDB for any movie or TV show as you type. Each result is tagged In Plex, In Radarr, In Sonarr or
+  Added, or has an Add button that opens the usual Add dialog. Titles you marked "Not interested" can
+  still be found. Searching is cached for a day and capped at 60 new TMDB lookups a minute (10 are kept
+  for adding), and it still works as a plain form without JavaScript.
+- **Library** (top bar) shows everything you have: your Plex library plus the titles Radarr and Sonarr
+  already hold, merged into one entry per title with small badges for where it lives (Plex, Radarr,
+  Sonarr) and its download state (Missing, Upcoming, 5/10 episodes, Unmonitored). Tabs: All, Movies,
+  TV shows, **Watched** and "Added here"; a Source filter narrows to Plex, Radarr/Sonarr or Wanted
+  (not downloaded yet). Radarr and Sonarr are read during each build, never per page view; if one is
+  unreachable you get a note and the rest still loads. Posters from Plex come through the app
+  (`/poster`), so your Plex token never reaches the browser; Radarr/Sonarr posters use the image URLs
+  they provide. No new Plex, Radarr or Sonarr requests are made per page view.
 - **Rate what you've watched.** The Watched tab lists your history with 1-5 star buttons. Your
   rating overrides your Plex rating (clear it to fall back to Plex's) and feeds the taste profile:
   4-5 stars count more, 3 counts less, 1-2 count for nothing, and titles TMDB links to a 1 or 2

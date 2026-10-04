@@ -106,6 +106,20 @@ def _card(item, return_to, can_dismiss):
             f'<div class="card-info"><h3 class="title">{title}</h3>{details}{actions}</div></article>')
 
 
+_SOURCE_LABELS = {"plex": "Plex", "radarr": "Radarr", "sonarr": "Sonarr"}
+_ARR_STATE_LABELS = {"downloaded": "Downloaded", "partial": "Partly downloaded", "missing": "Missing",
+                     "upcoming": "Upcoming", "unmonitored": "Unmonitored"}
+
+
+def _arr_label(state, episodes=None):
+    """Text for a Radarr/Sonarr download state (shared by the Library and search cards), or "" if unknown."""
+    if state == "partial" and isinstance(episodes, dict):
+        have, total = episodes.get("have"), episodes.get("total")
+        if isinstance(have, int) and isinstance(total, int) and total > 0:
+            return f"{have}/{total} episodes"
+    return _ARR_STATE_LABELS.get(state, "")
+
+
 def _library_card(item, show_added=False):
     """A Plex library (or "Added here") card: poster, title, year. No actions."""
     link = _web_url(item.get("url"))
@@ -119,7 +133,16 @@ def _library_card(item, show_added=False):
         badge = '<span class="badge">Watched</span>'
     elif isinstance(progress, (int, float)) and 0 < progress < 1:
         badge = '<span class="badge">Started</span>'
+    sources_ = [k for k in (item.get("sources") or ()) if k in _SOURCE_LABELS]
+    state = item.get("arr_state")
+    state_label = _arr_label(state, item.get("episodes"))
+    if state_label and not (state == "downloaded" and "plex" in sources_):
+        badge += (f'<span class="badge arr-state state-{escape(str(state), quote=True)}">{escape(state_label)}</span>')
     top = f'<div class="poster-top"><span class="badges">{badge}</span></div>' if badge else ""
+    src_line = ""
+    if sources_:
+        src_line = ('<p class="card-sources"><span class="visually-hidden">In </span>'
+                    + " ".join(f'<span class="src src-{k}">{_SOURCE_LABELS[k]}</span>' for k in sources_) + '</p>')
     if show_added:
         sub = f'Added {escape((item.get("added_at") or "")[:10] or "unknown date")}'
     else:
@@ -127,7 +150,7 @@ def _library_card(item, show_added=False):
     return (f'<article class="card"><div class="card-poster">{_poster_html(item)}{top}'
             f'<span class="kind">{kind}</span></div>'
             f'<div class="card-info"><h3 class="title">{title}</h3>'
-            f'<p class="card-sub">{sub}</p></div></article>')
+            f'<p class="card-sub">{sub}</p>{src_line}</div></article>')
 
 
 def _rate_parts(mine, plex):
@@ -275,15 +298,16 @@ def _status():
 def render_add_dialog(media_type, tmdb_id, return_to, partial=False):
     """A dedicated page (or, with partial=True, just the dialog's inner HTML for app.js's modal):
     quality profiles are fetched here and only here, so viewing the Recommended or AI list never
-    pays for a Radarr/Sonarr round-trip you might not need. Looks in both caches (web._find_item)
-    rather than forcing a recompute - this can be reached from either the Recommended or the AI page."""
+    pays for a Radarr/Sonarr round-trip you might not need. web.lookup_item checks both recommendation
+    caches, then (live mode) TMDB details, so any search result can be added too; it never forces a recompute."""
     return_to = web._safe_path(return_to)
     section = "home"
-    for prefix, name in (("/ai", "ai"), ("/movies", "movies"), ("/tv", "tv"), ("/library", "library")):
+    for prefix, name in (("/ai", "ai"), ("/movies", "movies"), ("/tv", "tv"), ("/library", "library"),
+                         ("/search", "search")):
         if return_to.startswith(prefix):
             section = name
             break
-    item = web._find_item(media_type, tmdb_id) if not web._is_sample() else None
+    item = web.lookup_item(media_type, tmdb_id) if not web._is_sample() else None
     if item is None:
         inner = (f'<div class="dialog-box"><div class="dialog-head"><div>'
                  f'<h3 id="add-dialog-title">Can&#39;t add this one</h3></div></div>'
@@ -543,7 +567,7 @@ _SHOW_LABELS = {"all": "Everything", "unwatched": "Unwatched", "watched": "Watch
                 "unrated": "Not rated by you"}
 
 
-def _library_url(tab, q="", sort=None, show=None, page=1):
+def _library_url(tab, q="", sort=None, show=None, page=1, source=None):
     params = [("type", tab)]
     if q:
         params.append(("q", q))
@@ -551,6 +575,8 @@ def _library_url(tab, q="", sort=None, show=None, page=1):
         params.append(("sort", sort))
     if show:
         params.append(("show", show))
+    if source and source != "all":
+        params.append(("source", source))
     if page and page > 1:
         params.append(("page", page))
     return "/library?" + urlencode(params)
@@ -567,25 +593,31 @@ def _library_subtabs(active, q):
     return f'<nav class="subtabs" aria-label="Library">{"".join(links)}</nav>'
 
 
-def _library_toolbar(tab, q, sort, show, sorts, shows):
+def _source_labels(tab):
+    arr = {"movie": "In Radarr", "tv": "In Sonarr"}.get(tab, "In Radarr or Sonarr")
+    return {"all": "Everywhere", "plex": "In Plex", "arr": arr, "wanted": "Wanted (not downloaded)"}
+
+
+def _library_toolbar(tab, q, sort, show, sorts, shows, source="all", sources_=("all",)):
     def select(name, label, options, labels, current):
         opts = "".join(f'<option value="{escape(o, quote=True)}"{" selected" if o == current else ""}>'
                        f'{escape(labels.get(o, o))}</option>' for o in options)
         return f'<label>{label}<select name="{name}">{opts}</select></label>'
     show_select = select("show", "Show", shows, _SHOW_LABELS, show) if len(shows) > 1 else ""
+    source_select = select("source", "Source", sources_, _source_labels(tab), source) if len(sources_) > 1 else ""
     return (f'<form class="toolbar" method="get" action="/library" role="search">'
             f'<input type="hidden" name="type" value="{escape(tab, quote=True)}">'
             f'<label>Search<input type="search" name="q" value="{escape(q, quote=True)}" maxlength="100" '
             f'placeholder="Title"></label>'
-            f'{select("sort", "Sort by", sorts, _SORT_LABELS, sort)}{show_select}'
+            f'{select("sort", "Sort by", sorts, _SORT_LABELS, sort)}{show_select}{source_select}'
             f'<button type="submit" class="btn-ghost">Apply</button></form>')
 
 
-def _library_pager(tab, q, sort, show, page, pages):
+def _library_pager(tab, q, sort, show, page, pages, source="all"):
     if pages <= 1:
         return ""
     def link(target, label, rel):
-        href = escape(_library_url(tab, q, sort, show, target), quote=True)
+        href = escape(_library_url(tab, q, sort, show, target, source), quote=True)
         return f'<a href="{href}" rel="{rel}">{label}</a>'
     prev = link(page - 1, "&#8249; Previous", "prev") if page > 1 else '<span class="muted">&#8249; Previous</span>'
     nxt = link(page + 1, "Next &#8250;", "next") if page < pages else '<span class="muted">Next &#8250;</span>'
@@ -593,10 +625,14 @@ def _library_pager(tab, q, sort, show, page, pages):
             f'{nxt}</nav>')
 
 
-def _library_empty(tab, filtered):
+def _library_empty(tab, filtered, q=""):
     if filtered:
+        search = ""
+        if q and tab in ("all", "movie", "tv"):
+            search = (f'<a class="btn-ghost" href="{escape("/search?" + urlencode({"q": q}), quote=True)}">'
+                      f'Search all movies and TV for &quot;{escape(q)}&quot;</a>')
         return ('<div class="empty"><h3>Nothing matches</h3><p>No titles match your search or filters.</p>'
-                f'<a class="btn-ghost" href="{escape(_library_url(tab), quote=True)}">Clear filters</a></div>')
+                f'<a class="btn-ghost" href="{escape(_library_url(tab), quote=True)}">Clear filters</a>{search}</div>')
     if tab == "added":
         return ('<div class="empty"><h3>Your added list is empty</h3>'
                 '<p>Nothing added yet - approve a recommendation from the Recommended page and it\'ll show up here.</p>'
@@ -605,10 +641,10 @@ def _library_empty(tab, filtered):
         return ('<div class="empty"><h3>Nothing watched yet</h3>'
                 '<p>Titles you watch in Plex show up here, ready to rate.</p></div>')
     return ('<div class="empty"><h3>Your library is empty</h3>'
-            '<p>Nothing in your Plex library yet.</p></div>')
+            '<p>Nothing in Plex, Radarr or Sonarr yet.</p></div>')
 
 
-def render_library(tab="all", q="", sort=None, show="all", page=1, msg=""):
+def render_library(tab="all", q="", sort=None, show="all", page=1, msg="", source="all"):
     """Library: All / Movies / TV shows (the Plex library), Watched (history, with ratings) and
     Added here (the log of what was sent to Radarr/Sonarr). Data comes from the last build's
     snapshot - this never calls Plex."""
@@ -616,8 +652,10 @@ def render_library(tab="all", q="", sort=None, show="all", page=1, msg=""):
     sorts, shows = web.LIST_OPTIONS[tab]
     sort = sort if sort in sorts else sorts[0]
     show = show if show in shows else shows[0]
+    source_options = web.LIST_SOURCES[tab]
+    source = source if source in source_options else source_options[0]
     q = (q or "").strip()[:100]
-    return_to = _library_url(tab, q, sort, show, page)
+    return_to = _library_url(tab, q, sort, show, page, source)
     subtabs = _library_subtabs(tab, q)
     messages = _message_notes(msg, None, return_to)
 
@@ -644,6 +682,14 @@ def render_library(tab="all", q="", sort=None, show="all", page=1, msg=""):
         return _shell(body, "library", return_to=return_to)
 
     notes = ""
+    arr_states = web.arr_status(result)
+    if tab in ("all", "movie", "tv"):
+        for name in ("radarr", "sonarr"):
+            if arr_states.get(name) == "error":
+                notes += (f'<p class="note">Couldn\'t reach {name.capitalize()} at the last refresh, '
+                          f'so its titles aren\'t shown.</p>')
+        if items and (result or {}).get("library") is None:
+            notes += '<p class="note">Plex isn\'t connected, so only Radarr and Sonarr titles are shown.</p>'
     if tab == "watched":
         if web.ratings_changed():
             notes += ('<p class="note">Your ratings changed - refresh to update your recommendations.</p>'
@@ -655,10 +701,12 @@ def render_library(tab="all", q="", sort=None, show="all", page=1, msg=""):
         body = f'{subtabs}{messages}{notes}{_library_empty(tab, False)}'
         return _shell(body, "library", "0 titles", return_to=return_to)
 
-    view = web.list_view(items, tab=tab, q=q, sort=sort, show=show, page=page)
+    view = web.list_view(items, tab=tab, q=q, sort=sort, show=show, page=page, source=source)
     page = view["page"]
-    return_to = _library_url(tab, q, sort, show, page)
-    toolbar = _library_toolbar(tab, q, sort, show, sorts, shows)
+    return_to = _library_url(tab, q, sort, show, page, source)
+    arr_on = any(state != "off" for state in arr_states.values())
+    toolbar = _library_toolbar(tab, q, sort, show, sorts, shows, source,
+                               source_options if arr_on and len(source_options) > 1 else ("all",))
     if view["items"]:
         if tab == "watched":
             cards = "".join(_watched_card(i, return_to) for i in view["items"])
@@ -666,8 +714,8 @@ def render_library(tab="all", q="", sort=None, show="all", page=1, msg=""):
             cards = "".join(_library_card(i, tab == "added") for i in view["items"])
         grid = f'<div class="grid" data-grid>{cards}</div>'
     else:
-        grid = _library_empty(tab, True)
-    pager = _library_pager(tab, q, sort, show, page, view["pages"])
+        grid = _library_empty(tab, True, q)
+    pager = _library_pager(tab, q, sort, show, page, view["pages"], source)
     total = view["total"]
     subtitle = f"{total} title{'s' if total != 1 else ''}"
     return _shell(f'{subtabs}{messages}{notes}{toolbar}{grid}{pager}', "library", subtitle, return_to=return_to)
@@ -715,6 +763,143 @@ def render_ai_page(msg="", undo=None):
     return _shell(body, "ai", subtitle, show_refresh=False)
 
 
+# --- Search (GET /search; the page, and the fragment that live search swaps in) ---
+_STATUS_LABELS = {"plex": "In library", "radarr": "In Radarr", "sonarr": "In Sonarr", "added": "Added"}
+SEARCH_HINT = "Find any movie or show and send it to Radarr or Sonarr."
+
+
+def _search_url(q, kind):
+    """"/search?q=..&type=.." - never with partial. The return_to for every Add link on the page and in the fragment."""
+    params = ([("q", q)] if q else []) + [("type", kind)]
+    return "/search?" + urlencode(params)
+
+
+def _arr_error_notes(search=False):
+    """One note per Radarr/Sonarr that was unreachable at the last build (shared by the Library and search)."""
+    try:
+        result, _age = web.get_result_nowait()
+        states = web.arr_status(result)
+    except Exception:
+        return ""
+    tail = ("so titles tracked there may show here without an In Radarr/In Sonarr label." if search
+            else "so its titles aren't shown.")
+    return "".join(f'<p class="note">Couldn\'t reach {name.capitalize()} at the last refresh, ' + tail.replace(
+        "In Radarr/In Sonarr", "In " + name.capitalize()) + '</p>'
+                   for name in ("radarr", "sonarr") if states.get(name) == "error")
+
+
+def _search_card(item, return_to, can_act):
+    status = item.get("status") or "none"
+    title = escape(_title_text(item))
+    kind = "Movie" if item["media_type"] == "movie" else "TV"
+    badges = ""
+    if status in _STATUS_LABELS:
+        badges += (f'<span class="lib-tag status-tag status-{escape(status, quote=True)}">'
+                   f'{_STATUS_LABELS[status]}</span>')
+    if item.get("watched"):
+        badges += '<span class="badge">Watched</span>'
+    if item.get("dismissed"):
+        badges += '<span class="badge">Not interested</span>'
+    arr_text = _arr_label(item.get("arr_state"), item.get("episodes"))
+    arr_line = f'<p class="card-sub arr-line">{escape(arr_text)}</p>' if arr_text else ""
+    meta = f"<span>{kind}</span>"
+    if item.get("year"):
+        meta += f'<span>{escape(str(item["year"]))}</span>'
+    try:
+        vote = float(item.get("vote_average") or 0)
+    except (TypeError, ValueError):
+        vote = 0.0
+    if item.get("vote_count") and vote:
+        meta += f"<span>TMDB {vote:.1f}</span>"
+    link = _web_url(item.get("url"))
+    ext = (f'<a class="ext-link" href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">'
+           f'More on TMDB<span class="visually-hidden"> (opens in a new tab)</span> &#8599;</a>' if link else "")
+    overview = escape(item.get("overview") or "No overview available.")
+    details = (f'<details class="card-details"><summary>Details<span class="visually-hidden">: {title}</span></summary>'
+               f'<div class="detail-body"><p class="card-meta">{meta}</p>'
+               f'<p class="overview">{overview}</p>{ext}</div></details>')
+    actions = ""
+    if status == "none" and _can_add(item, can_act):
+        actions += _add_link(item, return_to)
+    if item.get("dismissed") and can_act:
+        actions += (f'<form class="inline" method="post" action="/undismiss" data-enhance="undismiss">'
+                    f'{_hidden_fields(item, return_to)}'
+                    f'<button type="submit" class="link-btn">Show in recommendations again</button></form>')
+    if actions:
+        actions = f'<div class="card-actions">{actions}</div>'
+    return (f'<article class="card search-card" data-card="{_card_key(item)}" data-keep-on-add>'
+            f'<div class="card-poster" data-open-detail>{_poster_html(item)}'
+            f'<div class="poster-top"><span class="badges">{badges}</span></div>'
+            f'<span class="kind">{kind}</span></div>'
+            f'<div class="card-info"><h3 class="title">{title}</h3>{arr_line}{details}{actions}</div></article>')
+
+
+def _search_fragment(view, return_to):
+    """The ONE renderer of the search results, used by the full page and by the partial=1 response that
+    live search swaps in. The root's data-announce is the plain-text summary app.js puts in the live region,
+    so state blocks carry no role=status/alert of their own."""
+    state = view.get("state")
+    q = view.get("q") or ""
+    results = view.get("results") or []
+    count = len(results)
+    quoted = f"&ldquo;{escape(q)}&rdquo;"
+    if state == "short":
+        announce, block = "Type at least 2 characters", '<p class="note">Type at least 2 characters.</p>'
+    elif state in ("error", "limited"):
+        announce = view.get("message") or ""
+        block = f'<p class="note error">{escape(announce)}</p>'
+    elif state == "ok" and not results:
+        announce = f'No matches for "{q}"'
+        block = (f'<div class="empty"><h3>No matches for {quoted}</h3>'
+                 f'<p>Check the spelling or try the original title.</p></div>')
+    elif state == "ok":
+        announce = f'{count} match{"" if count == 1 else "es"} for "{q}"'
+        more = " - showing the top 20. Add a year or more words to narrow it down." if view.get("capped") else ""
+        loading = ('<p class="note muted-note">Your library is still loading, so some "In library" labels '
+                   'may be missing.</p>' if not view.get("library_known") else "")
+        can_act = not view.get("sample")
+        cards = "".join(_search_card(i, return_to, can_act) for i in results)
+        block = (f'<p class="search-summary muted">{count} match{"" if count == 1 else "es"} for {quoted}{more}</p>'
+                 f'{loading}{_arr_error_notes(True)}<div class="grid search-results" data-grid>{cards}</div>')
+    else:
+        state, announce = "empty", ""
+        block = f'<p class="muted search-hint">{SEARCH_HINT}</p>'
+    return (f'<div class="search-fragment" data-search-fragment data-search-state="{escape(state, quote=True)}" '
+            f'data-announce="{escape(announce, quote=True)}">{block}</div>')
+
+
+def render_search_results(q="", kind="all"):
+    """Just the results fragment (GET /search?...&partial=1): no shell. Calls web.search_view once."""
+    view = web.search_view(q, kind)
+    return _search_fragment(view, _search_url(q, kind))
+
+
+def render_search(q="", kind="all", msg=""):
+    """The search page. Works without JS (a GET form); with JS the box searches live (app.js)."""
+    view = web.search_view(q, kind)
+    return_to = _search_url(q, kind)
+    sample = ('<p class="note">Sample data - searching the built-in sample catalogue.</p>'
+              if view.get("sample") else "")
+    pills = "".join(
+        f'<label class="search-type"><input type="radio" name="type" value="{value}"'
+        f'{" checked" if value == kind else ""}> {label}</label>'
+        for value, label in (("all", "All"), ("movie", "Movies"), ("tv", "TV shows")))
+    autofocus = "" if q else " autofocus"
+    body = (f'<div class="search-page">{_message_notes(msg, None, return_to)}{sample}'
+            f'<form class="search-form" method="get" action="/search" role="search" data-search-live>'
+            f'<label class="search-label" for="search-q">Search all movies and TV</label>'
+            f'<div class="search-row"><input class="search-input" id="search-q" type="search" name="q" '
+            f'value="{escape(q, quote=True)}" maxlength="100" minlength="2" required autocomplete="off" '
+            f'enterkeyhint="search" aria-controls="search-results"{autofocus}>'
+            f'<span class="spinner sm search-spinner" data-search-spinner aria-hidden="true" hidden></span>'
+            f'<button type="submit" class="btn-add">Search</button></div>'
+            f'<fieldset class="search-types"><legend class="visually-hidden">Show</legend>{pills}</fieldset></form>'
+            f'<p class="search-status visually-hidden" role="status" aria-live="polite" data-search-status></p>'
+            f'<div class="search-results-region" id="search-results" data-search-results aria-busy="false">'
+            f'{_search_fragment(view, return_to)}</div></div>')
+    return _shell(body, "search")
+
+
 # Inline SVG nav icons (fixed strings, no user data).
 _NAV_ICONS = {
     "home": '<path d="M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
@@ -722,6 +907,7 @@ _NAV_ICONS = {
     "tv": '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M8 21h8M12 18v3M9 2l3 4 3-4"/>',
     "library": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>',
     "ai": '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
+    "search": '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
     "settings": '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/>'
                 '<circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
 }
@@ -772,12 +958,34 @@ def render_appearance(msg=""):
     return _shell(body, "settings")
 
 
+def _search_svg():
+    return (f'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+            f'stroke-linejoin="round" aria-hidden="true" focusable="false">{_NAV_ICONS["search"]}</svg>')
+
+
+def _topbar_search(section):
+    """The top bar's search form (wide screens; left out on /search itself) and the .search-link icon (phones).
+    Both are always in the markup and CSS picks one. The form is a plain GET: Enter lands on /search, where
+    the live box takes over - this one never searches live."""
+    on_page = section == "search"
+    form = "" if on_page else (
+        '<form class="topbar-search" method="get" action="/search" role="search">'
+        '<label class="visually-hidden" for="topbar-q">Search all movies and TV</label>'
+        '<input class="search-input" id="topbar-q" type="search" name="q" maxlength="100" '
+        'placeholder="Search movies &amp; TV" autocomplete="off" enterkeyhint="search">'
+        f'<button type="submit" class="search-submit" aria-label="Search">{_search_svg()}</button></form>')
+    current = ' aria-current="page"' if on_page else ""
+    link = (f'<a class="nav-item search-link{" active" if on_page else ""}" href="/search"{current}>'
+            f'{_search_svg()}<span>Search</span></a>')
+    return form + link
+
+
 def _shell(body, section, subtitle="", show_refresh=False, return_to="/", status_html="", auto_refresh=False,
            cinematic=False):
     """status_html: trusted markup (e.g. UPDATING_HTML) appended to the subtitle. auto_refresh: the
     no-JS fallback for the building screens - app.js polls /api/status instead. cinematic: a ready
     browse page - the hero sits under the transparent top bar and the title strip moves below the rows."""
-    heading = dict((key, label) for key, label, _ in NAV_SECTIONS).get(section, "Compass")
+    heading = "Search" if section == "search" else dict((key, label) for key, label, _ in NAV_SECTIONS).get(section, "Compass")
     nav_html = _nav_html(section)
     refresh = _refresh_form(return_to) if show_refresh else ""
     meta_refresh = '<noscript><meta http-equiv="refresh" content="5"></noscript>' if auto_refresh else ""
@@ -801,7 +1009,7 @@ def _shell(body, section, subtitle="", show_refresh=False, return_to="/", status
             f'<header class="topbar"><a class="brand" href="/">'
             f'<h1 class="brand-name">Compass</h1></a>'
             f'<nav class="topnav" aria-label="Main">{nav_html}</nav>'
-            f'<div class="topbar-actions">{_nav_html(section, ("settings",))}</div></header>'
+            f'<div class="topbar-actions">{_topbar_search(section)}{_nav_html(section, ("settings",))}</div></header>'
             f'<main class="app-main" id="main" tabindex="-1">{main}</main>'
             f'<nav class="bottom-nav" aria-label="Main">{nav_html}</nav>'
             f'<div class="toasts" id="toasts" role="status" aria-live="polite"></div>'

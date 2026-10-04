@@ -46,6 +46,11 @@ Six themes (registry in `themes.py`: amber, crimson, lime, ocean, teal, mono) se
 - Settings: `.settings`, `.settings-foot`, `.checkbox-label`. AI page: `.ai-intro`, `.ai-toolbar`.
 - Utility: `.muted`, `.sub`, `.visually-hidden`, `.skip-link`; `html.js` is set by app.js when JS runs.
 
+## Search and Library (see specs/search-and-arr-library.md)
+- Top bar: `.topbar-search` (+ `.search-input`, `.search-submit`) on wide screens, `.search-link` icon at <=1100px; Enter goes to `/search` (the top-bar box is not live).
+- Search page: `.search-page`, `.search-form`, `.search-row`, `.search-types`/`.search-type`, `.search-summary`, `.search-status` (the one aria-live region), `.search-results` (+ `.is-loading`, `[data-search-spinner]`), `.search-fragment[data-search-state][data-announce]`, `.search-card`, `.status-tag` (`.status-plex/-radarr/-sonarr/-added`). Live search: form `[data-search-live]`, 400 ms debounce, abort + sequence counter, `replaceState`.
+- Library: `.card-sources` / `.src` (`.src-plex/-radarr/-sonarr`), `.badge.arr-state` (`.state-downloaded/-missing/-partial/-upcoming/-unmonitored`), `select[name="source"]` in the toolbar. Chip tones use the non-theme `--chip-*` / `--tone-*` tokens.
+
 ## Breakpoints
 - `max-width: 820px` - top nav links are replaced by the fixed bottom nav (`--nav-h`); the hero becomes a swipe card and stops auto-rotating.
 - `max-width: 560px` and `520px` - tighter card grid and spacing.
@@ -60,7 +65,7 @@ Six themes (registry in `themes.py`: amber, crimson, lime, ocean, teal, mono) se
 - Text contrast WCAG AA in both themes (`--accent` is a fill colour - use `--accent-text` for text).
 
 ## Markup and behaviour rules
-- Every untrusted string (TMDB/Plex/Radarr data, titles, overviews) goes through `html.escape`; links and images only via `_web_url()` (http/https only). `static/app.js` builds DOM with `createElement`/`textContent`; the single `innerHTML` is the server-escaped `/add-dialog?...&partial=1` fragment.
+- Every untrusted string (TMDB/Plex/Radarr data, titles, overviews) goes through `html.escape`; links and images only via `_web_url()` (http/https only). `static/app.js` builds DOM with `createElement`/`textContent`; the single `innerHTML` lives in the shared `setFragment(node, html)` helper, which only ever receives server-escaped fragments (`/add-dialog?...&partial=1` and `/search?...&partial=1`) and refuses anything containing `<html`.
 - **Progressive enhancement:** every form/link works without JS (POST + 303 redirect). app.js only enhances via data attributes:
   `data-enhance="dismiss|undismiss|add|refresh|generate|rate"` (forms), `data-add-dialog` (Add link -> modal), `data-open-detail` / `data-card` / `data-grid` (detail modal, card removal), `data-close`, `data-poll` / `data-poll-error` (screens that poll `/api/status`), `data-busy`, `data-js-empty`.
 - Building / generating / "Updating..." screens must also include `<noscript><meta http-equiv="refresh" content="5"></noscript>` (via `_shell(auto_refresh=True)`).

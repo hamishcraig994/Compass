@@ -10,20 +10,23 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
 
+import arr_library
 import browse
 import config
 import db
 import plex
 import profile
+import sample
 import settings_page
 import sources
 import themes
+import tmdb
 
 # Page rendering lives in pages.py (frontend-owned). Imported back for the handler, and for
 # tests that call or patch web.render_* / web._card / web._shell.
 from pages import (  # noqa: E402
     _card, _shell, render_add_dialog, render_ai_page, render_appearance, render_browse, render_home,
-    render_library,
+    render_library, render_search, render_search_results,
 )
 
 CACHE_SECONDS = 3600       # reuse the last result for an hour (finding suggestions takes a while)
@@ -283,21 +286,64 @@ LIST_OPTIONS = {   # tab -> (sorts, shows); the first of each is the default
     "watched": (("recent", "title", "rating"), ("all", "rated", "unrated")),
     "added":   (("added", "title", "year"), ("all",)),
 }
+LIST_SOURCES = {   # tab -> Source filter values; the first is the default. LIST_OPTIONS is separate.
+    "all":     ("all", "plex", "arr", "wanted"),
+    "movie":   ("all", "plex", "arr", "wanted"),
+    "tv":      ("all", "plex", "arr", "wanted"),
+    "watched": ("all",),
+    "added":   ("all",),
+}
 LIST_PAGE_SIZE = 48  # divisible by the 2/3/4/6-column grids
 MAX_QUERY_CHARS = 100
 
+# --- Title search (GET /search; the route and page come in a later phase) ---
+SEARCH_KINDS, SEARCH_MIN_CHARS = ("all", "movie", "tv"), 2
+TMDB_BUDGET_MAX, TMDB_BUDGET_WINDOW = 60, 60   # uncached TMDB requests per window, process-wide
+LOOKUP_RESERVE = 10   # the last uses of the budget are kept for add-dialog and /add lookups; search can't take them
+SEARCH_ERROR = "Search isn't available right now - TMDB didn't answer. Try again in a moment."
+SEARCH_LIMITED = ("Too many new searches in the last minute - wait a moment and try again. "
+                  "Searches you've already made still work.")
+_budget_lock = threading.Lock()   # its own lock: never compute_lock, held for a few lines only
+_budget_uses = []                 # time.monotonic() of each recent use
+
+
+def _tmdb_budget(reserve=0):
+    """True (and records one use) if fewer than TMDB_BUDGET_MAX uncached TMDB requests were made by search,
+    the add dialog and /add in the last TMDB_BUDGET_WINDOW seconds. /search is a GET with no login, so
+    this stops any page that makes your browser hit it from draining the TMDB quota."""
+    now = time.monotonic()
+    with _budget_lock:
+        _budget_uses[:] = [t for t in _budget_uses if now - t < TMDB_BUDGET_WINDOW]
+        if len(_budget_uses) >= TMDB_BUDGET_MAX - reserve:
+            return False
+        _budget_uses.append(now)
+        return True
+
 
 def parse_list_query(query):
-    """query: parse_qs dict -> {"tab", "q", "sort", "show", "page"}. Every invalid value falls back to its default."""
+    """query: parse_qs dict -> {"tab", "q", "sort", "show", "page", "source"}. Every invalid value falls back to its default."""
     def first(name):
         return (query.get(name) or [""])[0]
     tab = first("type")
     tab = tab if tab in LIBRARY_TABS else "all"
     sorts, shows = LIST_OPTIONS[tab]
     sort, show = first("sort"), first("show")
+    sources_ = LIST_SOURCES[tab]
+    source = first("source")
     return {"tab": tab, "q": first("q").strip()[:MAX_QUERY_CHARS],
             "sort": sort if sort in sorts else sorts[0], "show": show if show in shows else shows[0],
+            "source": source if source in sources_ else sources_[0],
             "page": max(1, _parse_id(first("page")) or 1)}
+
+
+def parse_search_query(query):
+    """query: parse_qs dict -> {"q", "kind"}. q is trimmed, whitespace-collapsed and cut to MAX_QUERY_CHARS;
+    an invalid kind becomes "all"."""
+    def first(name):
+        return (query.get(name) or [""])[0]
+    kind = first("type")
+    return {"q": " ".join(first("q").split())[:MAX_QUERY_CHARS].strip(),
+            "kind": kind if kind in SEARCH_KINDS else "all"}
 
 
 def _sorted_desc_none_last(items, value):
@@ -308,8 +354,9 @@ def _sorted_desc_none_last(items, value):
     return sorted(have, key=value, reverse=True) + missing
 
 
-def list_view(items, tab="all", q="", sort="added", show="all", page=1, per_page=LIST_PAGE_SIZE):
-    """Filter, sort and paginate a list of library/watched items. Pure.
+def list_view(items, tab="all", q="", sort="added", show="all", page=1, per_page=LIST_PAGE_SIZE, source="all"):
+    """Filter, sort and paginate a list of library/watched items. Pure. source (all/plex/arr/wanted) only
+    applies to the all/movie/tv tabs.
     -> {"items": this page, "total", "page" (clamped to 1..pages), "pages" (>= 1)}"""
     found = list(items)
     if tab in ("movie", "tv"):
@@ -317,6 +364,13 @@ def list_view(items, tab="all", q="", sort="added", show="all", page=1, per_page
     needle = (q or "").strip().casefold()
     if needle:
         found = [i for i in found if needle in (i.get("title") or "").casefold()]
+    if tab in ("all", "movie", "tv"):
+        if source == "plex":
+            found = [i for i in found if "plex" in (i.get("sources") or ())]
+        elif source == "arr":
+            found = [i for i in found if {"radarr", "sonarr"} & set(i.get("sources") or ())]
+        elif source == "wanted":
+            found = [i for i in found if i.get("arr_state") in arr_library.WANTED_STATES]
     if show in ("unwatched", "watched"):
         found = [i for i in found if bool(i.get("watched")) == (show == "watched")]
     elif show in ("rated", "unrated"):
@@ -352,20 +406,36 @@ def watched_items(result):
 
 
 def library_items(result, tab):
-    """The items for one Library tab, or None if the library isn't available (Tautulli without PLEX_TOKEN)."""
+    """The items for one Library tab, or None if there's neither a Plex library (Tautulli without PLEX_TOKEN)
+    nor any Radarr/Sonarr item. all/movie/tv merge the Plex snapshot with Radarr/Sonarr (arr_library.merge)."""
     if tab == "added":
         return [{"media_type": a["media_type"], "tmdb_id": a["tmdb_id"], "title": a["title"], "year": a["year"],
                  "added_at": a["added_at"], "watched": False, "progress": None, "poster_key": None,
                  "poster_url": a["poster_url"], "url": a["url"]} for a in db.added_items()]
     if tab == "watched":
         return watched_items(result)
-    return (result or {}).get("library")
+    plex_items = (result or {}).get("library")
+    arr_items = _arr_items(result)
+    if plex_items is None and not arr_items:
+        return None
+    return arr_library.merge(plex_items, arr_items)  # list_view() narrows movie/tv tabs by media_type
+
+
+def _arr_items(result):
+    return ((result or {}).get("arr") or {}).get("items") or []
+
+
+def arr_status(result):
+    """{"radarr": state, "sonarr": state}, each "off" | "ok" | "error" ("off" when the result lacks it)."""
+    arr = (result or {}).get("arr") or {}
+    return {name: (arr.get(name) or {}).get("state") or "off" for name in ("radarr", "sonarr")}
 
 
 def owned_keys(result):
-    """{(media_type, tmdb_id)} of titles already in the Plex snapshot, plus (live mode only) the ones
+    """{(media_type, tmdb_id)} of titles already in the Plex snapshot or tracked by Radarr/Sonarr, plus (live mode only) the ones
     added through this app."""
     keys = {(e["media_type"], e["tmdb_id"]) for e in (result or {}).get("library") or [] if e.get("tmdb_id")}
+    keys |= {(e["media_type"], e["tmdb_id"]) for e in _arr_items(result) if e.get("tmdb_id")}
     if not _is_sample():
         keys |= {(a["media_type"], a["tmdb_id"]) for a in db.added_items()}
     return keys
@@ -397,6 +467,66 @@ def _find_item(media_type, tmdb_id):
             if (item["media_type"], item["tmdb_id"]) == (media_type, tmdb_id):
                 return item
     return None
+
+
+def lookup_item(media_type, tmdb_id):
+    """A title for the add dialog and /add: a recommendation if it is one, else TMDB details (cached first,
+    then one budgeted request). None in sample mode, without a TMDB token, or on any failure. Holds no lock
+    while fetching."""
+    item = _find_item(media_type, tmdb_id)
+    if item is not None:
+        return item
+    if _is_sample() or not config.TMDB_TOKEN:
+        return None
+    try:
+        client = tmdb.TmdbClient(config.TMDB_TOKEN)
+        item = client.cached_details(media_type, tmdb_id)
+        if item:
+            return item
+        if not _tmdb_budget():
+            return None
+        return client.details(media_type, tmdb_id, timeout=tmdb.SEARCH_TIMEOUT, retries=1)
+    except Exception as e:
+        print(f"Title lookup failed: {type(e).__name__}")  # never the message: a v3 key sits in TMDB's URLs
+        return None
+
+
+def search_view(q, kind):
+    """Everything the search page shows (see the spec's SearchView). One TMDB request at most, and only for
+    an uncached query within the shared budget; upstream error text is never put in the result."""
+    kind = kind if kind in SEARCH_KINDS else "all"
+    q = (q or "").strip()
+    sample_mode = _is_sample()
+    view = {"q": q, "kind": kind, "state": "empty", "message": None, "results": [], "capped": False,
+            "library_known": False, "sample": sample_mode}
+    if not q:
+        return view
+    if len(q) < SEARCH_MIN_CHARS:
+        view["state"] = "short"
+        return view
+    client = sample.SampleTmdb() if sample_mode else (tmdb.TmdbClient(config.TMDB_TOKEN) if config.TMDB_TOKEN else None)
+    if client is None:
+        view.update(state="error", message=SEARCH_ERROR)
+        return view
+    try:
+        found = client.cached_search(q, kind)
+        if found is None:
+            if not _tmdb_budget(reserve=LOOKUP_RESERVE):
+                view.update(state="limited", message=SEARCH_LIMITED)
+                return view
+            found = client.search_titles(q, kind)
+    except Exception as e:
+        print(f"Search failed: {type(e).__name__}")  # not the message: a v3 TMDB key travels in the URL
+        view.update(state="error", message=SEARCH_ERROR)
+        return view
+    result, _ = get_result_nowait()
+    added = set() if sample_mode else {(a["media_type"], a["tmdb_id"]) for a in db.added_items()}
+    hidden = set() if sample_mode else db.dismissed()
+    view["results"] = arr_library.annotate(
+        found.get("results") or [], (result or {}).get("library"), _arr_items(result),
+        (result or {}).get("watched") or [], added, hidden)
+    view.update(state="ok", capped=bool(found.get("capped")), library_known=result is not None)
+    return view
 
 
 def forget(media_type, tmdb_id):
@@ -597,6 +727,12 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/library":
             query = parse_qs(url.query)
             return self._send(200, render_library(**parse_list_query(query), msg=query.get("msg", [""])[0]))
+        if url.path == "/search":
+            query = parse_qs(url.query)
+            args = parse_search_query(query)
+            if query.get("partial", [""])[0] == "1":
+                return self._send(200, render_search_results(**args), headers={"Cache-Control": "no-store"})
+            return self._send(200, render_search(**args, msg=query.get("msg", [""])[0]))
         if url.path == "/appearance":
             return self._send(200, render_appearance(msg=parse_qs(url.query).get("msg", [""])[0]))
         if url.path == "/poster":
@@ -688,7 +824,6 @@ class Handler(BaseHTTPRequestHandler):
                 if as_json:
                     return self._json({"ok": False, "message": SAMPLE_MESSAGE})
                 return self._redirect(return_to)
-            item = _find_item(media_type, tmdb_id)
             quality_profile_id = _parse_id(form.get("quality_profile_id", [""])[0])
             search = form.get("search", [""])[0] == "1"
             try:
@@ -697,6 +832,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 ok, msg = False, f"Couldn't add it: {e}"
             if ok:
+                item = lookup_item(media_type, tmdb_id)  # only on success, so a failed add costs no TMDB request
                 if item:
                     db.record_added(item)
                 forget(media_type, tmdb_id)

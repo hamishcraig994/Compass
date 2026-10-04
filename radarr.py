@@ -1,11 +1,39 @@
 """Adds movies to Radarr. Unlike everything else in this app, this writes: adding a movie creates
 it in Radarr and (by default) starts a search for it right away."""
+import arr_library
 import db
 from http_util import get_json, post_json
 
 PROFILES_MAX_AGE = 600  # quality profiles/root folders rarely change; this is what stood between a
 # page nav and a live Radarr round-trip before - fetched on every Recommended/Settings render for
 # the "Add to library" dropdown, whether or not you were actually adding anything.
+
+
+def _positive_int(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _added_at(raw):
+    added = raw.get("added")
+    return added if isinstance(added, str) and added and not added.startswith("0001-") else None
+
+
+def normalize_movie(raw):
+    """One Radarr /api/v3/movie entry -> the slim "ArrItem" the Library uses (see arr_library)."""
+    tmdb_id, monitored = _positive_int(raw.get("tmdbId")), bool(raw.get("monitored"))
+    if raw.get("hasFile"):
+        state = "downloaded"
+    elif not monitored:
+        state = "unmonitored"
+    elif raw.get("isAvailable") is False or ("isAvailable" not in raw and raw.get("status") in ("announced", "tba")):
+        state = "upcoming"
+    else:
+        state = "missing"
+    return {"media_type": "movie", "service": "radarr", "tmdb_id": tmdb_id, "tvdb_id": None,
+            "title": raw.get("title") or "?", "year": _positive_int(raw.get("year")), "added_at": _added_at(raw),
+            "monitored": monitored, "arr_state": state, "episodes": None,
+            "poster_url": arr_library.poster_url(raw.get("images")),
+            "url": f"https://www.themoviedb.org/movie/{tmdb_id}" if tmdb_id else None}
 
 
 class RadarrClient:
@@ -57,6 +85,10 @@ class RadarrClient:
             return self._root_folder
         folders = self.root_folders()
         return folders[0]["path"] if folders else None
+
+    def library(self):
+        """Every movie in Radarr as normalized items - one GET. Raises on failure."""
+        return [normalize_movie(m) for m in self._get("/api/v3/movie") if isinstance(m, dict)]
 
     def existing_tmdb_ids(self):
         """Every movie already in Radarr, so recommendations can exclude them even before they've

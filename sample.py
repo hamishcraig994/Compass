@@ -139,6 +139,11 @@ _CATALOGUE = {
            ["cooking", "competition"], [], [], 7.0, 500, []),                # trending, NOT your taste
     2032: ("tv", "Orbit Nine", 2026, ["Science Fiction", "Drama"],
            ["space travel", "conspiracy"], ["Mei Tanaka"], ["Jo Lindqvist"], 7.6, 60, []),  # new, fits taste
+    # Search/arr fixtures: never candidates (under 1000 votes, no recommendations, not new, not trending).
+    1040: ("movie", "Paper Moons", 2025, ["Drama"], ["friendship"], ["Ines Duarte"], [], 7.1, 800, []),
+    1041: ("movie", "Glass Harbour", 2024, ["Thriller"], ["harbour"], ["Tomas Weller"], [], 6.9, 600, []),
+    2040: ("tv", "Night Shift Diaries", 2023, ["Drama", "Comedy"], ["night shift"], ["Rosa Imani"], [], 7.5, 400, []),
+    2041: ("tv", "Low Tide", 2025, ["Crime", "Drama"], ["coast"], ["Kit Aldous"], [], 7.2, 300, []),
     2017: ("tv", "Devs", 2020, ["Drama", "Science Fiction", "Mystery"],
            ["artificial intelligence", "conspiracy", "technology", "determinism", "quantum computing"],
            ["Alex Garland"], ["Sonoya Mizuno", "Nick Offerman"], 7.6, 1000, [2001, 1004]),
@@ -209,6 +214,27 @@ class SampleTmdb:
         return max(close, key=lambda i: _CATALOGUE[i][8]) if close else None
 
 
+    def _search_entries(self, query, kind):
+        needle = " ".join(str(query).split()).casefold()
+        if not needle:
+            return {"results": [], "capped": False}
+        found = [i for i, e in _CATALOGUE.items() if needle in e[1].casefold() and kind in ("all", e[0])]
+        found.sort(key=lambda i: (-_CATALOGUE[i][8], i))
+        results = []
+        for i in found[:20]:
+            d = _details(i, self.now)
+            results.append({k: d[k] for k in ("media_type", "tmdb_id", "title", "year", "release_date", "overview",
+                                              "poster_url", "url", "vote_average", "vote_count")})
+            results[-1]["url"] = f"https://www.themoviedb.org/{d['media_type']}/{i}"
+        return {"results": results, "capped": len(found) > 20}
+
+    def cached_search(self, query, kind="all"):
+        return self._search_entries(query, kind)
+
+    def search_titles(self, query, kind="all"):
+        return self._search_entries(query, kind)
+
+
 def load(now=None):
     """Returns (watched, library_keys) shaped like plex.PlexClient.load()."""
     now = now or datetime.now(timezone.utc)
@@ -241,3 +267,31 @@ def library_items(now=None):
                       "added_at": (now - timedelta(days=5 + n)).isoformat(), "watched": False, "progress": None,
                       "poster_key": None, "url": f"https://www.themoviedb.org/{media_type}/{tmdb_id}"})
     return items
+
+
+# (service, id or None, title, year, media_type, arr_state, days ago added, episodes)
+_ARR = [
+    ("radarr", 1001, "movie", "downloaded", 40, None), ("radarr", 1005, "movie", "downloaded", 35, None),
+    ("radarr", 1034, "movie", "upcoming", 6, None), ("radarr", 1035, "movie", "missing", 4, None),
+    ("radarr", 1040, "movie", "downloaded", 3, None), ("radarr", 1041, "movie", "unmonitored", 2, None),
+    ("sonarr", 2003, "tv", "downloaded", 50, (10, 10)), ("sonarr", 2040, "tv", "partial", 5, (5, 10)),
+    ("sonarr", None, "tv", "missing", 1, (0, 8)),   # Low Tide: no tmdb id, exercises the title fallback
+]
+
+
+def arr_library(now=None):
+    """A sample result["arr"]: what Radarr and Sonarr "track" (all fixtures, no requests)."""
+    now = now or datetime.now(timezone.utc)
+    items = []
+    for service, tmdb_id, media_type, state, days_ago, eps in _ARR:
+        entry_id = tmdb_id if tmdb_id is not None else 2041
+        title, year = _CATALOGUE[entry_id][1:3]
+        items.append({
+            "media_type": media_type, "service": service, "tmdb_id": tmdb_id, "tvdb_id": None, "title": title,
+            "year": year, "added_at": (now - timedelta(days=days_ago)).isoformat(),
+            "monitored": state != "unmonitored", "arr_state": state,
+            "episodes": {"have": eps[0], "total": eps[1]} if eps else None, "poster_url": None,
+            "url": f"https://www.themoviedb.org/{media_type}/{tmdb_id}" if tmdb_id else None})
+    counts = {s: sum(1 for i in items if i["service"] == s) for s in ("radarr", "sonarr")}
+    return {"items": items, "radarr": {"state": "ok", "count": counts["radarr"]},
+            "sonarr": {"state": "ok", "count": counts["sonarr"]}}

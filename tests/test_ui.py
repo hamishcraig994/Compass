@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 import urllib.request
+from html import escape
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -276,10 +277,11 @@ class TestStaticAssets(unittest.TestCase):
         self.assertIn("prefers-reduced-motion", css)
         self.assertIn("max-width: 820px", css)
 
-    def test_js_only_uses_innerhtml_for_the_server_dialog_fragment(self):
+    def test_js_only_uses_innerhtml_in_setfragment(self):
         js = read_static("app.js")
         self.assertEqual(len(re.findall(r"\.innerHTML\s*=", js)), 1)
-        self.assertIn("body.innerHTML = html;", js)
+        body = js[js.index("function setFragment"):]
+        self.assertLess(body.index("node.innerHTML = html;"), body.index("\n  }\n"))  # inside setFragment
         self.assertNotIn("insertAdjacentHTML", js)
         self.assertNotIn("document.write", js)
 
@@ -1040,3 +1042,357 @@ class TestThemeJs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def sresult(**kw):
+    base = {"media_type": "movie", "tmdb_id": 11, "title": "Dune", "year": 2021, "release_date": "2021-10-22",
+            "overview": "Sand.", "poster_url": None, "url": "https://www.themoviedb.org/movie/11",
+            "vote_average": 8.04, "vote_count": 100, "status": "none", "in_library": False, "sources": [],
+            "arr_state": None, "episodes": None, "watched": False, "dismissed": False}
+    base.update(kw)
+    return base
+
+
+def sview(state="ok", results=None, q="dune", kind="all", **kw):
+    base = {"q": q, "kind": kind, "state": state, "message": None,
+            "results": results if results is not None else ([sresult()] if state == "ok" else []),
+            "capped": False, "library_known": True, "sample": False}
+    base.update(kw)
+    return base
+
+
+class SearchBase(PatchedState):
+    def setUp(self):
+        super().setUp()
+        self.old_cfg = (config.RADARR_URL, config.RADARR_API_KEY, config.SONARR_URL, config.SONARR_API_KEY)
+        self.addCleanup(lambda: (setattr(config, "RADARR_URL", self.old_cfg[0]), setattr(config, "RADARR_API_KEY", self.old_cfg[1]),
+                                 setattr(config, "SONARR_URL", self.old_cfg[2]), setattr(config, "SONARR_API_KEY", self.old_cfg[3])))
+        config.RADARR_URL = config.RADARR_API_KEY = config.SONARR_URL = config.SONARR_API_KEY = "x"
+
+    def page(self, view, q="dune", kind="all", msg=""):
+        with mock.patch.object(web, "search_view", return_value=view):
+            return pages.render_search(q, kind, msg)
+
+    def frag(self, view, q="dune", kind="all"):
+        with mock.patch.object(web, "search_view", return_value=view):
+            return pages.render_search_results(q, kind)
+
+
+class TestTopbarSearch(PatchedState):
+    def test_form_and_link_on_ordinary_pages(self):
+        for html in (pages._shell("", "home"), pages._shell("", "library"), pages._shell("", "settings")):
+            self.assertIn('<form class="topbar-search" method="get" action="/search" role="search">', html)
+            self.assertIn('name="q" maxlength="100"', html)
+            self.assertIn('class="nav-item search-link" href="/search">', html)
+            self.assertNotIn("data-search-live", html)   # the top-bar box never searches live
+        self.assertNotIn('class="search-link"', pages._shell("", "home"))
+
+    def test_search_page_has_no_topbar_form_and_marks_the_link_current(self):
+        html = pages._shell("", "search")
+        self.assertNotIn("topbar-search", html)
+        self.assertIn('class="nav-item search-link active" href="/search" aria-current="page"', html)
+        self.assertIn("<h2>Search</h2>", html)
+        self.assertEqual(html.count('aria-current="page"'), 1)   # no bottom-nav item is active
+
+
+class TestSearchFragment(SearchBase):
+    def test_every_state_renders_with_state_and_announce(self):
+        cases = [(sview("empty", q=""), "empty", "", "search-hint"),
+                 (sview("short", q="x"), "short", "Type at least 2 characters", "Type at least 2 characters."),
+                 (sview("error", q="dune", message=web.SEARCH_ERROR), "error", web.SEARCH_ERROR, 'class="note error"'),
+                 (sview("limited", q="dune", message=web.SEARCH_LIMITED), "limited", web.SEARCH_LIMITED, 'class="note error"'),
+                 (sview("ok", [], q="zz"), "ok", 'No matches for "zz"', "No matches for &ldquo;zz&rdquo;"),
+                 (sview("ok", [sresult(), sresult(tmdb_id=12)]), "ok", '2 matches for "dune"', "2 matches for &ldquo;dune&rdquo;")]
+        for view, state, announce, bit in cases:
+            html = self.frag(view, q=view["q"])
+            self.assertTrue(html.startswith('<div class="search-fragment" data-search-fragment '), state)
+            self.assertIn(f'data-search-state="{state}"', html)
+            self.assertIn('data-announce="' + escape(announce, quote=True) + '"', html)
+            self.assertIn(bit, html)
+
+    def test_one_match_is_singular_and_unknown_state_is_empty(self):
+        self.assertIn('data-announce="1 match for &quot;dune&quot;"', self.frag(sview()))
+        self.assertIn('data-search-state="empty"', self.frag(sview("bogus")))
+
+    def test_fragment_has_no_shell_and_no_live_roles(self):
+        for view in (sview(), sview("short", q="x"), sview("error", message="m"), sview("ok", [])):
+            html = self.frag(view)
+            for bit in ("<html", "topbar", "search-form", 'role="status"', 'role="alert"', "<body"):
+                self.assertNotIn(bit, html)
+
+    def test_full_page_embeds_exactly_the_fragment(self):
+        for view in (sview(), sview("short", q="x"), sview("ok", []), sview("limited", message="m")):
+            self.assertIn(self.frag(view, q=view["q"]), self.page(view, q=view["q"]))
+
+    def test_capped_and_library_loading_notes(self):
+        html = self.frag(sview(capped=True, library_known=False))
+        self.assertIn("showing the top 20", html)
+        self.assertIn('some "In library" labels may be missing', html)
+        plain = self.frag(sview())
+        self.assertNotIn("showing the top 20", plain)
+        self.assertNotIn("still loading", plain)
+
+    def test_hostile_q_and_titles_are_escaped_everywhere(self):
+        q = '<script>alert("q")</script>'
+        hostile = sresult(title="<script>alert('t')</script>", overview="</p><script>x</script>",
+                          poster_url="javascript:alert(1)", url="javascript:alert(1)")
+        for view in (sview("ok", [hostile], q=q), sview("ok", [], q=q)):
+            for html in (self.frag(view, q=q), self.page(view, q=q)):
+                self.assertNotIn("<script>", html)
+                self.assertNotIn("javascript:", html)
+                self.assertIn("&lt;script&gt;", html)
+        self.assertIn('data-announce="No matches for &quot;&lt;script&gt;', self.frag(sview("ok", [], q=q), q=q))
+        self.assertNotIn('value="<', self.page(sview("empty", q=q), q=q))
+
+    def test_add_links_return_to_the_search_url_without_partial(self):
+        html = self.frag(sview(q="blade runner", kind="movie"), q="blade runner", kind="movie")
+        self.assertIn("return_to=%2Fsearch%3Fq%3Dblade%2Brunner%26type%3Dmovie", html)
+        self.assertNotIn("partial", html)
+        self.assertEqual(pages._search_url("a b", "tv"), "/search?q=a+b&type=tv")
+        self.assertEqual(pages._search_url("", "all"), "/search?type=all")
+
+
+class TestSearchCard(SearchBase):
+    def card(self, **kw):
+        return pages._search_card(sresult(**kw), "/search?q=dune&type=all", True)
+
+    def test_status_tags_per_status_and_none(self):
+        labels = {"plex": "In library", "radarr": "In Radarr", "sonarr": "In Sonarr", "added": "Added"}
+        for status, label in labels.items():
+            html = self.card(status=status)
+            self.assertIn(f'<span class="lib-tag status-tag status-{status}">{label}</span>', html)
+        self.assertNotIn("status-tag", self.card(status="none"))
+
+    def test_add_only_when_untracked_configured_and_not_sample(self):
+        item = sresult()
+        self.assertIn("data-add-dialog", pages._search_card(item, "/search", True))
+        self.assertNotIn("data-add-dialog", pages._search_card(item, "/search", False))   # sample mode
+        for status in ("plex", "radarr", "sonarr", "added"):
+            self.assertNotIn("data-add-dialog", pages._search_card(sresult(status=status), "/search", True))
+        config.RADARR_URL = config.RADARR_API_KEY = ""
+        self.assertNotIn("data-add-dialog", pages._search_card(item, "/search", True))
+        self.assertIn("data-add-dialog", pages._search_card(sresult(media_type="tv"), "/search", True))
+
+    def test_keep_on_add_and_card_key(self):
+        html = self.card()
+        self.assertIn('data-card="movie-11" data-keep-on-add', html)
+        self.assertIn("data-open-detail", html)
+
+    def test_undismiss_form_only_when_dismissed(self):
+        self.assertNotIn("/undismiss", self.card())
+        html = self.card(dismissed=True)
+        self.assertIn('action="/undismiss" data-enhance="undismiss"', html)
+        self.assertIn("Not interested", html)
+        self.assertNotIn("/undismiss", pages._search_card(sresult(dismissed=True), "/search", False))
+
+    def test_arr_line_watched_and_meta(self):
+        html = self.card(status="sonarr", arr_state="partial", episodes={"have": 5, "total": 10}, watched=True,
+                         media_type="tv")
+        self.assertIn('<p class="card-sub arr-line">5/10 episodes</p>', html)
+        self.assertIn('<span class="badge">Watched</span>', html)
+        self.assertIn("<span>TMDB 8.0</span>", html)
+        self.assertIn("Sand.", html)
+        self.assertIn("More on TMDB", html)
+        for state, label in (("missing", "Missing"), ("upcoming", "Upcoming"), ("downloaded", "Downloaded"),
+                             ("unmonitored", "Unmonitored")):
+            self.assertIn(f'arr-line">{label}<', self.card(arr_state=state))
+        self.assertIn(">Partly downloaded<", self.card(arr_state="partial"))
+        self.assertNotIn("arr-line", self.card())
+
+    def test_missing_overview_and_poster_placeholder(self):
+        html = self.card(overview="", poster_url=None)
+        self.assertIn("No overview available.", html)
+        self.assertIn("poster-empty", html)
+
+
+class TestSearchPage(SearchBase):
+    def test_live_markup_contract(self):
+        html = self.page(sview(), q="dune")
+        self.assertRegex(html, r'<form class="search-form" method="get" action="/search" role="search" data-search-live>')
+        self.assertIn('id="search-results" data-search-results aria-busy="false"', html)
+        self.assertRegex(html, r'<p class="search-status visually-hidden" role="status" aria-live="polite" data-search-status></p>')
+        self.assertIn('data-search-spinner aria-hidden="true" hidden>', html)
+        self.assertIn('aria-controls="search-results"', html)
+        self.assertIn('minlength="2" required', html)
+        self.assertIn('<h2>Search</h2>', html)
+        self.assertNotIn("topbar-search", html)
+
+    def test_autofocus_only_without_a_query(self):
+        self.assertIn(" autofocus", self.page(sview("empty", q=""), q=""))
+        self.assertNotIn("autofocus", self.page(sview(), q="dune"))
+
+    def test_type_pills_follow_kind_and_value_is_escaped(self):
+        html = self.page(sview(kind="tv", q='a"b'), q='a"b', kind="tv")
+        self.assertIn('<input type="radio" name="type" value="tv" checked>', html)
+        self.assertEqual(html.count(" checked>"), 1)
+        self.assertIn('value="a&quot;b"', html)
+
+    def test_sample_note_message_and_no_add_in_sample(self):
+        html = self.page(sview(sample=True), msg="Added <b>")
+        self.assertIn("Sample data - searching the built-in sample catalogue.", html)
+        self.assertNotIn("data-add-dialog", html)
+        self.assertIn("Added &lt;b&gt;", html)
+        self.assertNotIn("Sample data", self.page(sview()))
+        self.assertIn("data-add-dialog", self.page(sview()))
+
+    def test_search_view_called_once(self):
+        with mock.patch.object(web, "search_view", return_value=sview()) as m:
+            pages.render_search("dune", "all")
+        self.assertEqual(m.call_count, 1)
+        with mock.patch.object(web, "search_view", return_value=sview()) as m:
+            pages.render_search_results("dune", "all")
+        self.assertEqual(m.call_count, 1)
+
+    def test_real_sample_view_renders(self):
+        html = pages.render_search("dune", "all")      # web.search_view in sample mode: no requests
+        self.assertIn("Dune", html)
+        self.assertIn("In library", html)
+        self.assertNotIn("Add to library", html)
+
+
+class TestAddDialogLookup(unittest.TestCase):
+    def test_uses_lookup_item_and_maps_search_section(self):
+        old = (config.RADARR_URL, config.RADARR_API_KEY)
+        self.addCleanup(lambda: (setattr(config, "RADARR_URL", old[0]), setattr(config, "RADARR_API_KEY", old[1])))
+        config.RADARR_URL = config.RADARR_API_KEY = "x"
+        found = dict(ITEM, tmdb_id=99, title="Found <b>")
+        with mock.patch.object(sources, "use_sample", return_value=False), \
+                mock.patch.object(web, "lookup_item", return_value=found) as lookup, \
+                mock.patch("radarr.RadarrClient.quality_profiles", return_value=[]):
+            full = pages.render_add_dialog("movie", 99, "/search?q=dune&type=all")
+            part = pages.render_add_dialog("movie", 99, "/search?q=dune&type=all", partial=True)
+        lookup.assert_called_with("movie", 99)
+        self.assertIn("Found &lt;b&gt;", part)
+        self.assertIn('class="nav-item search-link active"', full)
+        self.assertIn("<h2>Search</h2>", full)
+        with mock.patch.object(sources, "use_sample", return_value=False), mock.patch.object(web, "lookup_item", return_value=None):
+            self.assertIn("isn't available to add", pages.render_add_dialog("movie", 5, "/search", partial=True))
+
+
+class TestLibraryArr(PatchedState):
+    def lib(self, **kw):
+        base = {"media_type": "movie", "tmdb_id": 5, "title": "Arrival", "year": 2016, "added_at": "2024-03-01T10:00:00Z",
+                "watched": False, "progress": None, "poster_key": None, "url": None, "sources": ["plex"],
+                "arr_state": None, "episodes": None}
+        base.update(kw)
+        return base
+
+    def render(self, items, arr=None, library=True, tab="all", **kw):
+        res = result()
+        if library:
+            res["library"] = []
+        if arr:
+            res["arr"] = arr
+        self.use(res)
+        with mock.patch.object(web, "library_items", return_value=items):
+            return pages.render_library(tab=tab, **kw)
+
+    def arr(self, radarr="ok", sonarr="off"):
+        return {"items": [], "radarr": {"state": radarr, "count": 0}, "sonarr": {"state": sonarr, "count": 0}}
+
+    def test_source_badges_and_state_badges(self):
+        html = self.render([self.lib(sources=["plex", "radarr"], arr_state="downloaded"),
+                            self.lib(tmdb_id=6, title="Tiny", sources=["radarr"], arr_state="missing"),
+                            self.lib(tmdb_id=7, title="Show", media_type="tv", sources=["sonarr"], arr_state="partial",
+                                     episodes={"have": 3, "total": 10})], arr=self.arr("ok", "ok"))
+        self.assertIn('<p class="card-sources"><span class="visually-hidden">In </span>'
+                      '<span class="src src-plex">Plex</span> <span class="src src-radarr">Radarr</span></p>', html)
+        self.assertNotIn(">Downloaded<", html)                      # downloaded and also in Plex: noise
+        self.assertIn('<span class="badge arr-state state-missing">Missing</span>', html)
+        self.assertIn('<span class="badge arr-state state-partial">3/10 episodes</span>', html)
+        self.assertIn(">Downloaded<", self.render([self.lib(sources=["radarr"], arr_state="downloaded")], arr=self.arr()))
+
+    def test_source_select_only_when_an_arr_service_is_on(self):
+        on = self.render([self.lib()], arr=self.arr("ok"))
+        self.assertIn('<select name="source">', on)
+        for label in ("Everywhere", "In Plex", "In Radarr or Sonarr", "Wanted (not downloaded)"):
+            self.assertIn(f">{label}</option>", on)
+        self.assertIn(">In Radarr</option>", self.render([self.lib()], arr=self.arr("ok"), tab="movie"))
+        self.assertIn(">In Sonarr</option>", self.render([self.lib(media_type="tv")], arr=self.arr("ok"), tab="tv"))
+        self.assertNotIn('name="source"', self.render([self.lib()], arr=self.arr("off", "off")))
+        self.assertNotIn('name="source"', self.render([self.lib()]))
+        self.assertNotIn('name="source"', self.render([self.lib()], arr=self.arr("ok"), tab="watched"))
+
+    def test_source_selected_and_kept_in_pager_and_return_to(self):
+        items = [self.lib(tmdb_id=n, title=f"Film {n:03d}", sources=["radarr"]) for n in range(1, 120)]
+        with mock.patch.object(web, "list_view", wraps=web.list_view) as lv:
+            html = self.render(items, arr=self.arr("ok"), tab="movie", source="arr", sort="title")
+        self.assertEqual(lv.call_args.kwargs["source"], "arr")
+        self.assertIn('<option value="arr" selected>', html)
+        self.assertIn("source=arr&amp;page=2", html)
+        self.assertIn("source=arr", pages._library_url("movie", "", "title", "all", 1, "arr"))
+        self.assertNotIn("source=", pages._library_url("movie", "", "title", "all", 1, "all"))
+        self.assertNotIn("source=", self.render([self.lib()], arr=self.arr("ok"), source="bogus"))
+        self.assertNotRegex(self.render([self.lib()], arr=self.arr("ok"), source="wanted", tab="watched"), r"source=wanted")
+
+    def test_arr_error_and_no_plex_notes(self):
+        html = self.render([self.lib()], arr=self.arr("error", "error"))
+        self.assertIn("Couldn't reach Radarr at the last refresh, so its titles aren't shown.", html)
+        self.assertIn("reach Sonarr at the last refresh", html)
+        self.assertNotIn("reach Radarr", self.render([self.lib()], arr=self.arr("ok", "off")))
+        no_plex = self.render([self.lib(sources=["radarr"])], arr=self.arr("ok"), library=False)
+        self.assertIn("Plex isn't connected, so only Radarr and Sonarr titles are shown.", no_plex)
+        self.assertNotIn("Plex isn't connected", self.render([self.lib()], arr=self.arr("ok")))
+
+    def test_empty_states(self):
+        self.assertIn("Nothing in Plex, Radarr or Sonarr yet.", self.render([], arr=self.arr("ok")))
+        html = self.render([self.lib()], q='zz"<b>')
+        self.assertIn('href="/search?q=zz%22%3Cb%3E"', html)
+        self.assertIn("Search all movies and TV for &quot;zz&quot;&lt;b&gt;&quot;", html)
+        self.assertNotIn("/search?q=", self.render([self.lib()], q="zzz", tab="watched"))
+        self.assertNotIn("/search?q=", self.render([self.lib(), self.lib(tmdb_id=9, title="Zed")], q=""))
+
+    def test_hostile_arr_title_escaped(self):
+        html = self.render([self.lib(title="<script>x</script>", sources=["radarr"], arr_state="missing")], arr=self.arr())
+        self.assertNotIn("<script>x", html)
+
+
+class TestSearchJsHooks(unittest.TestCase):
+    def test_app_js_has_the_search_hooks(self):
+        js = read_static("app.js")
+        for needle in ("data-keep-on-add", "data-search-live", "partial=1", "AbortController", "replaceState",
+                       "isComposing", "data-announce", "setFragment(", "compositionend", "aria-busy", "is-loading",
+                       "SEARCH_DEBOUNCE_MS = 400", "SEARCH_MIN = 2", "markAdded("):
+            self.assertIn(needle, js, needle)
+        self.assertGreaterEqual(js.count("setFragment("), 3)   # definition + add dialog + search
+        self.assertNotIn("pushState", js)
+
+    def test_the_single_innerhtml_is_inside_setfragment(self):
+        js = read_static("app.js")
+        self.assertEqual(js.count("innerHTML"), 1)
+        start = js.index("function setFragment")
+        end = js.index("\n  }\n", start)
+        self.assertGreater(js.index("innerHTML"), start)
+        self.assertLess(js.index("innerHTML"), end)
+
+
+class TestSearchArrNote(SearchBase):
+    def with_arr(self, radarr, sonarr, view=None):
+        res = result()
+        res["arr"] = {"items": [], "radarr": {"state": radarr, "count": 0}, "sonarr": {"state": sonarr, "count": 0}}
+        self.use(res)
+        return view or sview()
+
+    def test_unreachable_service_notes_in_fragment_and_page_alike(self):
+        view = self.with_arr("error", "ok")
+        frag, page = self.frag(view), self.page(view)
+        self.assertIn("Couldn't reach Radarr at the last refresh", frag)
+        self.assertIn("without an In Radarr label", frag)
+        self.assertNotIn("reach Sonarr", frag)
+        self.assertIn(frag, page)                      # byte identity holds
+        self.assertIn("reach Sonarr", self.frag(self.with_arr("ok", "error")))
+
+    def test_no_note_when_ok_off_or_not_a_result_list(self):
+        self.assertNotIn("Couldn't reach", self.frag(self.with_arr("ok", "off")))
+        for state in ("short", "empty"):
+            view = self.with_arr("error", "error", sview(state, q="x"))
+            self.assertNotIn("Couldn't reach", self.frag(view, q="x"))
+
+
+class TestAddKeepsFocus(unittest.TestCase):
+    def test_add_handler_refocuses_the_kept_card(self):
+        js = read_static("app.js")
+        add = js[js.index("    add: function"):js.index("    refresh: function")]
+        self.assertIn("markAdded(card)", add)
+        self.assertIn("focusCard(kept[0])", add)
+        self.assertIn("function focusCard", js)
