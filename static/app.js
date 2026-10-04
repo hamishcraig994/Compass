@@ -1007,20 +1007,67 @@
   }
 
   /* Hover preview: one shared element, a mouse-only shortcut to the card's actions. */
-  var preview = null, previewCard = null, lastPreviewCard = null, openTimer = null, closeTimer = null;
+  var PREVIEW_OPEN_MS = 350;      // pointer must settle this long before the first preview
+  var PREVIEW_OPEN_MAX_MS = 700;  // ...but never wait longer than this in total
+  var PREVIEW_MOVE_PX = 5;        // movement beyond this re-arms the open timer
+  var PREVIEW_SWITCH_MS = 120;    // card to card while a preview is open
+  var PREVIEW_CLOSE_MS = 150;     // leaving to empty space
+  var PREVIEW_MOVING_MS = 200;    // length of the left/top transition
+  var SVG_NS = "ht" + "tp://www.w3.org/2000/svg";  // split so the no-external-URLs check stays strict
+  var PREVIEW_CARD = ".row-card[data-card], [data-preview]";
+  var PREVIEW_ICONS = { open: "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5", plus: "M12 5v14M5 12h14", cross: "M6 6l12 12M18 6L6 18", chevron: "M6 9l6 6 6-6" };
+  var preview = null, previewCard = null, lastPreviewCard = null;
+  var openTimer = null, closeTimer = null, movingTimer = null;
+  var intentCard = null, intentStart = 0, intentX = 0, intentY = 0;
 
-  function closePreview() {
+  function previewIcon(name) {
+    var svg = doc.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "preview-icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2.4");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    var path = doc.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", PREVIEW_ICONS[name]);
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function setIcon(node, name) {
+    node.textContent = "";
+    node.appendChild(previewIcon(name));
+  }
+
+  function clearPreviewTimers() {
     clearTimeout(openTimer);
     clearTimeout(closeTimer);
     openTimer = closeTimer = null;
-    if (preview) preview.classList.remove("is-open");
+    intentCard = null;
+  }
+
+  function closePreview() {
+    clearPreviewTimers();
+    clearTimeout(movingTimer);
+    movingTimer = null;
+    if (preview) preview.classList.remove("is-open", "is-moving");
     previewCard = null;
   }
 
   function scheduleClose() {
+    clearPreviewTimers();
+    closeTimer = setTimeout(closePreview, PREVIEW_CLOSE_MS);
+  }
+
+  /* Hover intent: open after the pointer settles; switch quickly when a preview is already open. */
+  function armOpen(card) {
     clearTimeout(openTimer);
-    clearTimeout(closeTimer);
-    closeTimer = setTimeout(closePreview, 150);
+    var wait = previewCard ? PREVIEW_SWITCH_MS
+      : Math.max(0, Math.min(PREVIEW_OPEN_MS, PREVIEW_OPEN_MAX_MS - (Date.now() - intentStart)));
+    openTimer = setTimeout(function () { openTimer = null; intentCard = null; openPreview(card); }, wait);
   }
 
   function previewButton(node, label, primary) {
@@ -1035,7 +1082,7 @@
     if (!doc.contains(card) || (modal && modal.open) || !finePointer()) return;
     if (!preview) {
       preview = el("div", { className: "preview", "aria-hidden": "true" });
-      preview.addEventListener("mouseenter", function () { clearTimeout(closeTimer); closeTimer = null; });
+      preview.addEventListener("mouseenter", function () { clearTimeout(closeTimer); closeTimer = null; clearTimeout(openTimer); openTimer = null; intentCard = null; });
       preview.addEventListener("mouseleave", function (e) {
         if (!(previewCard && e.relatedTarget && previewCard.contains(e.relatedTarget))) scheduleClose();
       });
@@ -1045,63 +1092,128 @@
       });
       doc.body.appendChild(preview);
     }
-    clearTimeout(closeTimer);
-    closeTimer = null;
+    clearPreviewTimers();
+    var wasOpen = preview.classList.contains("is-open") && !!previewCard;
     previewCard = lastPreviewCard = card;
-    preview.textContent = "";
+
+    // Build the new content off-screen first, then swap it in one go.
+    var frag = doc.createDocumentFragment();
     var art = card.querySelector(".card-poster .poster");
     if (art) {
       var posterBox = el("div", { className: "preview-poster" }, [art.cloneNode(true)]);
-      posterBox.addEventListener("click", function () { openDetail(card, card.querySelector("[data-open-detail]")); });
-      preview.appendChild(posterBox);
+      posterBox.addEventListener("click", function () { if (!card.hasAttribute("data-preview")) openDetail(card, card.querySelector("[data-open-detail]")); });
+      frag.appendChild(posterBox);
     }
 
+    var isLibrary = card.hasAttribute("data-preview");
     var actions = el("div", { className: "preview-actions" });
-    var add = card.querySelector("a[data-add-dialog]");
-    if (add) {
-      var addCopy = previewButton(add.cloneNode(true), "Add to library", true);
-      addCopy.classList.remove("btn-add");
-      addCopy.setAttribute("title", "Add to library");
-      addCopy.textContent = "\uFF0B";
-      actions.appendChild(addCopy);
-    }
-    var dismissForm = card.querySelector("form[data-enhance=dismiss]");
-    if (dismissForm) {
-      var formCopy = dismissForm.cloneNode(true);
-      var formButton = formCopy.querySelector("button");
-      if (formButton) {
-        previewButton(formButton, "Not interested", false);
-        formButton.setAttribute("title", "Not interested");
-        formButton.textContent = "\u2715";
+    var body;
+    if (!isLibrary) {
+      var add = card.querySelector("a[data-add-dialog]");
+      if (add) {
+        var addCopy = previewButton(add.cloneNode(true), "Add to library", true);
+        addCopy.classList.remove("btn-add");
+        addCopy.setAttribute("title", "Add to library");
+        setIcon(addCopy, "plus");
+        actions.appendChild(addCopy);
       }
-      actions.appendChild(formCopy);
-    }
-    var rateForm = card.querySelector("form[data-enhance=rate]");
-    if (rateForm) {
-      var rateCopy = rateForm.cloneNode(true);
-      rateCopy.classList.add("preview-rate");
-      Array.prototype.forEach.call(rateCopy.querySelectorAll("button"), function (b) { b.setAttribute("tabindex", "-1"); });
-      var rateText = rateCopy.querySelector(".rating-text");
-      if (rateText) rateText.parentNode.removeChild(rateText);
-      actions.appendChild(rateCopy);
-    }
-    var more = previewButton(el("button", { type: "button", title: "More info", text: "\u2304" }), "More info", false);
-    more.addEventListener("click", function () {
-      openDetail(card, card.querySelector("[data-open-detail]"));
-    });
-    actions.appendChild(more);
+      var dismissForm = card.querySelector("form[data-enhance=dismiss]");
+      if (dismissForm) {
+        var formCopy = dismissForm.cloneNode(true);
+        var formButton = formCopy.querySelector("button");
+        if (formButton) {
+          previewButton(formButton, "Not interested", false);
+          formButton.setAttribute("title", "Not interested");
+          setIcon(formButton, "cross");
+        }
+        actions.appendChild(formCopy);
+      }
+      var rateForm = card.querySelector("form[data-enhance=rate]");
+      if (rateForm) {
+        var rateCopy = rateForm.cloneNode(true);
+        rateCopy.classList.add("preview-rate");
+        Array.prototype.forEach.call(rateCopy.querySelectorAll("button"), function (b) { b.setAttribute("tabindex", "-1"); });
+        var rateText = rateCopy.querySelector(".rating-text");
+        if (rateText) rateText.parentNode.removeChild(rateText);
+        actions.appendChild(rateCopy);
+      }
+      var more = previewButton(el("button", { type: "button", title: "More info" }), "More info", false);
+      setIcon(more, "chevron");
+      more.addEventListener("click", function () {
+        openDetail(card, card.querySelector("[data-open-detail]"));
+      });
+      actions.appendChild(more);
 
-    var body = el("div", { className: "preview-body" }, [actions]);
-    [".card-meta", ".chips", ".reason"].forEach(function (selector) {
-      var source = card.querySelector(selector);
-      if (source) body.appendChild(source.cloneNode(true));
-    });
-    preview.appendChild(body);
+      body = el("div", { className: "preview-body" }, [actions]);
+      [".card-meta", ".chips", ".reason"].forEach(function (selector) {
+        var source = card.querySelector(selector);
+        if (source) body.appendChild(source.cloneNode(true));
+      });
+    
+    } else {
+      var titleLink = card.querySelector(".title a[href]");
+      var rateLib = card.querySelector("form[data-enhance=rate]");
+      if (rateLib) {
+        var rateClone = rateLib.cloneNode(true);
+        rateClone.classList.add("preview-rate");
+        Array.prototype.forEach.call(rateClone.querySelectorAll("button"), function (b) { b.setAttribute("tabindex", "-1"); });
+        var rateTextLib = rateClone.querySelector(".rating-text");
+        if (rateTextLib) rateTextLib.parentNode.removeChild(rateTextLib);
+        actions.appendChild(rateClone);
+      }
+      var titleNode = card.querySelector(".title");
+      var titleText = titleNode ? titleNode.textContent : "";
+      if (titleLink) {
+        var openLink = previewButton(el("a", { href: titleLink.href, target: "_blank", title: "Open " + titleText }), "Open " + titleText, false);
+        openLink.setAttribute("rel", "noopener noreferrer");
+        openLink.classList.add("preview-open");
+        openLink.appendChild(previewIcon("open"));
+        actions.appendChild(openLink);
+        if (frag.firstChild) {
+          frag.firstChild.addEventListener("click", function () { window.open(titleLink.href, "_blank", "noopener,noreferrer"); });
+        }
+      }
+      body = el("div", { className: "preview-body" });
+      body.appendChild(el("div", { className: "preview-title", text: titleText }));
+      var subNode = card.querySelector(".card-sub");
+      if (subNode && subNode.textContent) body.appendChild(el("div", { className: "preview-sub", text: subNode.textContent }));
+      var badgeNode = card.querySelector(".badges");
+      if (badgeNode && badgeNode.children.length) {
+        var badgeClone = badgeNode.cloneNode(true);
+        badgeClone.classList.add("preview-badges");
+        body.appendChild(badgeClone);
+      }
+      var srcNode = card.querySelector(".card-sources");
+      if (srcNode) {
+        var srcClone = srcNode.cloneNode(true);
+        srcClone.classList.add("preview-sources");
+        body.appendChild(srcClone);
+      }
+      body.insertBefore(actions, body.firstChild);
+    }
+    frag.appendChild(body);
 
+    preview.classList.toggle("is-library", isLibrary);
+    var animate = wasOpen && !reduceMotion;
+    clearTimeout(movingTimer);
+    movingTimer = null;
+    if (!animate) preview.classList.remove("is-moving");
+    if (preview.replaceChildren) preview.replaceChildren(frag);
+    else { preview.textContent = ""; preview.appendChild(frag); }
+
+    // Anchor to the card: centred on it, poster starting at the card's top edge, clamped to the viewport.
     var rect = card.getBoundingClientRect();
     var width = preview.offsetWidth || 320, height = preview.offsetHeight || 300;
     var left = Math.max(8, Math.min(window.innerWidth - width - 8, rect.left + rect.width / 2 - width / 2));
-    var top = Math.max(8, Math.min(window.innerHeight - height - 8, rect.top - 12));
+    var top = Math.max(8, Math.min(window.innerHeight - height - 8, rect.top));
+    var scale = Math.max(0.5, Math.min(1, rect.width / width));
+    preview.style.setProperty("--from-scale", String(Math.round(scale * 1000) / 1000));
+    preview.style.setProperty("--origin-x", Math.round(rect.left + rect.width / 2 - left) + "px");
+    preview.style.setProperty("--origin-y", Math.round(rect.top + rect.height / 2 - top) + "px");
+    if (animate) {
+      preview.classList.add("is-moving");
+      movingTimer = setTimeout(function () { movingTimer = null; if (preview) preview.classList.remove("is-moving"); }, PREVIEW_MOVING_MS);
+    }
     preview.style.left = left + "px";
     preview.style.top = top + "px";
     preview.classList.add("is-open");
@@ -1109,16 +1221,32 @@
 
   if (finePointer()) {
     doc.addEventListener("mouseover", function (e) {
-      var card = e.target.closest ? e.target.closest(".row-card[data-card]") : null;
+      var card = e.target.closest ? e.target.closest(PREVIEW_CARD) : null;
       if (!card || card.closest("dialog") || card.classList.contains("is-leaving")) return;
       clearTimeout(closeTimer);
       closeTimer = null;
-      if (card === previewCard) return;
-      clearTimeout(openTimer);
-      openTimer = setTimeout(function () { openPreview(card); }, 400);
+      if (card === previewCard) {
+        clearTimeout(openTimer);  // pointer came back to the open card: cancel any pending switch
+        openTimer = null;
+        intentCard = null;
+        return;
+      }
+      if (card === intentCard) return;
+      intentCard = card;
+      intentStart = Date.now();
+      intentX = e.clientX;
+      intentY = e.clientY;
+      armOpen(card);
     });
+    doc.addEventListener("mousemove", function (e) {
+      if (!intentCard || previewCard || !openTimer) return;  // only the first open waits for the pointer to settle
+      if (Math.abs(e.clientX - intentX) + Math.abs(e.clientY - intentY) <= PREVIEW_MOVE_PX) return;
+      intentX = e.clientX;
+      intentY = e.clientY;
+      armOpen(intentCard);
+    }, { passive: true });
     doc.addEventListener("mouseout", function (e) {
-      var card = e.target.closest ? e.target.closest(".row-card[data-card]") : null;
+      var card = e.target.closest ? e.target.closest(PREVIEW_CARD) : null;
       if (!card || card.contains(e.relatedTarget) || (preview && e.relatedTarget && preview.contains(e.relatedTarget))) return;
       scheduleClose();
     });

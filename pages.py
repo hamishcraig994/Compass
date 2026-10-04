@@ -147,7 +147,7 @@ def _library_card(item, show_added=False):
         sub = f'Added {escape((item.get("added_at") or "")[:10] or "unknown date")}'
     else:
         sub = escape(str(item["year"])) if item.get("year") else ""
-    return (f'<article class="card"><div class="card-poster">{_poster_html(item)}{top}'
+    return (f'<article class="card" data-preview><div class="card-poster">{_poster_html(item)}{top}'
             f'<span class="kind">{kind}</span></div>'
             f'<div class="card-info"><h3 class="title">{title}</h3>'
             f'<p class="card-sub">{sub}</p>{src_line}</div></article>')
@@ -196,7 +196,7 @@ def _watched_card(item, return_to):
     form = (f'<form class="rate" method="post" action="/rate" data-enhance="rate">{_hidden_fields(item, return_to)}'
             f'<div class="stars" role="group" aria-label="Your rating for {escape(title_text, quote=True)}">{stars}</div>'
             f'<p class="rating-text">{text}</p>{clear}</form>')
-    return (f'<article class="card" data-card="{_card_key(item)}"><div class="card-poster">{_poster_html(item)}'
+    return (f'<article class="card" data-card="{_card_key(item)}" data-preview><div class="card-poster">{_poster_html(item)}'
             f'<span class="kind">{kind}</span></div>'
             f'<div class="card-info"><h3 class="title">{title_html}</h3><p class="card-sub">{sub}</p>{form}</div></article>')
 

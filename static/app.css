@@ -1068,38 +1068,66 @@ html.has-dialog .row-card .card-details { display: none; }
 
 /* ---------- Hover preview (one shared element; mouse-only shortcut) ---------- */
 .preview {
-  display: none; position: fixed; left: 0; top: 0; z-index: 55; width: 320px; max-width: calc(100vw - 16px);
+  display: none; position: fixed; left: 0; top: 0; z-index: 55; width: 340px; max-width: calc(100vw - 16px);
   overflow: hidden; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); color: var(--text);
-  box-shadow: var(--shadow); opacity: 0; visibility: hidden; pointer-events: none;
-  transform: scale(.96); transform-origin: top center;
-  transition: opacity .15s ease, transform .15s ease, visibility 0s .15s;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .28), var(--shadow); opacity: 0; visibility: hidden; pointer-events: none;
+  /* JS sets --from-scale (card width / preview width) and --origin-x/-y (card centre inside the preview) */
+  transform: scale(var(--from-scale, .92)); transform-origin: var(--origin-x, 50%) var(--origin-y, 0);
+  /* closing: quick fade, visibility flips after the fade so it never intercepts the mouse while hidden */
+  transition: opacity .12s ease, visibility 0s .12s;
 }
 @media (hover: hover) and (pointer: fine) {
   .preview { display: block; }
 }
-.preview.is-open { opacity: 1; visibility: visible; pointer-events: auto; transform: none; transition: opacity .15s ease, transform .15s ease, visibility 0s; }
+.preview.is-open {
+  opacity: 1; visibility: visible; pointer-events: auto; transform: none;
+  transition: transform .2s cubic-bezier(.2, .8, .2, 1), opacity .14s ease, visibility 0s;
+}
+/* Switching an open preview to the adjacent card: glide, no re-scale */
+.preview.is-open.is-moving {
+  transition: left .18s ease, top .18s ease, opacity .14s ease, visibility 0s;
+}
 .preview-poster {
   display: block; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: var(--surface-2); object-fit: cover; object-position: center 25%;
 }
 .preview-poster img, .preview-poster .poster-empty { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center 25%; }
 .preview-body { display: grid; gap: 10px; padding: 14px; }
-.preview-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
-.preview-actions form { margin: 0; display: inline; }
+/* One row, never wraps: [Add] [Not interested] [stars] ........ [More info]. Sample mode: [stars] ........ [More info] */
+.preview-actions { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; min-height: 36px; }
+.preview-actions > *, .preview-actions form { display: flex; align-items: center; margin: 0; padding: 0; }
 .preview-actions > :last-child { margin-left: auto; }
 .preview-btn {
-  min-width: 40px; min-height: 40px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--muted);
-  background: var(--surface-2); color: var(--text); font-size: .88rem; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; flex: none; box-sizing: border-box;
+  width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0; margin: 0; border-radius: 999px;
+  border: 1px solid var(--muted); background: var(--surface-2); color: var(--text);
+  font: inherit; font-size: .88rem; font-weight: 700; line-height: 1; text-decoration: none; cursor: pointer;
 }
+.preview-btn:hover { border-color: var(--text); }
 .preview-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .preview-btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-.preview-btn { flex: none; }
-/* Compact icon buttons (+ x v): 36px circles */
-.preview-actions .preview-btn { width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0; font-size: 1.1rem; line-height: 1; }
-/* Cloned rate form: compact stars; the row wraps rather than clips */
-.preview-actions .preview-rate { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px; }
-.preview-rate .stars { margin: 0; }
-.preview-rate .star { flex: 0 0 24px; width: 24px; min-width: 24px; height: 32px; min-height: 32px; font-size: 1.2rem; }
+.preview-btn:focus-visible { outline: 3px solid var(--focus, var(--accent)); outline-offset: 2px; }
+.preview-icon { display: block; flex: none; width: 18px; height: 18px; pointer-events: none; }
+/* Cloned rate form: same 36px row and centre axis as the circles */
+.preview-actions .preview-rate { flex: none; min-width: 0; height: 36px; display: flex; align-items: center; gap: 0; }
+.preview-rate .stars { display: flex; align-items: center; height: 36px; margin: 0; padding: 0; gap: 0; }
+.preview-rate .star {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 26px; width: 26px; min-width: 26px;
+  height: 36px; min-height: 36px; padding: 0; margin: 0; font-size: 1.2rem; line-height: 1;
+}
 .preview-rate .rating-text, .preview-rate .star-clear { display: none; }
+/* Library variant (.is-library): title, muted sub line, wrapping chips, [stars ... Open] */
+.preview.is-library .preview-poster img, .preview.is-library .preview-poster .poster-empty { object-position: center 38%; }
+.preview-title {
+  margin: 0; font-size: 1.02rem; font-weight: 700; line-height: 1.25; color: var(--text); overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+.preview-sub { margin: -4px 0 0; font-size: .8rem; line-height: 1.3; color: var(--muted); }
+.preview-badges, .preview-sources { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0; min-width: 0; }
+.preview-badges:empty, .preview-sources:empty, .preview-sub:empty { display: none; }
+.preview-badges .badges { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 4px 6px; }
+.preview-sources.card-sources, .preview-sources .card-sources { margin: 0; }
+.preview-open { text-decoration: none; }
+.preview-actions .preview-open { margin-left: auto; }
 .preview .card-meta { font-size: .8rem; }
 .preview .reason { margin: 0; font-size: .84rem; font-weight: 500; color: var(--muted); }
 
@@ -1178,6 +1206,6 @@ body.cinematic .top.browse-top {
   .row-card:hover { transform: none; }
   .hero-dot.on::after { animation: none; transform: none; }
   .hero-slide, .hero-slide:not(.on) { transition: none; }
-  .preview, .preview.is-open { transform: none; transition: none; }
+  .preview, .preview.is-open, .preview.is-open.is-moving { transform: none; transition: none; }
   .search-results-region, .topbar-search { transition: none; }
 }

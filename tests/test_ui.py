@@ -426,6 +426,21 @@ class TestLibraryPage(PatchedState):
         self.assertIn("Nothing matches", none)
         self.assertIn('href="/library?type=all"', none)
 
+    def test_library_cards_have_a_preview_hook(self):
+        for tab, maker in (("all", self.lib), ("added", self.lib)):
+            html = self.render([maker()], tab=tab)
+            cards = re.findall(r'<article class="card"[^>]*>', html)
+            self.assertTrue(cards, tab)
+            for tag in cards:
+                self.assertIn("data-preview", tag)
+                self.assertNotIn("data-card", tag)
+        html = self.render([self.wat()], tab="watched")
+        tags = re.findall(r'<article class="card"[^>]*>', html)
+        self.assertTrue(tags)
+        for tag in tags:
+            self.assertIn("data-card=", tag)
+            self.assertIn("data-preview", tag)
+
     def test_added_tab_needs_no_build(self):
         self.use(None, st=status("building", has_result=False))
         html = web.render_library(tab="added")
@@ -761,13 +776,41 @@ class TestBrowseRate(PatchedState):
     def test_js_preview_icons_poster_click_and_focus_rules(self):
         js = read_static("app.js")
         body = js[js.index("function openPreview"):]
-        for needle in ('title: "More info"', '"Not interested"', "\\u2715", "\\uFF0B", "openDetail(card, card.querySelector"):
+        for needle in ('title: "More info"', '"Not interested"', "setIcon(more, \"chevron\")", "openDetail(card, card.querySelector"):
             self.assertIn(needle, body)
         self.assertIn("closeFallback: true", js)
         self.assertIn("main .row:not([hidden])", js)
         self.assertIn("override", js)
         self.assertIn("inSlide(e.target)", js)
         self.assertIn("lastPreviewCard", js)
+
+    def test_js_preview_hover_intent_icons_and_anchoring(self):
+        js = read_static("app.js")
+        start = js.index("Hover preview: one shared element")
+        section = js[start:js.index("Cinematic top bar")]
+        self.assertEqual(js.count("innerHTML"), 1)
+        self.assertIn("createElementNS", section)
+        for path in ("M12 5v14M5 12h14", "M6 6l12 12M18 6L6 18", "M6 9l6 6 6-6"):
+            self.assertIn(path, section)
+        for glyph in ("\\uFF0B", "\\u2715", "\\u2304", "\uFF0B", "\u2715", "\u2304"):
+            self.assertNotIn(glyph, section)
+        for needle in ("is-moving", "--from-scale", "--origin-x", "--origin-y", "preview-icon", "createDocumentFragment"):
+            self.assertIn(needle, section)
+        for const in ("PREVIEW_OPEN_MS = 350", "PREVIEW_OPEN_MAX_MS = 700", "PREVIEW_MOVE_PX = 5",
+                      "PREVIEW_SWITCH_MS = 120", "PREVIEW_CLOSE_MS = 150"):
+            self.assertIn(const, section)
+        self.assertIn("rect.top)", section)
+        self.assertRegex(section, r"mousemove")
+
+    def test_js_preview_covers_library_cards(self):
+        js = read_static("app.js")
+        self.assertIn('".row-card[data-card], [data-preview]"', js)
+        self.assertEqual(js.count("closest(PREVIEW_CARD)"), 2)
+        section = js[js.index("Hover preview: one shared element"):js.index("Cinematic top bar")]
+        for needle in ("is-library", "preview-open", "preview-title", "preview-sub", "preview-badges",
+                       "preview-sources", 'previewIcon("open")', "M14 4h6v6M20 4l-9 9"):
+            self.assertIn(needle, section)
+        self.assertEqual(js.count("innerHTML"), 1)
 
     def test_js_preview_rate_order_and_handler(self):
         js = read_static("app.js")
