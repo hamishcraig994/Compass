@@ -9,7 +9,7 @@ description: Pre-deploy verification, deploy steps and rollback notes for Compas
 
 ## Where it runs
 - arr VM (192.168.1.100), Docker managed through **Portainer**. Container `compass` (was `whatsnext`), image `compass:latest` (was `whatsnext:latest`), host port **8091** -> 8080 (8090 is grocery-compare, 8080 is sabnzbd).
-- Data in the existing named volume `whatsnext_data` (docker-compose.yml keeps it under the new `compass_data` key via `name: whatsnext_data`) mounted at `/app/data` (TMDB cache, settings, "not interested", added log) - survives redeploys.
+- Data in the existing named volume `my_apps_whatsnext_data` (the stack is called `my_apps`, so Compose prefixed the name; docker-compose.yml keeps it under the new `compass_data` key via `name: my_apps_whatsnext_data`) mounted at `/app/data` (TMDB cache, settings, "not interested", added log) - survives redeploys.
 - Healthcheck: `GET /health` (Dockerfile `HEALTHCHECK`). The container runs as uid 1000, `no-new-privileges`, all caps dropped (docker-compose.yml).
 - Not behind the gluetun VPN - it needs the LAN (Plex at 192.168.1.102:32400) and the internet (TMDB).
 
@@ -31,7 +31,8 @@ description: Pre-deploy verification, deploy steps and rollback notes for Compas
 ## First redeploy after the Compass rename (one-off - read before deploying)
 The rename changes the image (`compass:latest`), the service/container (`compass`), the database file and the theme cookie. Nothing is deployed until Hamish says so. When he does:
 1. **Port 8091 is taken by the old `whatsnext` container.** Stop and remove it (or remove the old stack) before the new `compass` container starts, or the port bind fails. Keep the old image (`whatsnext:latest`) until the new one is confirmed healthy - it is the only rollback.
-2. **Data is kept.** The compose file maps the new `compass_data` key onto the existing volume `whatsnext_data`, so the old data is still there. On first start `db.py` renames `whatsnext.db` (and any -wal/-shm files) to `compass.db` inside that volume.
+2. **Data is kept.** The compose file maps the new `compass_data` key onto the existing volume `my_apps_whatsnext_data`, so the old data is still there. On first start `db.py` renames `whatsnext.db` (and any -wal/-shm files) to `compass.db` inside that volume.
 3. **Rollback caveat.** The old image looks for `whatsnext.db`. To roll back after the new container has run, first rename `compass.db` back to `whatsnext.db` in the volume (or restore the pre-deploy copy). Take a copy of the volume's `whatsnext.db` before the first Compass start.
 4. Saved themes reset once (cookie renamed `wn_theme` -> `compass_theme`); pick again on Settings -> Appearance.
 5. The GitHub repo is still `hamishcraig994/WhatsNext` and the deploy key is still `~/.ssh/whatsnextgithub` - renaming the repo is separate and not done.
+6. **The stack is `my_apps`, which may hold other services.** Before pasting the Compass compose file over it in Portainer, open the stack's current compose and change only the `whatsnext` service (rename to `compass`, image `compass:latest`, `container_name: compass`, volume key `compass_data` with `name: my_apps_whatsnext_data`). Replacing the whole stack with this repo's file would remove any other services in it. Confirm the real volume name in Portainer -> Volumes before the first start; a wrong `name:` silently creates a new empty volume.

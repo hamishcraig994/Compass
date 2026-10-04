@@ -24,6 +24,8 @@ services:
 
 volumes:
   compass_data:
-    # Keep the pre-rename volume name so the existing data (dismissed list, ratings, settings) is reused
-    # on redeploy. Compass renames whatsnext.db to compass.db inside it on first start.
-    name: whatsnext_data
+    # Reuse the existing volume so the data (dismissed list, ratings, settings) survives the rename. On the
+    # arr VM the old stack is called my_apps, so Compose created it as my_apps_whatsnext_data. If you deploy
+    # under a different stack name, check Portainer -> Volumes and set this to the real name. Compass renames
+    # whatsnext.db to compass.db inside it on first start.
+    name: my_apps_whatsnext_data
