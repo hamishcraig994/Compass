@@ -21,7 +21,7 @@ description: Pre-deploy verification, deploy steps and rollback notes for Compas
 5. Note any DB schema change - migrations run on first use against the live volume and must be safe to re-run.
 
 ## Deploy (Hamish, in Portainer)
-1. Images -> Build a new image -> URL `https://github.com/hamishcraig994/WhatsNext.git` (**the `.git` suffix is required**; without it Docker fetches the HTML page and fails with an unsupported Content-Type) -> name `compass:latest`.
+1. Images -> Build a new image -> URL `https://github.com/hamishcraig994/Compass.git` (**the `.git` suffix is required**; without it Docker fetches the HTML page and fails with an unsupported Content-Type) -> name `compass:latest`.
 2. Stacks -> the existing stack (rename optional) -> Update the stack with the new compose file (service `compass`) with **"Re-pull image" OFF** (the image is local), or recreate the container.
 3. Verify: container healthy; `http://192.168.1.100:8091/health` returns `ok`; open the page. **The first load after a restart takes 1-2 minutes** (cold TMDB cache) - the "Finding your recommendations..." screen is expected.
 
@@ -34,5 +34,5 @@ The rename changes the image (`compass:latest`), the service/container (`compass
 2. **Data is kept.** The compose file maps the new `compass_data` key onto the existing volume `my_apps_whatsnext_data`, so the old data is still there. On first start `db.py` renames `whatsnext.db` (and any -wal/-shm files) to `compass.db` inside that volume.
 3. **Rollback caveat.** The old image looks for `whatsnext.db`. To roll back after the new container has run, first rename `compass.db` back to `whatsnext.db` in the volume (or restore the pre-deploy copy). Take a copy of the volume's `whatsnext.db` before the first Compass start.
 4. Saved themes reset once (cookie renamed `wn_theme` -> `compass_theme`); pick again on Settings -> Appearance.
-5. The GitHub repo is still `hamishcraig994/WhatsNext` and the deploy key is still `~/.ssh/whatsnextgithub` - renaming the repo is separate and not done.
+5. The GitHub repo is now `hamishcraig994/Compass` (GitHub redirects the old name, but use the new URL in Portainer). The deploy key file is still named `~/.ssh/whatsnextgithub`; that is only a file name and works unchanged.
 6. **The stack is `my_apps`, which may hold other services.** Before pasting the Compass compose file over it in Portainer, open the stack's current compose and change only the `whatsnext` service (rename to `compass`, image `compass:latest`, `container_name: compass`, volume key `compass_data` with `name: my_apps_whatsnext_data`). Replacing the whole stack with this repo's file would remove any other services in it. Confirm the real volume name in Portainer -> Volumes before the first start; a wrong `name:` silently creates a new empty volume.
