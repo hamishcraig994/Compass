@@ -1,6 +1,7 @@
 """arr_library: pure helpers (poster URL rules, title matching, merging Radarr/Sonarr into the Plex
 snapshot, search-result statuses). No I/O."""
 import copy
+from datetime import date
 import os
 import sys
 import unittest
@@ -163,6 +164,138 @@ class TestAnnotate(unittest.TestCase):
         out = al.annotate(items, plex_items=[plex(1)])
         self.assertEqual(items, before)
         self.assertIsNot(out[0], items[0])
+
+
+class TestFind(unittest.TestCase):
+    def test_tmdb_match_first(self):
+        items = [arr(None, "Dune", tvdb_id=None), arr(5, "Dune"), arr(6, "Other")]
+        self.assertIs(al.find(items, "movie", 5), items[1])
+
+    def test_tvdb_match_for_tv_only(self):
+        show = arr(None, "Show", "tv", tvdb_id=77)
+        self.assertIs(al.find([show], "tv", 999, tvdb_id=77), show)
+        movie = arr(None, "Film", tvdb_id=77)
+        self.assertIsNone(al.find([movie], "movie", 999, tvdb_id=77))
+
+    def test_title_fallback_only_for_arr_items_without_a_tmdb_id(self):
+        keyless = arr(None, "Low Tide", "tv", 2025)
+        self.assertIs(al.find([keyless], "tv", 1, title="low tide!", year=2025), keyless)
+        self.assertIsNone(al.find([keyless], "tv", 1, title="Low Tide", year=1999))
+        self.assertIsNone(al.find([arr(9, "Low Tide", "tv", 2025)], "tv", 1, title="Low Tide", year=2025))
+        self.assertIsNone(al.find([keyless], "movie", 1, title="Low Tide"))
+        self.assertIsNone(al.find([keyless], "tv", 1))
+        self.assertIsNone(al.find(None, "tv", 1))
+
+
+def aseason(n, monitored=True, have=0, total=0):
+    return {"number": n, "monitored": monitored, "have": have, "total": total}
+
+
+class TestSeasonRows(unittest.TestCase):
+    today = date(2026, 10, 10)
+
+    def tm(self, n, episodes=8, air="2020-01-01", name=None):
+        return {"number": n, "name": name or f"S{n}", "episodes": episodes, "air_date": air, "poster_url": None}
+
+    def rows(self, tmdb, seasons=None, tracked=True):
+        item = arr(1, "Show", "tv", seasons=seasons) if tracked else None
+        return {r["number"]: r for r in al.season_rows(tmdb, item, self.today)}
+
+    def test_untracked_series_has_no_arr_data_and_everything_is_selectable(self):
+        rows = self.rows([self.tm(0), self.tm(1), self.tm(2)], tracked=False)
+        self.assertEqual(sorted(rows), [1, 2])          # specials hidden
+        r = rows[1]
+        self.assertEqual((r["monitored"], r["have"], r["total"], r["state"], r["requested"], r["selectable"]),
+                         (None, None, None, None, False, True))
+        self.assertEqual((r["name"], r["episodes"], r["air_date"]), ("S1", 8, "2020-01-01"))
+
+    def test_every_state(self):
+        seasons = [aseason(1, True, 8, 8), aseason(2, True, 3, 8), aseason(3, False, 0, 8), aseason(4, True, 0, 8),
+                   aseason(5, True, 0, 8), aseason(6, True, 0, 8)]
+        tmdb = [self.tm(1), self.tm(2), self.tm(3), self.tm(4), self.tm(5, air="2027-01-01"), self.tm(6, air=None)]
+        rows = self.rows(tmdb, seasons)
+        self.assertEqual({n: rows[n]["state"] for n in rows},
+                         {1: "available", 2: "partial", 3: "unmonitored", 4: "missing", 5: "upcoming", 6: "upcoming"})
+        self.assertEqual((rows[1]["requested"], rows[1]["selectable"]), (True, False))
+        self.assertEqual((rows[3]["requested"], rows[3]["selectable"], rows[3]["monitored"]), (False, True, False))
+        self.assertEqual((rows[2]["have"], rows[2]["total"]), (3, 8))
+
+    def test_complete_beats_unmonitored_and_partial_beats_unmonitored(self):
+        rows = self.rows([self.tm(1), self.tm(2)], [aseason(1, False, 8, 8), aseason(2, False, 2, 8)])
+        self.assertEqual((rows[1]["state"], rows[2]["state"]), ("available", "partial"))
+
+    def test_union_of_tmdb_and_arr_numbers(self):
+        rows = self.rows([self.tm(1), self.tm(2)], [aseason(2, True, 0, 6), aseason(3, True, 0, 4), aseason(0)])
+        self.assertEqual(sorted(rows), [1, 2, 3])
+        self.assertIsNone(rows[1]["state"])             # TMDB only: not in the arr data
+        self.assertIsNone(rows[1]["monitored"])
+        self.assertTrue(rows[1]["selectable"])          # tracked series, but this season isn't requested
+        self.assertEqual((rows[3]["name"], rows[3]["episodes"], rows[3]["air_date"]), ("Season 3", 4, None))
+        self.assertEqual(rows[3]["state"], "upcoming")  # no air date known
+        self.assertEqual(rows[2]["episodes"], 8)        # TMDB's count wins
+
+    def test_episode_fallback_when_tmdb_has_none(self):
+        rows = self.rows([self.tm(1, episodes=0)], [aseason(1, True, 0, 5)])
+        self.assertEqual(rows[1]["episodes"], 5)
+        self.assertIsNone(self.rows([self.tm(1, episodes=0)], tracked=False)[1]["episodes"])
+
+    def test_arr_without_a_seasons_list_and_inputs_untouched(self):
+        tmdb = [self.tm(1)]
+        before = copy.deepcopy(tmdb)
+        rows = al.season_rows(tmdb, arr(1, "Show", "tv", seasons=None), self.today)
+        self.assertEqual(rows[0]["state"], None)
+        self.assertEqual(tmdb, before)
+        self.assertEqual(al.season_rows(None, None, self.today), [])
+
+
+class TestRequestState(unittest.TestCase):
+    def entry(self, seasons=None):
+        return {"media_type": "tv", "tmdb_id": 1, "title": "Show", "seasons": seasons}
+
+    def test_no_arr_item(self):
+        self.assertEqual(al.request_state(self.entry(), None, False), ("requested", None))
+        self.assertEqual(al.request_state(self.entry(), None, True), ("available", None))
+
+    def test_movie_states(self):
+        for arr_state, want in (("downloaded", "available"), ("missing", "processing"), ("upcoming", "upcoming"),
+                                ("unmonitored", "unmonitored")):
+            got = al.request_state({"media_type": "movie"}, arr(1, state=arr_state), False)
+            self.assertEqual(got, (want, None))
+
+    def test_in_plex_does_not_override_an_arr_item(self):
+        self.assertEqual(al.request_state({"media_type": "movie"}, arr(1, state="missing"), True)[0], "processing")
+
+    def test_tv_whole_series_states(self):
+        eps = {"have": 3, "total": 10}
+        show = lambda state: arr(1, "Show", "tv", state=state, episodes=eps)
+        self.assertEqual(al.request_state(self.entry(), show("partial"), False), ("partial", eps))
+        self.assertEqual(al.request_state(self.entry("all"), show("downloaded"), False), ("available", eps))
+        self.assertEqual(al.request_state(self.entry(), show("missing"), False)[0], "processing")
+        self.assertEqual(al.request_state(self.entry(), show("upcoming"), False)[0], "upcoming")
+        self.assertEqual(al.request_state(self.entry(), show("unmonitored"), False)[0], "unmonitored")
+
+    def pick_show(self, state="partial"):
+        return arr(1, "Show", "tv", state=state, episodes={"have": 8, "total": 20},
+                   seasons=[aseason(1, True, 8, 8), aseason(2, True, 0, 6), aseason(3, True, 0, 6)])
+
+    def test_tv_pick_complete_is_available_even_if_the_series_is_partial(self):
+        self.assertEqual(al.request_state(self.entry([1]), self.pick_show(), False),
+                         ("available", {"have": 8, "total": 8}))
+
+    def test_tv_pick_is_summed_over_the_requested_seasons(self):
+        show = self.pick_show()
+        show["seasons"][1] = aseason(2, True, 2, 6)
+        self.assertEqual(al.request_state(self.entry([1, 2]), show, False), ("partial", {"have": 10, "total": 14}))
+
+    def test_tv_pick_nothing_downloaded_yet(self):
+        self.assertEqual(al.request_state(self.entry([2, 3]), self.pick_show(), False),
+                         ("processing", {"have": 0, "total": 12}))
+
+    def test_tv_pick_without_matching_arr_seasons_falls_back_to_the_series_state(self):
+        show = self.pick_show()
+        self.assertEqual(al.request_state(self.entry([9]), show, False)[0], "partial")
+        show["seasons"] = None
+        self.assertEqual(al.request_state(self.entry([1]), show, False)[0], "partial")
 
 
 if __name__ == "__main__":

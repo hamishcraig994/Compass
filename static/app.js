@@ -1,11 +1,12 @@
 /* Compass - progressive enhancement. Plain JS, no libraries.
  *
  * Every form and link on the page works without this file (POST + 303 redirect). This only
- * intercepts them to work in place: forms marked data-enhance="dismiss|undismiss|add|refresh|generate|rate|theme",
- * "Add to library" links (data-add-dialog), card details (a modal instead of the inline <details>),
- * and the "Finding your recommendations..." / "Updating..." states (data-poll), which poll /api/status.
+ * intercepts them to work in place: forms marked data-enhance="dismiss|undismiss|add|refresh|generate|rate|theme|
+ * list|lists|list-move", the "Add to library" and "Add to list" links (data-add-dialog / data-list-dialog, a modal
+ * instead of the plain page), and the "Finding your recommendations..." / "Updating..." states (data-poll), which
+ * poll /api/status. Posters link to the title page (/title/<type>/<id>); there is no detail modal.
  *
- * DOM is built with createElement/textContent. The one exception is setFragment(): the add dialog and
+ * DOM is built with createElement/textContent. The one exception is setFragment(): the add and list dialogs and
  * the live search results are fragments from our own server (...&partial=1), escaped server-side.
  */
 (function () {
@@ -64,14 +65,36 @@
     });
   }
 
-  function postForm(form) {
-    return post(form.getAttribute("action"), new URLSearchParams(new FormData(form)));
+  /* The form's fields plus the submit button that was pressed (FormData leaves it out). */
+  function formBody(form, submitter) {
+    var body = new URLSearchParams(new FormData(form));
+    if (submitter && submitter.name && submitter.form === form) body.set(submitter.name, submitter.value);
+    return body;
+  }
+
+  function postForm(form, submitter) {
+    return post(form.getAttribute("action"), formBody(form, submitter));
+  }
+
+  /* `path` (a same-site path) with ?msg=<message> in place of any old msg/undo, for a reload that shows the result. */
+  function withMessage(path, message) {
+    var url;
+    try { url = new URL(path || window.location.pathname, window.location.href); } catch (err) { return window.location.href; }
+    if (url.origin !== window.location.origin) url = new URL(window.location.pathname, window.location.href);
+    url.searchParams.delete("undo_type");
+    url.searchParams.delete("undo_id");
+    if (message) url.searchParams.set("msg", message); else url.searchParams.delete("msg");
+    return url.pathname + url.search;
   }
 
   /* If the server didn't answer with JSON, fall back to the ordinary form submission; on a
    * network error just say so and leave the page as it is. */
-  function failed(form, err) {
+  function failed(form, err, submitter) {
     if (err && err.notJson && form) {
+      // form.submit() leaves out the pressed button: carry its value in a hidden field.
+      if (submitter && submitter.name && submitter.form === form) {
+        form.appendChild(el("input", { type: "hidden", name: submitter.name, value: submitter.value }));
+      }
       nativeSubmit(form);
       return;
     }
@@ -237,8 +260,7 @@
     var label = modalBody.querySelector("h3[id]");
     if (label) modal.setAttribute("aria-labelledby", label.id); else modal.removeAttribute("aria-labelledby");
     if (!modal.open) modal.showModal();
-    var first = (opts.focus && modalBody.querySelector(opts.focus)) ||
-                (opts.closeFallback ? modal.querySelector(".modal-close") : focusables(modalBody)[0]) ||
+    var first = (opts.focus && modalBody.querySelector(opts.focus)) || focusables(modalBody)[0] ||
                 modal.querySelector(".modal-close");
     if (first) first.focus();
   }
@@ -246,34 +268,6 @@
   function closeModal() {
     closePreview();
     if (modal && modal.open) modal.close();
-  }
-
-  /* ---------------- card details ---------------- */
-
-  function openDetail(card, trigger) {
-    openModal(function (body) {
-      var poster = card.querySelector(".card-poster");
-      var posterCopy = poster ? poster.cloneNode(true) : null;
-      if (posterCopy) {
-        posterCopy.removeAttribute("data-open-detail");
-        posterCopy.removeAttribute("hidden");  // the hero's copy is hidden on the page, shown in the modal
-        posterCopy.removeAttribute("role");
-        posterCopy.removeAttribute("tabindex");
-        posterCopy.removeAttribute("aria-label");
-        var rank = posterCopy.querySelector(".rank");
-        if (rank) rank.parentNode.removeChild(rank);
-      }
-      var title = card.querySelector(".title");
-      var main = el("div", { className: "detail-main" }, [
-        el("h3", { id: "detail-title", text: title ? title.textContent : "" })
-      ]);
-      var detail = card.querySelector(".detail-body");
-      if (detail) main.appendChild(detail.cloneNode(true));
-      var actions = card.querySelector(".card-actions");
-      if (actions) main.appendChild(actions.cloneNode(true));  // delegated handlers find the card by type/id
-      body.appendChild(el("div", { className: "detail-layout" }, [posterCopy, main]));
-    }, { returnFocus: trigger, closeFallback: true,
-       focus: ".detail-main .btn-add, .detail-main form[data-enhance=dismiss] button[type=submit]" });
   }
 
   /* ---------------- server fragments ---------------- */
@@ -288,13 +282,13 @@
     return true;
   }
 
-  /* ---------------- add-to-library dialog ---------------- */
+  /* ---------------- fragment dialogs: add to library (a[data-add-dialog]), add to list (a[data-list-dialog]) ---------------- */
 
-  function openAddDialog(link) {
+  function openFragmentDialog(link, focusSelector) {
     var href = link.getAttribute("href");
-    // A link cloned into the (hidden) hover preview can't take focus back: use its card's poster button.
+    // A link cloned into the (hidden) hover preview can't take focus back: use its card's poster link.
     var fromPreview = link.closest(".preview") && lastPreviewCard;
-    var returnTarget = (fromPreview && fromPreview.querySelector("[data-open-detail]")) || link;
+    var returnTarget = (fromPreview && fromPreview.querySelector(".poster-link")) || link;
     openModal(function (body) {
       body.appendChild(el("div", { className: "modal-loading", role: "status" }, [
         el("div", { className: "spinner", "aria-hidden": "true" }),
@@ -311,7 +305,7 @@
       if (!modal || !modal.open) return;  // closed while loading
       var filled = false;
       openModal(function (body) { filled = setFragment(body, html); },
-                { narrow: true, focus: "select, input:not([type=hidden]), .btn-add" });
+                { narrow: true, focus: focusSelector });
       if (!filled) window.location.href = href;  // no partial support: use the page
     }).catch(function () {
       window.location.href = href;  // the plain page version
@@ -326,43 +320,26 @@
     var link = target.closest("a[data-add-dialog]");
     if (link && hasDialog && plainClick) {
       e.preventDefault();
-      openAddDialog(link);
+      openFragmentDialog(link, "select, input:not([type=hidden]), .btn-add");
+      return;
+    }
+    var listLink = target.closest("a[data-list-dialog]");
+    if (listLink && hasDialog && plainClick) {
+      e.preventDefault();
+      openFragmentDialog(listLink, "input:not([type=hidden]), .btn-add");
       return;
     }
     var closer = target.closest("dialog [data-close]");
-    if (closer && plainClick) { e.preventDefault(); closeModal(); return; }
-
-    if (!hasDialog || target.closest("dialog")) return;
-    var summary = target.closest(".card-details > summary");
-    var poster = target.closest("[data-open-detail]");
-    var card = (summary || poster) && target.closest("[data-card]");
-    if (!card) return;
-    e.preventDefault();
-    var opener = card.querySelector("[data-open-detail]");
-    openDetail(card, summary && visible(summary) ? summary : (opener || summary));
+    if (closer && plainClick) { e.preventDefault(); closeModal(); }
   });
 
-  /* With a dialog, a row card's poster is its one tab stop: a button that opens the detail modal. */
-  function titleOf(card) {
-    var title = card.querySelector(".title");
-    return title ? title.textContent : "";
-  }
-
-  if (hasDialog) {
-    Array.prototype.forEach.call(doc.querySelectorAll(".row-card[data-card] [data-open-detail]"), function (poster) {
-      poster.setAttribute("tabindex", "0");
-      poster.setAttribute("role", "button");
-      poster.setAttribute("aria-label", "More info: " + titleOf(poster.closest("[data-card]")));
-    });
-    doc.addEventListener("keydown", function (e) {
-      if ((e.key !== "Enter" && e.key !== " ") || !e.target || !e.target.matches ||
-          !e.target.matches("[data-open-detail][role=button]")) return;
-      var card = e.target.closest("[data-card]");
-      if (!card) return;
-      e.preventDefault();
-      openDetail(card, e.target);
-    });
-  }
+  /* A season ticked in a picker (the add dialog) selects "Choose seasons". */
+  doc.addEventListener("change", function (e) {
+    var box = e.target;
+    if (!box || !box.classList || !box.classList.contains("season-check") || !box.form) return;
+    var pick = box.form.querySelector("input[name=seasons][value=pick]");
+    if (pick && box.checked) pick.checked = true;
+  });
 
   /* ---------------- removing / restoring cards ---------------- */
 
@@ -411,7 +388,7 @@
 
   function focusNeighbour(card) {
     var next = card.nextElementSibling || card.previousElementSibling;
-    var target = next && (next.querySelector("[role=button]") || next.querySelector("summary") || next.querySelector("a, button"));
+    var target = next && (next.querySelector(".poster-link") || next.querySelector("summary") || next.querySelector("a, button"));
     if (target) target.focus();
     if (!target || card.contains(doc.activeElement)) { var main = doc.getElementById("main"); if (main) main.focus(); }
   }
@@ -448,7 +425,7 @@
   function focusCard(card) {
     var active = doc.activeElement;
     if (active && active !== doc.body && active.id !== "main" && doc.contains(active)) return;
-    var target = card.querySelector(".card-details > summary, [data-open-detail][role=button], .title a, a[href], button");
+    var target = card.querySelector(".card-details > summary, .poster-link, .title a, a[href], button");
     if (!target || !visible(target)) {
       card.setAttribute("tabindex", "-1");
       target = card;
@@ -474,7 +451,7 @@
     // Prefer a visible row card's poster button (the hero slide may be inert or off-screen).
     var focusTarget = null;
     for (var j = 0; j < cards.length && !focusTarget; j++) {
-      var candidate = cards[j].querySelector("[role=button]");
+      var candidate = cards[j].querySelector(".poster-link");
       if (candidate && visible(candidate)) focusTarget = candidate;
     }
     for (var k = 0; k < cards.length && !focusTarget; k++) {
@@ -670,6 +647,21 @@
     }
   });
 
+  /* Flip every Watchlist toggle for one title (cards, hero, the hover preview, the title page) to match the server. */
+  function syncWatchlist(type, id, on) {
+    Array.prototype.forEach.call(doc.querySelectorAll("form.list-toggle-form"), function (toggle) {
+      if (field(toggle, "type") !== String(type) || field(toggle, "id") !== String(id) || field(toggle, "list") !== "watchlist") return;
+      toggle.setAttribute("action", on ? "/lists/remove" : "/lists/add");
+      var button = toggle.querySelector(".list-toggle");
+      if (button) {
+        button.classList.toggle("on", on);
+        button.setAttribute("aria-pressed", on ? "true" : "false");
+      }
+      var text = toggle.querySelector(".list-toggle-text");
+      if (text) text.textContent = on ? "On Watchlist" : "Watchlist";
+    });
+  }
+
   var handlers = {
     theme: function (form) { saveTheme(form); },
 
@@ -699,12 +691,17 @@
       }).catch(function (err) { setBusy(form, false); failed(form, err); });
     },
 
-    add: function (form) {
+    add: function (form, submitter) {
       var type = field(form, "type"), id = field(form, "id");
       setBusy(form, true);
-      postForm(form).then(function (data) {
+      postForm(form, submitter).then(function (data) {
         setBusy(form, false);
         if (!data.ok) { toast(data.message || "Couldn't add that.", { error: true }); return; }
+        // The title page (and its season form) shows the new state by reloading with the message.
+        if (form.getAttribute("data-after") === "reload" || /^\/title\//.test(field(form, "return_to"))) {
+          window.location.href = withMessage(field(form, "return_to"), data.message || "Added");
+          return;
+        }
         closeModal();
         toast(data.message || "Added");
         var kept = [];
@@ -714,6 +711,67 @@
         // closeModal() tried to return focus to the Add link, which markAdded just removed: land on the card.
         // Deferred so the dialog's own close handling has run; skipped if focus already went somewhere useful.
         if (kept.length) setTimeout(function () { focusCard(kept[0]); }, 0);
+      }).catch(function (err) { setBusy(form, false); failed(form, err, submitter); });
+    },
+
+    /* The Watchlist toggle and the Remove button on a list page (/lists/add|remove). */
+    list: function (form) {
+      var type = field(form, "type"), id = field(form, "id");
+      setBusy(form, true);
+      postForm(form).then(function (data) {
+        setBusy(form, false);
+        if (!data.ok) { toast(data.message || "Couldn't update that list.", { error: true }); return; }
+        if (field(form, "list") === "watchlist") syncWatchlist(type, id, !!data.on_watchlist);
+        if (form.hasAttribute("data-remove-card") && data.in_list === false) {
+          var card = form.closest("[data-card]");
+          if (card) removeCard(card);
+        }
+        toast(data.message || "Saved");
+      }).catch(function (err) { setBusy(form, false); failed(form, err); });
+    },
+
+    /* The list dialog's form (/lists/set). */
+    lists: function (form) {
+      var type = field(form, "type"), id = field(form, "id");
+      setBusy(form, true);
+      postForm(form).then(function (data) {
+        setBusy(form, false);
+        if (!data.ok) { toast(data.message || "Couldn't save your lists.", { error: true }); return; }
+        // A title page or a list page shows list names / contents: reload it with the message.
+        if (data.created || doc.querySelector(".title-page, .list-head")) {
+          window.location.href = withMessage(field(form, "return_to"), data.message || "Saved");
+          return;
+        }
+        closeModal();
+        syncWatchlist(type, id, !!data.on_watchlist);
+        toast(data.message || "Saved");
+      }).catch(function (err) { setBusy(form, false); failed(form, err); });
+    },
+
+    /* Up / Down / Top on a list page: move the card in place when the server moved it. */
+    "list-move": function (form, submitter) {
+      function onFirstPage() { return (new URLSearchParams(window.location.search).get("page") || "1") === "1"; }
+      var button = submitter || form.querySelector("button");
+      var direction = field(form, "direction");
+      var card = form.closest("[data-card]");
+      setBusy(form, true);
+      postForm(form).then(function (data) {
+        setBusy(form, false);
+        if (!data.ok) { toast(data.message || "Couldn't move that.", { error: true }); return; }
+        if (data.moved && card && card.parentNode) {
+          var grid = card.parentNode;
+          var before = card.previousElementSibling, after = card.nextElementSibling;
+          if (direction === "up" && before) grid.insertBefore(card, before);
+          else if (direction === "down" && after) grid.insertBefore(after, card);
+          // The server moves to the top / bottom of the whole list, not of this page: off page 1 (or any "bottom") reload.
+          else if (direction === "top" && before && onFirstPage()) grid.insertBefore(card, grid.firstElementChild);
+          else {  // it swapped with a title on another page: show the new order
+            window.location.href = withMessage(window.location.pathname + window.location.search, data.message || "Moved");
+            return;
+          }
+          if (button && doc.contains(button)) button.focus();  // moving the card dropped the focus
+        }
+        toast(data.message || "Moved");
       }).catch(function (err) { setBusy(form, false); failed(form, err); });
     },
 
@@ -801,21 +859,26 @@
     var kind = form && form.getAttribute && form.getAttribute("data-enhance");
     if (!kind || !handlers[kind]) return;
     e.preventDefault();
+    var pressed = e.submitter || form._lastSubmit;   // old Safari (< 15.4) has no e.submitter
+    form._lastSubmit = null;
     if (form.hasAttribute("data-busy")) return;
-    handlers[kind](form, e.submitter);
+    handlers[kind](form, pressed);
   });
 
   // Old Safari has no e.submitter: remember which star was last pressed in a rate form.
   doc.addEventListener("click", function (e) {
     var button = e.target && e.target.closest ? e.target.closest("button[name=stars]") : null;
     if (button && button.form) button.form._lastStar = button;
+    var named = e.target && e.target.closest ? e.target.closest("button[name]") : null;
+    if (named && named.form) named.form._lastSubmit = named;   // e.g. the season form's seasons=pick / seasons=all
   });
 
   // A poster that fails to load (Plex down, thumb gone) becomes the tinted placeholder.
   doc.addEventListener("error", function (e) {
     var img = e.target;
     if (img && img.tagName === "IMG" && img.parentNode &&
-        (img.classList.contains("hero-backdrop") || img.classList.contains("hero-poster"))) {
+        (img.classList.contains("hero-backdrop") || img.classList.contains("hero-poster") ||
+         img.classList.contains("title-backdrop"))) {
       img.parentNode.removeChild(img);  // the tinted gradient behind it stays
       return;
     }
@@ -1099,6 +1162,23 @@
     return node;
   }
 
+  /* The Watchlist toggle (icon-only in the preview) and the list link, cloned from the card; the delegated
+   * submit / click handlers work on the copies. Not tab stops: keyboard users use the title page. */
+  function cloneListTools(card, actions) {
+    var toggle = card.querySelector(".list-toggle-form");
+    if (toggle) {
+      var toggleCopy = toggle.cloneNode(true);
+      Array.prototype.forEach.call(toggleCopy.querySelectorAll("button"), function (b) { b.setAttribute("tabindex", "-1"); });
+      actions.appendChild(toggleCopy);
+    }
+    var listLink = card.querySelector("a.list-link");
+    if (listLink) {
+      var linkCopy = listLink.cloneNode(true);
+      linkCopy.setAttribute("tabindex", "-1");
+      actions.appendChild(linkCopy);
+    }
+  }
+
   function openPreview(card) {
     if (!doc.contains(card) || (modal && modal.open) || !finePointer()) return;
     if (!preview) {
@@ -1109,7 +1189,8 @@
       });
       preview.addEventListener("click", function (e) {
         var hit = e.target.closest && e.target.closest("a, button");
-        if (hit && !hit.classList.contains("star")) closePreview();  // rating keeps the preview open; the content stays for the delegated handlers
+        // rating and the Watchlist toggle keep the preview open; the content stays for the delegated handlers
+        if (hit && !hit.classList.contains("star") && !hit.classList.contains("list-toggle")) closePreview();
       });
       doc.body.appendChild(preview);
     }
@@ -1120,9 +1201,11 @@
     // Build the new content off-screen first, then swap it in one go.
     var frag = doc.createDocumentFragment();
     var art = card.querySelector(".card-poster .poster");
+    var posterLink = card.querySelector("a.poster-link");
+    var detailHref = posterLink ? posterLink.href : null;   // the title page: where the poster and "More info" go
     if (art) {
       var posterBox = el("div", { className: "preview-poster" }, [art.cloneNode(true)]);
-      posterBox.addEventListener("click", function () { if (!card.hasAttribute("data-preview")) openDetail(card, card.querySelector("[data-open-detail]")); });
+      if (detailHref) posterBox.addEventListener("click", function () { window.location.href = detailHref; });
       frag.appendChild(posterBox);
     }
 
@@ -1158,12 +1241,12 @@
         if (rateText) rateText.parentNode.removeChild(rateText);
         actions.appendChild(rateCopy);
       }
-      var more = previewButton(el("button", { type: "button", title: "More info" }), "More info", false);
-      setIcon(more, "chevron");
-      more.addEventListener("click", function () {
-        openDetail(card, card.querySelector("[data-open-detail]"));
-      });
-      actions.appendChild(more);
+      cloneListTools(card, actions);
+      if (detailHref) {
+        var more = previewButton(el("a", { href: detailHref, title: "More info" }), "More info", false);
+        setIcon(more, "chevron");
+        actions.appendChild(more);
+      }
 
       body = el("div", { className: "preview-body" }, [actions]);
       [".card-meta", ".chips", ".reason"].forEach(function (selector) {
@@ -1172,7 +1255,7 @@
       });
     
     } else {
-      var titleLink = card.querySelector(".title a[href]");
+      var titleLink = posterLink;
       var rateLib = card.querySelector("form[data-enhance=rate]");
       if (rateLib) {
         var rateClone = rateLib.cloneNode(true);
@@ -1182,17 +1265,14 @@
         if (rateTextLib) rateTextLib.parentNode.removeChild(rateTextLib);
         actions.appendChild(rateClone);
       }
+      cloneListTools(card, actions);
       var titleNode = card.querySelector(".title");
       var titleText = titleNode ? titleNode.textContent : "";
       if (titleLink) {
-        var openLink = previewButton(el("a", { href: titleLink.href, target: "_blank", title: "Open " + titleText }), "Open " + titleText, false);
-        openLink.setAttribute("rel", "noopener noreferrer");
+        var openLink = previewButton(el("a", { href: titleLink.href, title: "Open " + titleText }), "Open " + titleText, false);
         openLink.classList.add("preview-open");
         openLink.appendChild(previewIcon("open"));
         actions.appendChild(openLink);
-        if (frag.firstChild) {
-          frag.firstChild.addEventListener("click", function () { window.open(titleLink.href, "_blank", "noopener,noreferrer"); });
-        }
       }
       body = el("div", { className: "preview-body" });
       body.appendChild(el("div", { className: "preview-title", text: titleText }));

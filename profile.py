@@ -58,6 +58,23 @@ def apply_ratings(watched, ratings):
     return out
 
 
+def rated_entries(watched, rating_rows):
+    """Synthetic history entries for titles you've rated but that aren't in the watch history: a rating
+    means "I've seen it". rating_rows: [{"media_type", "tmdb_id", "stars", "rated_at"}] (db.rating_rows()).
+    Never mutates its inputs; titles already in watched are skipped (apply_ratings handles those)."""
+    seen = {(w["media_type"], w["tmdb_id"]) for w in watched}
+    out = []
+    for row in rating_rows:
+        key = (row["media_type"], row["tmdb_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"media_type": row["media_type"], "tmdb_id": row["tmdb_id"], "title": None, "year": None,
+                    "last_viewed": row.get("rated_at"), "user_rating": row["stars"] * 2, "view_count": 1,
+                    "progress": None, "rated_only": True})
+    return out
+
+
 def build(pairs, now=None):
     """pairs: [(watched_item, tmdb_details)]. Returns {category: {name: 0..1}}."""
     now = now or datetime.now(timezone.utc)

@@ -222,10 +222,6 @@ class TestSonarrClient(unittest.TestCase):
         self.assertIn("gone", msg)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestRadarrNormalize(unittest.TestCase):
     def test_every_state_branch(self):
         n = radarr.normalize_movie
@@ -244,7 +240,8 @@ class TestRadarrNormalize(unittest.TestCase):
         self.assertEqual(item, {
             "media_type": "movie", "service": "radarr", "tmdb_id": 11, "tvdb_id": None, "title": "Dune",
             "year": 2021, "added_at": "2024-05-01T10:00:00Z", "monitored": True, "arr_state": "downloaded",
-            "episodes": None, "poster_url": None, "url": "https://www.themoviedb.org/movie/11"})
+            "episodes": None, "arr_id": None, "seasons": None, "poster_url": None,
+            "url": "https://www.themoviedb.org/movie/11"})
 
     def test_missing_or_zero_values(self):
         for raw in ({}, {"tmdbId": 0, "year": 0, "added": "0001-01-01T00:00:00Z", "title": ""}):
@@ -319,3 +316,248 @@ class TestSonarrNormalize(unittest.TestCase):
         self.assertEqual(get.call_args.kwargs["headers"], {"X-Api-Key": "secretkey"})
         self.assertEqual(len(items), 1)
         self.assertNotIn("secretkey", repr(items))
+
+
+class TestNormalizeSeasons(unittest.TestCase):
+    def test_arr_id_and_movie_seasons(self):
+        item = radarr.normalize_movie({"id": 7, "tmdbId": 1})
+        self.assertEqual((item["arr_id"], item["seasons"]), (7, None))
+        self.assertIsNone(radarr.normalize_movie({"id": 0})["arr_id"])
+        self.assertIsNone(radarr.normalize_movie({"id": True})["arr_id"])
+
+    def test_series_seasons_sorted_with_statistics_fallbacks(self):
+        raw = {"id": 3, "monitored": True, "seasons": [
+            {"seasonNumber": 2, "monitored": False, "statistics": {"episodeFileCount": 1, "episodeCount": 6}},
+            {"seasonNumber": 1, "monitored": True, "statistics": {"episodeFileCount": 8, "totalEpisodeCount": 8,
+                                                                  "episodeCount": 5}},
+            {"seasonNumber": 0, "monitored": False},
+            {"seasonNumber": "x"}, {"seasonNumber": -1}, "junk"]}
+        item = sonarr.normalize_series(raw)
+        self.assertEqual(item["arr_id"], 3)
+        self.assertEqual(item["seasons"], [
+            {"number": 0, "monitored": False, "have": 0, "total": 0},      # missing statistics -> 0/0
+            {"number": 1, "monitored": True, "have": 8, "total": 8},       # totalEpisodeCount wins
+            {"number": 2, "monitored": False, "have": 1, "total": 6}])     # falls back to episodeCount
+
+    def test_series_without_seasons_gives_an_empty_list(self):
+        self.assertEqual(sonarr.normalize_series({})["seasons"], [])
+        self.assertEqual(sonarr.normalize_series({"seasons": "x"})["seasons"], [])
+
+
+def lookup_show():
+    return {"title": "Severance", "tvdbId": 77, "someKey": 1,
+            "seasons": [{"seasonNumber": 0, "monitored": False, "extra": "keep"},
+                        {"seasonNumber": 1, "monitored": True}, {"seasonNumber": 2, "monitored": True},
+                        {"seasonNumber": 3, "monitored": True}]}
+
+
+class TestSonarrSeasonAdd(unittest.TestCase):
+    def setUp(self):
+        self._old_db = db.DB_PATH
+        db.DB_PATH = os.path.join(tempfile.mkdtemp(), "t.db")
+        self.addCleanup(setattr, db, "DB_PATH", self._old_db)
+        self.client = SonarrClient("http://arr:8989", "key456")
+        self.existing = None  # what GET /series?tvdbId= answers
+        self.posts, self.puts = [], []
+
+    def fake_get(self, url, headers=None, params=None):
+        if url.endswith("/api/v3/series") and params and "tvdbId" in params:
+            return [] if self.existing is None else [self.existing]
+        if url.endswith("/lookup"):
+            return [lookup_show()]
+        if url.endswith("/qualityprofile"):
+            return [{"id": 4}]
+        if url.endswith("/rootfolder"):
+            return [{"path": "/data/tv"}]
+        raise AssertionError(f"unexpected GET {url} {params}")
+
+    def run_add(self, *args, post_result=None, put_result=None, **kwargs):
+        def post(url, headers=None, body=None):
+            self.posts.append((url, body))
+            return post_result
+
+        def put(url, headers=None, body=None):
+            self.puts.append((url, body))
+            return put_result
+
+        with mock.patch.object(sonarr, "get_json", side_effect=self.fake_get), \
+             mock.patch.object(sonarr, "post_json", side_effect=post), \
+             mock.patch.object(sonarr, "put_json", side_effect=put):
+            return self.client.add(*args, **kwargs)
+
+    def flags(self, body):
+        return {s["seasonNumber"]: s["monitored"] for s in body["seasons"]}
+
+    def test_new_series_pick_payload(self):
+        ok, msg = self.run_add(77, True, seasons=[1, 3])
+        self.assertEqual((ok, msg), (True, 'Added "Severance" to Sonarr'))
+        (url, body), = self.posts
+        self.assertEqual(url, "http://arr:8989/api/v3/series")
+        self.assertEqual(self.flags(body), {0: False, 1: True, 2: False, 3: True})
+        self.assertEqual(body["seasons"][0]["extra"], "keep")
+        self.assertEqual(body["monitorNewItems"], "none")
+        self.assertEqual(body["addOptions"], {"searchForMissingEpisodes": True, "searchForCutoffUnmetEpisodes": False,
+                                              "ignoreEpisodesWithFiles": False})
+        self.assertNotIn("monitor", body["addOptions"])
+        self.assertEqual((body["qualityProfileId"], body["rootFolderPath"], body["monitored"], body["someKey"]),
+                         (4, "/data/tv", True, 1))
+        self.assertEqual(self.puts, [])
+
+    def test_new_series_all_and_none_monitor_every_season_but_specials(self):
+        for seasons in ("all", None):
+            self.posts.clear()
+            self.run_add(77, True, seasons=seasons)
+            body = self.posts[0][1]
+            self.assertEqual(self.flags(body), {0: False, 1: True, 2: True, 3: True})
+            self.assertEqual(body["monitorNewItems"], "all")
+
+    def test_search_false_adds_unmonitored_but_keeps_the_season_flags(self):
+        self.run_add(77, False, seasons=[2])
+        body = self.posts[0][1]
+        self.assertFalse(body["monitored"])
+        self.assertFalse(body["addOptions"]["searchForMissingEpisodes"])
+        self.assertEqual(self.flags(body), {0: False, 1: False, 2: True, 3: False})
+
+    def test_season_not_in_the_lookup_is_refused_without_posting(self):
+        ok, msg = self.run_add(77, True, seasons=[1, 7])
+        self.assertEqual((ok, msg), (False, 'Season 7 isn\'t listed for "Severance" in Sonarr'))
+        self.assertEqual(self.posts, [])
+        self.assertIsNone(self.client.last_item)
+
+    def test_last_item_comes_from_the_response_and_is_none_on_failure(self):
+        self.run_add(77, True, seasons="all", post_result={"id": 9, "tvdbId": 77, "tmdbId": 5, "title": "Severance",
+                                                          "monitored": True})
+        self.assertEqual((self.client.last_item["arr_id"], self.client.last_item["service"]), (9, "sonarr"))
+        self.run_add(77, True, seasons="all", post_result=None)
+        self.assertIsNone(self.client.last_item)
+        with mock.patch.object(sonarr, "get_json", side_effect=RuntimeError("down")):
+            self.client.add(77)
+        self.assertIsNone(self.client.last_item)
+
+    def make_existing(self, monitored=(1,)):
+        self.existing = {"id": 12, "title": "Severance", "tvdbId": 77, "monitored": False, "seasons": [
+            {"seasonNumber": n, "monitored": n in monitored} for n in (0, 1, 2, 3)]}
+
+    def test_existing_series_without_seasons_is_already_in_sonarr(self):
+        self.make_existing()
+        ok, msg = self.run_add(77, True)
+        self.assertEqual((ok, msg), (False, "Already in Sonarr"))
+        self.assertEqual((self.puts, self.posts), ([], []))
+
+    def test_existing_series_pick_puts_additively_and_searches_each_new_season(self):
+        self.make_existing(monitored=(1,))
+        ok, msg = self.run_add(77, True, seasons=[1, 2, 3], put_result={"id": 12, "tvdbId": 77, "monitored": True})
+        self.assertEqual((ok, msg), (True, 'Now monitoring season 2 and 3 of "Severance" in Sonarr - searching now'))
+        (url, body), = self.puts
+        self.assertEqual(url, "http://arr:8989/api/v3/series/12")
+        self.assertTrue(body["monitored"])
+        self.assertEqual(self.flags(body), {0: False, 1: True, 2: True, 3: True})
+        self.assertEqual(self.posts, [
+            ("http://arr:8989/api/v3/command", {"name": "SeasonSearch", "seriesId": 12, "seasonNumber": 2}),
+            ("http://arr:8989/api/v3/command", {"name": "SeasonSearch", "seriesId": 12, "seasonNumber": 3})])
+        self.assertEqual(self.client.last_item["arr_id"], 12)
+
+    def test_existing_series_never_unmonitors(self):
+        self.make_existing(monitored=(1, 3))
+        self.run_add(77, True, seasons=[2])
+        self.assertEqual(self.flags(self.puts[0][1]), {0: False, 1: True, 2: True, 3: True})
+
+    def test_existing_series_without_search_sends_no_commands(self):
+        self.make_existing()
+        ok, msg = self.run_add(77, False, seasons=[2])
+        self.assertEqual((ok, msg), (True, 'Now monitoring season 2 of "Severance" in Sonarr'))
+        self.assertEqual((len(self.puts), self.posts), (1, []))
+
+    def test_existing_series_all_sends_one_series_search(self):
+        self.make_existing(monitored=(1,))
+        ok, msg = self.run_add(77, True, seasons="all")
+        self.assertEqual((ok, msg), (True, 'Now monitoring season 2 and 3 of "Severance" in Sonarr - searching now'))
+        self.assertEqual(self.posts, [("http://arr:8989/api/v3/command", {"name": "SeriesSearch", "seriesId": 12})])
+        self.assertEqual(self.flags(self.puts[0][1])[0], False)
+
+    def test_nothing_new_to_monitor(self):
+        self.make_existing(monitored=(1, 2, 3))
+        ok, msg = self.run_add(77, True, seasons=[1, 2])
+        self.assertEqual((ok, msg), (False, 'Already monitoring those seasons of "Severance" in Sonarr'))
+        self.assertEqual((self.puts, self.posts), ([], []))
+
+    def test_existing_series_season_not_listed(self):
+        self.make_existing()
+        ok, msg = self.run_add(77, True, seasons=[9])
+        self.assertEqual((ok, msg), (False, 'Season 9 isn\'t listed for "Severance" in Sonarr'))
+        self.assertEqual(self.puts, [])
+
+    def test_a_failed_search_command_does_not_fail_the_request(self):
+        self.make_existing()
+        with mock.patch.object(sonarr, "get_json", side_effect=self.fake_get), \
+             mock.patch.object(sonarr, "put_json", return_value=None), \
+             mock.patch.object(sonarr, "post_json", side_effect=RuntimeError("busy")):
+            ok, msg = self.client.add(77, True, seasons=[2])
+        self.assertEqual((ok, msg), (True, 'Now monitoring season 2 of "Severance" in Sonarr'))
+
+    def test_find_filters_on_tvdb_id_client_side(self):
+        rows = [{"tvdbId": 1, "title": "A"}, {"tvdbId": 77, "title": "B"}]
+        with mock.patch.object(sonarr, "get_json", return_value=rows) as get:
+            self.assertEqual(self.client._find(77)["title"], "B")
+            self.assertIsNone(self.client._find(5))
+        self.assertEqual(get.call_args.args[0], "http://arr:8989/api/v3/series")
+        self.assertEqual(get.call_args.kwargs["params"], {"tvdbId": 5})
+
+    def test_find_error_is_treated_as_not_found_by_add(self):
+        def fail_find(url, headers=None, params=None):
+            if params and "tvdbId" in params:
+                raise RuntimeError("boom")
+            return self.fake_get(url, headers, params)
+        with mock.patch.object(sonarr, "get_json", side_effect=fail_find), \
+             mock.patch.object(sonarr, "post_json", return_value=None) as post:
+            ok, _ = self.client.add(77, True, seasons="all")
+        self.assertTrue(ok)
+        post.assert_called_once()
+
+    def test_put_sends_the_api_key(self):
+        with mock.patch.object(sonarr, "put_json", return_value=None) as put:
+            self.client._put("/api/v3/series/1", {"a": 1})
+        self.assertEqual(put.call_args.args[0], "http://arr:8989/api/v3/series/1")
+        self.assertEqual(put.call_args.kwargs["headers"], {"X-Api-Key": "key456"})
+
+    def test_the_api_key_is_in_no_message(self):
+        with mock.patch.object(sonarr, "get_json", side_effect=RuntimeError("HTTP 500: nope")):
+            _, msg = self.client.add(77, True, seasons=[1])
+        self.assertNotIn("key456", msg)
+
+
+class TestRadarrLastItem(unittest.TestCase):
+    def setUp(self):
+        self._old_db = db.DB_PATH
+        db.DB_PATH = os.path.join(tempfile.mkdtemp(), "t.db")
+        self.addCleanup(setattr, db, "DB_PATH", self._old_db)
+        self.client = RadarrClient("http://arr:7878", "key123")
+
+    def add(self, post_result):
+        def fake_get(url, headers=None, params=None):
+            if url.endswith("/movie") and params:
+                return []
+            if url.endswith("/lookup/tmdb"):
+                return {"title": "Arrival", "tmdbId": 5}
+            return [{"id": 1, "path": "/m"}]
+        with mock.patch.object(radarr, "get_json", side_effect=fake_get), \
+             mock.patch.object(radarr, "post_json", return_value=post_result):
+            return self.client.add(5)
+
+    def test_last_item_set_from_the_response(self):
+        ok, _ = self.add({"id": 31, "tmdbId": 5, "title": "Arrival", "monitored": True})
+        self.assertTrue(ok)
+        self.assertEqual((self.client.last_item["arr_id"], self.client.last_item["tmdb_id"]), (31, 5))
+
+    def test_last_item_none_for_a_non_dict_response_and_on_failure(self):
+        self.add(None)
+        self.assertIsNone(self.client.last_item)
+        self.client.last_item = {"stale": 1}
+        with mock.patch.object(radarr, "get_json", return_value=[{"tmdbId": 5}]):
+            ok, _ = self.client.add(5)
+        self.assertFalse(ok)
+        self.assertIsNone(self.client.last_item)
+
+
+if __name__ == "__main__":
+    unittest.main()

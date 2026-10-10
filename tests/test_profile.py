@@ -4,6 +4,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import copy
 import profile
 
 NOW = datetime(2026, 9, 21, tzinfo=timezone.utc)
@@ -104,6 +105,46 @@ class TestRatings(unittest.TestCase):
         self.assertEqual((w(1), w(2)), (0.0, 0.0))
         self.assertGreater(w(5), w(4))
         self.assertGreater(w(4), w(3))
+
+
+class TestRatedEntries(unittest.TestCase):
+    def row(self, media_type, tmdb_id, stars, rated_at="2026-09-01T00:00:00+00:00"):
+        return {"media_type": media_type, "tmdb_id": tmdb_id, "stars": stars, "rated_at": rated_at}
+
+    def test_one_synthetic_entry_per_rated_title_missing_from_the_history(self):
+        watched = [{"media_type": "movie", "tmdb_id": 1, "title": "Seen", "year": 2000}]
+        entries = profile.rated_entries(watched, [self.row("movie", 1, 5), self.row("movie", 2, 4), self.row("tv", 1, 2)])
+        self.assertEqual([(e["media_type"], e["tmdb_id"]) for e in entries], [("movie", 2), ("tv", 1)])
+        self.assertEqual(entries[0], {"media_type": "movie", "tmdb_id": 2, "title": None, "year": None,
+                                      "last_viewed": "2026-09-01T00:00:00+00:00", "user_rating": 8, "view_count": 1,
+                                      "progress": None, "rated_only": True})
+        self.assertEqual(entries[1]["user_rating"], 4)
+
+    def test_inputs_are_not_mutated(self):
+        watched = [{"media_type": "movie", "tmdb_id": 1, "title": "Seen"}]
+        rows = [self.row("movie", 2, 3)]
+        before = copy.deepcopy((watched, rows))
+        profile.rated_entries(watched, rows)
+        self.assertEqual((watched, rows), before)
+
+    def test_empty_inputs(self):
+        self.assertEqual(profile.rated_entries([], []), [])
+
+    def test_star_weights(self):
+        w = lambda stars: profile.item_weight(profile.rated_entries([], [self.row("movie", 9, stars)])[0], NOW)
+        self.assertAlmostEqual(w(3), 0.67, places=1)
+        self.assertEqual((w(1), w(2)), (0, 0))   # no taste input; the dislike penalty is separate
+        self.assertGreater(w(5), w(4))
+        self.assertGreater(w(4), w(3))
+
+    def test_a_five_star_unwatched_title_raises_its_genres_in_the_profile(self):
+        entry = profile.rated_entries([], [self.row("movie", 9, 5, NOW.isoformat())])[0]
+        base = [(item(10, user_rating=8), details(genres=["Drama"])), (item(10, user_rating=8), details(genres=["Drama"]))]
+        without = profile.build(base + [(item(10, user_rating=8), details(genres=["Comedy"]))], NOW)
+        with_rated = profile.build(base + [(item(10, user_rating=8), details(genres=["Comedy"])),
+                                           (entry, details(genres=["Horror"]))], NOW)
+        self.assertNotIn("Horror", without["genre"])
+        self.assertGreater(with_rated["genre"]["Horror"], 0.5)
 
 
 if __name__ == "__main__":

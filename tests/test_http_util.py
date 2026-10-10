@@ -6,7 +6,7 @@ import urllib.error
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from http_util import get_bytes, get_json, post_json
+from http_util import get_bytes, get_json, post_json, put_json
 
 # Every other test in this suite mocks get_json/post_json themselves at the module boundary -
 # this file is the one place that actually exercises urllib's error handling, which is exactly
@@ -80,6 +80,41 @@ class TestPostJsonErrors(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
             with self.assertRaises(RuntimeError):
                 post_json("http://x", body={})
+        self.assertEqual(len(calls), 1)
+
+
+class TestPutJson(unittest.TestCase):
+    def test_sends_a_put_with_a_json_body_and_headers(self):
+        seen = {}
+
+        def fake_urlopen(request, timeout=None):
+            seen.update(method=request.get_method(), data=request.data, headers=dict(request.header_items()),
+                        timeout=timeout)
+            return FakeResponse(b'{"id": 3}')
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = put_json("http://x/y", headers={"X-Api-Key": "k"}, body={"a": 1}, timeout=7)
+        self.assertEqual(result, {"id": 3})
+        self.assertEqual((seen["method"], seen["data"], seen["timeout"]), ("PUT", b'{"a": 1}', 7))
+        self.assertEqual(seen["headers"]["Content-type"], "application/json")
+        self.assertEqual(seen["headers"]["X-api-key"], "k")
+
+    def test_empty_response_is_none(self):
+        with mock.patch("urllib.request.urlopen", return_value=FakeResponse(b"")):
+            self.assertIsNone(put_json("http://x", body={}))
+
+    def test_error_includes_the_body_and_there_is_no_retry(self):
+        calls = []
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(1)
+            raise http_error(500, b"series is locked")
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(RuntimeError) as ctx:
+                put_json("http://x", body={})
+        self.assertIn("series is locked", str(ctx.exception))
+        self.assertIn("500", str(ctx.exception))
         self.assertEqual(len(calls), 1)
 
 

@@ -590,7 +590,7 @@ class TestAddRecordsToLibrary(unittest.TestCase):
             return e.headers.get("Location")
 
     def test_successful_add_is_logged_and_removed_from_the_current_list(self):
-        with mock.patch.object(sources, "add_to_library", return_value=(True, 'Added "M" to Radarr')):
+        with mock.patch.object(sources, "add_to_library", return_value=(True, 'Added "M" to Radarr', None)):
             location = self.post_add("movie", 1)
         self.assertIn("msg=", location)
         added = db.added_items()
@@ -602,24 +602,24 @@ class TestAddRecordsToLibrary(unittest.TestCase):
         self.assertIn("Added ", html)
 
     def test_failed_add_is_not_logged(self):
-        with mock.patch.object(sources, "add_to_library", return_value=(False, "Radarr isn't configured")):
+        with mock.patch.object(sources, "add_to_library", return_value=(False, "Radarr isn't configured", None)):
             location = self.post_add("movie", 1)
         self.assertIn("Radarr", location)
         self.assertEqual(db.added_items(), [])
         self.assertEqual(len(web._state["result"]["items"]), 1)  # still there, wasn't removed
 
     def test_chosen_quality_profile_and_search_flag_are_passed_through(self):
-        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")) as add:
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added", None)) as add:
             self.post_add("movie", 1, "&quality_profile_id=7&search=1")
         add.assert_called_once_with("movie", 1, search=True, quality_profile_id=7)
 
     def test_unchecked_search_box_means_dont_search(self):
-        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")) as add:
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added", None)) as add:
             self.post_add("movie", 1)  # no "search" field at all - an unchecked checkbox isn't submitted
         add.assert_called_once_with("movie", 1, search=False, quality_profile_id=None)
 
     def test_blank_quality_profile_means_use_the_configured_default(self):
-        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")) as add:
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added", None)) as add:
             self.post_add("movie", 1, "&quality_profile_id=&search=1")
         add.assert_called_once_with("movie", 1, search=True, quality_profile_id=None)
 
@@ -715,7 +715,7 @@ class TestAiPage(unittest.TestCase):
         config.AI_TOKEN = "sk-x"
         web._ai_state["result"] = {"items": [dict(MOVIE_ITEM)], "notes": [], "sample": False, "watched_count": 1}
         with mock.patch.object(sources, "use_sample", return_value=False), \
-             mock.patch.object(sources, "add_to_library", return_value=(True, "Added")):
+             mock.patch.object(sources, "add_to_library", return_value=(True, "Added", None)):
             self.post("/add", "type=movie&id=1&return_to=/ai")
         self.assertEqual(len(db.added_items()), 1)
         self.assertEqual(web._ai_state["result"]["items"], [])
@@ -727,6 +727,92 @@ class TestAiPage(unittest.TestCase):
             self.post("/dismiss", "type=movie&id=1&return_to=/ai")
         self.assertIn(("movie", 1), db.dismissed())
         self.assertEqual(web._ai_state["result"]["items"], [])
+
+
+class TestSeerrPagesSample(TestWeb):
+    """Sample-mode end to end for the title, lists, requests and list-dialog routes."""
+
+    def get_any(self, path):
+        """(status, headers, body) for any status, no redirects."""
+        try:
+            r = urllib.request.build_opener(NoRedirect).open(self.base + path)
+            return r.status, r.headers, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read().decode()
+
+    @staticmethod
+    def text(html):
+        import re
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", html))
+
+    def test_dune_is_in_the_library_with_cast_and_no_add(self):
+        status, _, body = self.get_any("/title/movie/1005")
+        text = self.text(body)
+        self.assertEqual(status, 200)
+        self.assertIn("In library", text)
+        self.assertIn("Downloaded", text)       # the Radarr state
+        self.assertIn("Timothée Chalamet", text)
+        self.assertNotIn("data-add-dialog", body)
+
+    def test_show_seasons_use_the_sonarr_data(self):
+        text = self.text(self.get_any("/title/tv/2040")[2])
+        import re
+        self.assertRegex(text, r"Season 1 5 episodes[^S]*Available Season 2 5 episodes[^S]*Wanted")
+
+    def test_unknown_and_malformed_title_paths(self):
+        status, _, body = self.get_any("/title/movie/999999")
+        self.assertEqual(status, 404)
+        self.assertIn("<html", body)
+        self.assertIn("TMDB doesn&#x27;t know this title" if "&#x27;" in body else "TMDB doesn", body)
+        for path in ("/title/film/1", "/title/movie/abc", "/title/movie/1/x", "/title/movie/", "/title/", "/title/movie/1005/"):
+            status, headers, body = self.get_any(path)
+            self.assertEqual((status, body), (404, "Not found"), path)
+            self.assertTrue(headers["Content-Type"].startswith("text/plain"))
+
+    def test_msg_and_undo_reach_the_title_page(self):
+        _, _, body = self.get_any("/title/movie/1005?msg=Hello+there&undo_type=movie&undo_id=1005")
+        self.assertIn("Hello there", body)
+        self.assertIn("undismiss", body)
+
+    def test_lists_page_shows_the_virtual_watchlist(self):
+        status, _, body = self.get_any("/lists")
+        self.assertEqual(status, 200)
+        text = self.text(body)
+        self.assertIn("Watchlist", text)
+        self.assertIn("Sample data - lists aren't saved.", text.replace("&#x27;", "'"))
+        self.assertNotIn("/lists/create", body)
+
+    def test_list_pages_are_404_in_sample_mode(self):
+        for path in ("/lists/1", "/lists/abc", "/lists/", "/lists/1/x"):
+            self.assertEqual(self.get_any(path)[0], 404, path)
+
+    def test_watchlist_and_requests_redirect(self):
+        self.assertEqual(self.raw_get("/watchlist"), (303, "/lists"))
+        self.assertEqual(self.raw_get("/requests"), (303, "/library?type=added"))
+        self.assertEqual(self.raw_get("/requests?msg=Hi"), (303, "/library?type=added&msg=Hi"))
+
+    def test_library_subtabs_include_requests_and_lists(self):
+        text = self.text(self.get_any("/library")[2])
+        self.assertIn("Requests", text)
+        self.assertIn("Lists", text)
+        self.assertEqual(self.get_any("/library?type=added&show=open")[0], 200)
+
+    def test_list_dialog_page_and_fragment(self):
+        status, headers, body = self.get_any("/list-dialog?type=movie&id=1005&return_to=/lists")
+        self.assertEqual(status, 200)
+        self.assertIn("<html", body)
+        status, headers, body = self.get_any("/list-dialog?type=movie&id=1005&partial=1")
+        self.assertEqual((status, headers["Cache-Control"]), (200, "no-store"))
+        self.assertNotIn("<html", body)
+        for path in ("/list-dialog?type=x&id=1", "/list-dialog?type=movie&id=abc", "/list-dialog"):
+            self.assertEqual(self.get_any(path)[0], 404, path)
+
+    def test_every_card_links_to_its_title_page(self):
+        for path in ("/", "/search?q=dune", "/library", "/library?type=added", "/lists"):
+            body = self.get_any(path)[2]
+            if "<article" in body:
+                self.assertIn('href="/title/', body, path)
+        self.assertNotIn("data-open-detail", self.get_any("/")[2])
 
 
 if __name__ == "__main__":

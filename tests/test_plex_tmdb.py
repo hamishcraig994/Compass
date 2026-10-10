@@ -504,3 +504,169 @@ class TestSearchMalformedRows(unittest.TestCase):
         with mock.patch.object(tmdb, "get_json", return_value={"id": 1, "title": "T"}) as get:
             self.client.details("movie", 1, timeout=8, retries=1)
         self.assertEqual((get.call_args.kwargs["timeout"], get.call_args.kwargs["retries"]), (8, 1))
+
+
+def raw_title(media_type="movie", **extra):
+    base = {"id": 42, "overview": "o", "genres": [{"name": "Drama"}], "vote_average": 7, "vote_count": 100,
+            "poster_path": "/p.jpg"}
+    if media_type == "movie":
+        base.update(title="Dune", release_date="2021-09-15")
+    else:
+        base.update(name="Severance", first_air_date="2022-02-18")
+    return {**base, **extra}
+
+
+class TestNormalizeTitle(unittest.TestCase):
+    def video(self, key, kind="Trailer", official=True, site="YouTube", name="v"):
+        return {"key": key, "type": kind, "official": official, "site": site, "name": name}
+
+    def trailer(self, videos):
+        return tmdb.normalize_title(raw_title(videos={"results": videos}), "movie")["trailer"]
+
+    def test_trailer_preference_order(self):
+        teaser = self.video("teaser1", "Teaser", name="teaser")
+        unofficial = self.video("unoff12", official=False, name="unofficial")
+        official = self.video("offic12", name="official")
+        self.assertEqual(self.trailer([teaser, unofficial, official])["name"], "official")
+        self.assertEqual(self.trailer([teaser, unofficial])["name"], "unofficial")
+        self.assertEqual(self.trailer([teaser])["name"], "teaser")
+        self.assertEqual(self.trailer([self.video("aaaaaa1", name="first"), self.video("bbbbbb1", name="second")])["name"],
+                         "first")
+        self.assertEqual(self.trailer([official])["url"], "https://www.youtube.com/watch?v=offic12")
+
+    def test_unusable_videos_give_none(self):
+        self.assertIsNone(self.trailer([]))
+        self.assertIsNone(self.trailer([self.video("abcdef1", site="Vimeo")]))
+        self.assertIsNone(self.trailer([self.video("javascript:alert(1)")]))
+        self.assertIsNone(self.trailer([self.video("a b c d e f")]))
+        self.assertIsNone(self.trailer([self.video("ab")]))
+        self.assertIsNone(self.trailer([self.video(None), "junk", self.video("abcdef1", "Clip")]))
+        self.assertIsNone(tmdb.normalize_title(raw_title(videos="x"), "movie")["trailer"])
+
+    def test_cast_is_capped_with_characters_and_valid_profile_urls_only(self):
+        cast = [{"name": f"A{n}", "character": f"C{n}", "profile_path": "/f.jpg"} for n in range(20)]
+        cast[1]["profile_path"] = "javascript:alert(1)"
+        cast[2]["profile_path"] = "no-slash.jpg"
+        cast[3]["profile_path"] = None
+        got = tmdb.normalize_title(raw_title(credits={"cast": cast + [{"name": ""}, "junk"]}), "movie")["cast"]
+        self.assertEqual(len(got), tmdb.CAST_MAX)
+        self.assertEqual(got[0], {"name": "A0", "character": "C0", "profile_url": "https://image.tmdb.org/t/p/w185/f.jpg"})
+        self.assertEqual([c["profile_url"] for c in got[1:4]], [None, None, None])
+
+    def test_movie_crew_priority_and_unique_names(self):
+        crew = [{"name": "W", "job": "Writer"}, {"name": "S", "job": "Screenplay"}, {"name": "D", "job": "Director"},
+                {"name": "S", "job": "Writer"}, {"name": "N", "job": "Novel"}, {"name": "X", "job": "Gaffer"},
+                {"name": "Q", "job": "Story"}]
+        got = tmdb.normalize_title(raw_title(credits={"crew": crew}), "movie")["crew"]
+        self.assertEqual([(c["name"], c["job"]) for c in got],
+                         [("D", "Director"), ("S", "Screenplay"), ("W", "Writer"), ("Q", "Story"), ("N", "Novel")])
+
+    def test_crew_is_capped_at_six(self):
+        crew = [{"name": f"D{n}", "job": "Director"} for n in range(9)]
+        self.assertEqual(len(tmdb.normalize_title(raw_title(credits={"crew": crew}), "movie")["crew"]), 6)
+
+    def test_tv_creators(self):
+        raw = raw_title("tv", created_by=[{"name": "Dan"}, {"name": "Dan"}, {"name": "Ben"}, {"name": 5}],
+                        credits={"crew": [{"name": "Z", "job": "Director"}]})
+        self.assertEqual(tmdb.normalize_title(raw, "tv")["crew"],
+                         [{"name": "Dan", "job": "Creator"}, {"name": "Ben", "job": "Creator"}])
+
+    def test_seasons_sorted_specials_kept_missing_episode_count_zero(self):
+        raw = raw_title("tv", seasons=[
+            {"season_number": 2, "name": "Two", "episode_count": 10, "air_date": "2025-01-17", "poster_path": "/s2.jpg"},
+            {"season_number": 0, "name": "Specials", "episode_count": 3},
+            {"season_number": 1, "name": "", "air_date": None},
+            {"season_number": "x"}, {"season_number": -1}, "junk"])
+        got = tmdb.normalize_title(raw, "tv")["seasons"]
+        self.assertEqual([s["number"] for s in got], [0, 1, 2])
+        self.assertEqual(got[1], {"number": 1, "name": "Season 1", "episodes": 0, "air_date": None, "poster_url": None})
+        self.assertEqual(got[2], {"number": 2, "name": "Two", "episodes": 10, "air_date": "2025-01-17",
+                                  "poster_url": "https://image.tmdb.org/t/p/w342/s2.jpg"})
+        self.assertEqual(tmdb.normalize_title(raw_title(seasons=[{"season_number": 1}]), "movie")["seasons"], [])
+
+    def test_similar_fills_up_from_similar_deduped_capped_and_skips_malformed(self):
+        def rows(start, n, bad=()):
+            return [{"id": i, "title": f"M{i}", "release_date": "2020-01-01"} for i in range(start, start + n)] + list(bad)
+        raw = raw_title(recommendations={"results": rows(100, 15, [{"title": "no id"}, {"id": -3}, "junk", {"id": 42}])},
+                        similar={"results": rows(110, 15)})   # 110-114 repeat recommendations; 42 is the title itself
+        got = tmdb.normalize_title(raw, "movie")["similar"]
+        ids = [s["tmdb_id"] for s in got]
+        self.assertEqual(len(ids), tmdb.SIMILAR_MAX)
+        self.assertEqual(len(set(ids)), len(ids))
+        self.assertEqual(ids[:15], list(range(100, 115)))
+        self.assertEqual(ids[15:], list(range(115, 120)))
+        self.assertNotIn(42, ids)
+        self.assertEqual(got[0]["media_type"], "movie")
+
+    def test_bad_imdb_id_gives_none_and_tvdb_comes_through(self):
+        for bad in ("tt", "nm123", "tt12345678901", "tt1x", 5, None, "<script>"):
+            self.assertIsNone(tmdb.normalize_title(raw_title(external_ids={"imdb_id": bad}), "movie")["imdb_id"])
+        good = tmdb.normalize_title(raw_title("tv", external_ids={"imdb_id": "tt0123456", "tvdb_id": 99}), "tv")
+        self.assertEqual((good["imdb_id"], good["tvdb_id"]), ("tt0123456", 99))
+        self.assertIsNone(tmdb.normalize_title(raw_title(external_ids={"tvdb_id": "99"}), "movie")["tvdb_id"])
+
+    def test_hostile_string_types_give_defaults(self):
+        extras = tmdb.normalize_title(raw_title(tagline={"x": 1}, status=["a"], networks=[{"name": 5}, {"name": "HBO"}],
+                                                production_companies=[{"name": None}, {"name": "A24"}]), "movie")
+        self.assertEqual((extras["tagline"], extras["status"]), ("", ""))
+        self.assertEqual(extras["studios"], ["A24"])
+        tv = tmdb.normalize_title(raw_title("tv", networks=[{"name": n} for n in "ABCDE"]), "tv")
+        self.assertEqual(tv["networks"], ["A", "B", "C"])
+        self.assertEqual(tmdb.normalize_title(raw_title(networks=[{"name": "HBO"}]), "movie")["networks"], [])
+
+    def test_missing_blocks_are_fine(self):
+        extras = tmdb.normalize_title({"id": 1}, "tv")
+        self.assertEqual((extras["cast"], extras["crew"], extras["trailer"], extras["seasons"], extras["similar"]),
+                         ([], [], None, [], []))
+
+
+class TestTmdbTitle(unittest.TestCase):
+    def setUp(self):
+        self._old = db.DB_PATH
+        db.DB_PATH = os.path.join(tempfile.mkdtemp(), "t.db")
+        self.addCleanup(setattr, db, "DB_PATH", self._old)
+        self.client = tmdb.TmdbClient("k" * 32)
+
+    def test_one_request_with_the_append_list_and_three_cache_writes(self):
+        raw = raw_title("tv", external_ids={"tvdb_id": 77, "imdb_id": "tt1"}, seasons=[{"season_number": 1}])
+        with mock.patch.object(tmdb, "get_json", return_value=raw) as get:
+            details, extras = self.client.title("tv", 42)
+        get.assert_called_once()
+        self.assertTrue(get.call_args.args[0].endswith("/tv/42"))
+        self.assertEqual(get.call_args.kwargs["params"]["append_to_response"],
+                         "keywords,credits,recommendations,similar,videos,external_ids,content_ratings")
+        self.assertEqual((get.call_args.kwargs["timeout"], get.call_args.kwargs["retries"]), (8, 1))
+        self.assertEqual(details["title"], "Severance")
+        self.assertEqual(extras["tvdb_id"], 77)
+        with mock.patch.object(tmdb, "get_json") as none:
+            self.assertEqual(self.client.cached_details("tv", 42), details)
+            self.assertEqual(self.client.cached_title("tv", 42), extras)
+            self.assertEqual(self.client.external_ids("tv", 42), {"tvdb_id": 77})
+            self.assertEqual(self.client.details("tv", 42), details)
+        none.assert_not_called()
+
+    def test_movie_uses_release_dates(self):
+        with mock.patch.object(tmdb, "get_json", return_value=raw_title()) as get:
+            self.client.title("movie", 42)
+        self.assertTrue(get.call_args.kwargs["params"]["append_to_response"].endswith(",release_dates"))
+
+    def test_without_external_ids_the_external_ids_cache_is_left_alone(self):
+        with mock.patch.object(tmdb, "get_json", return_value=raw_title()):
+            self.client.title("movie", 42)
+        self.assertIsNone(db.cache_get("external_ids:movie:42", 1e9))
+
+    def test_cached_title_never_requests_and_expires(self):
+        with mock.patch.object(tmdb, "get_json") as get:
+            self.assertIsNone(self.client.cached_title("movie", 1))
+        get.assert_not_called()
+        db.cache_put("title:v1:movie:1", {"x": 1})
+        self.assertEqual(self.client.cached_title("movie", 1), {"x": 1})
+        with mock.patch("time.time", return_value=__import__("time").time() + tmdb.TITLE_MAX_AGE + 5):
+            self.assertIsNone(self.client.cached_title("movie", 1))
+
+    def test_errors_propagate_and_write_nothing(self):
+        with mock.patch.object(tmdb, "get_json", side_effect=RuntimeError("HTTP 404: nope")):
+            with self.assertRaises(RuntimeError):
+                self.client.title("movie", 7)
+        self.assertIsNone(self.client.cached_title("movie", 7))
+        self.assertIsNone(self.client.cached_details("movie", 7))

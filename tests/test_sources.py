@@ -187,6 +187,23 @@ class TestSampleRecommendationsUnchangedByArrFixtures(unittest.TestCase):
         fixture_ids = {1040, 1041, 2040, 2041, 1034, 1035}
         self.assertFalse(fixture_ids & {i for _, i in ids})
 
+    # (tmdb id, match) for every sample recommendation at a fixed clock - captured from the code before the
+    # Seerr-parity changes (arr_id/seasons fixtures, rated-only history), which must not move it.
+    SAMPLE_FINGERPRINT = [(1017, 99), (1019, 78), (1014, 77), (1009, 75), (2011, 69), (2017, 66), (2030, 65),
+                          (1018, 57), (2013, 56), (2032, 53), (2014, 53), (1007, 52), (1030, 50), (1023, 48),
+                          (1008, 48), (1021, 47), (1020, 32), (2006, 32), (2010, 32), (2016, 27), (1022, 20),
+                          (2015, 16)]
+
+    def test_sample_recommendations_are_unchanged_in_ids_order_and_match(self):
+        import recommend
+        import sample
+        from datetime import datetime, timezone
+        now = datetime(2026, 10, 10, tzinfo=timezone.utc)
+        watched, keys = sample.load(now)
+        arr_keys = {(i["media_type"], i["tmdb_id"]) for i in sample.arr_library(now)["items"] if i["tmdb_id"]}
+        items = recommend.recommend(watched, keys | arr_keys, sample.SampleTmdb(now), limit=200, now=now)["items"]
+        self.assertEqual([(i["tmdb_id"], i["match"]) for i in items], self.SAMPLE_FINGERPRINT)
+
     def test_run_sample_recommendation_keys_are_the_known_set(self):
         result = sources.run(sample_mode=True)
         ids = {i["tmdb_id"] for i in result["items"]}
@@ -202,34 +219,35 @@ class TestAddToLibrary(unittest.TestCase):
     def test_movie_goes_straight_to_radarr(self):
         config.RADARR_URL, config.RADARR_API_KEY = "http://r", "k"
         with mock.patch.object(radarr.RadarrClient, "add", return_value=(True, "Added")) as add:
-            ok, msg = sources.add_to_library("movie", 5)
-        self.assertEqual((ok, msg), (True, "Added"))
+            ok, msg, arr_item = sources.add_to_library("movie", 5)
+        self.assertEqual((ok, msg, arr_item), (True, "Added", None))
         add.assert_called_once_with(5, search=True)
 
     def test_movie_without_radarr_configured(self):
         config.RADARR_URL = ""
-        ok, msg = sources.add_to_library("movie", 5)
-        self.assertEqual((ok, msg), (False, "Radarr isn't configured"))
+        ok, msg, arr_item = sources.add_to_library("movie", 5)
+        self.assertEqual((ok, msg, arr_item), (False, "Radarr isn't configured", None))
 
     def test_tv_resolves_tvdb_id_via_tmdb_then_adds_to_sonarr(self):
         config.SONARR_URL, config.SONARR_API_KEY, config.TMDB_TOKEN = "http://s", "k", "t" * 32
         with mock.patch("tmdb.TmdbClient.external_ids", return_value={"tvdb_id": 77}), \
              mock.patch.object(sonarr.SonarrClient, "add", return_value=(True, "Added")) as add:
-            ok, msg = sources.add_to_library("tv", 5)
-        self.assertEqual((ok, msg), (True, "Added"))
-        add.assert_called_once_with(77, search=True)
+            ok, msg, arr_item = sources.add_to_library("tv", 5)
+        self.assertEqual((ok, msg, arr_item), (True, "Added", None))
+        add.assert_called_once_with(77, search=True, seasons=None)
 
     def test_tv_without_tvdb_id_fails_cleanly(self):
         config.SONARR_URL, config.SONARR_API_KEY, config.TMDB_TOKEN = "http://s", "k", "t" * 32
         with mock.patch("tmdb.TmdbClient.external_ids", return_value={"tvdb_id": None}):
-            ok, msg = sources.add_to_library("tv", 5)
+            ok, msg, arr_item = sources.add_to_library("tv", 5)
         self.assertFalse(ok)
+        self.assertIsNone(arr_item)
         self.assertIn("TVDB", msg)
 
     def test_tv_without_sonarr_configured(self):
         config.SONARR_URL = ""
-        ok, msg = sources.add_to_library("tv", 5)
-        self.assertEqual((ok, msg), (False, "Sonarr isn't configured"))
+        ok, msg, arr_item = sources.add_to_library("tv", 5)
+        self.assertEqual((ok, msg, arr_item), (False, "Sonarr isn't configured", None))
 
 
 class TestRunNeverUsesAi(unittest.TestCase):
@@ -508,6 +526,83 @@ class TestRunHeroDetails(unittest.TestCase):
             result = sources.run(sample_mode=False)
         self.assertEqual(details.call_count, 5)
         self.assertEqual([i.get("runtime") for i in result["items"]], [99] * 5 + [None] * 3)
+
+
+class TestRatedOnlyInRun(unittest.TestCase):
+    """A rating means "I've seen it": the synthetic entries reach the recommender, in run() and the AI page."""
+
+    def setUp(self):
+        TestRunSnapshotAndRatings.setUp(self)
+
+    run_live = TestRunSnapshotAndRatings.run_live
+    rows = [{"media_type": "movie", "tmdb_id": 777, "stars": 5, "rated_at": "2026-09-01T00:00:00+00:00"},
+            {"media_type": "movie", "tmdb_id": 1, "stars": 3, "rated_at": "2026-09-02T00:00:00+00:00"}]
+
+    def test_live_run_passes_the_synthetic_entries_after_the_real_history(self):
+        with mock.patch("db.rating_rows", return_value=self.rows):
+            result, rec = self.run_live()
+        history = rec.call_args.args[0]
+        self.assertEqual([w["tmdb_id"] for w in history][-1], 777)
+        synthetic = [w for w in history if w.get("rated_only")]
+        self.assertEqual([(w["tmdb_id"], w["user_rating"], w["title"]) for w in synthetic], [(777, 10, None)])
+        self.assertEqual(result["watched_count"], len(PLEX_WATCHED))     # unchanged by the synthetic entries
+        self.assertNotIn(777, [w["tmdb_id"] for w in result["watched"]])  # the Watched tab stays real history
+
+    def test_ai_generation_passes_them_too(self):
+        config.AI_TOKEN = "sk-x"
+        with mock.patch("db.rating_rows", return_value=self.rows), \
+             mock.patch("recommend.recommend", return_value={"items": [], "profile": {}, "notes": []}) as rec:
+            result = sources.generate_ai_recommendations()
+        self.assertIn(777, [w["tmdb_id"] for w in rec.call_args.args[0] if w.get("rated_only")])
+        self.assertEqual(result["watched_count"], len(PLEX_WATCHED))
+
+    def test_sample_run_never_reads_the_ratings(self):
+        with mock.patch("db.rating_rows", side_effect=AssertionError("rating_rows")):
+            sources.run(sample_mode=True)
+
+
+class TestAddToLibraryThreeTuple(unittest.TestCase):
+    def setUp(self):
+        self._old = {k: getattr(config, k) for k in CONFIG_KEYS + ("TMDB_TOKEN",)}
+        self.addCleanup(lambda: [setattr(config, k, v) for k, v in self._old.items()])
+
+    def test_movie_success_returns_the_client_last_item(self):
+        config.RADARR_URL, config.RADARR_API_KEY = "http://r", "k"
+
+        def fake_add(self, tmdb_id, search=True):
+            self.last_item = {"arr_id": 4}
+            return True, "Added"
+
+        with mock.patch.object(radarr.RadarrClient, "add", fake_add):
+            self.assertEqual(sources.add_to_library("movie", 5, seasons=[1, 2]), (True, "Added", {"arr_id": 4}))
+
+    def test_a_refused_add_returns_no_item_even_if_the_client_has_a_stale_one(self):
+        config.RADARR_URL, config.RADARR_API_KEY = "http://r", "k"
+
+        def fake_add(self, tmdb_id, search=True):
+            self.last_item = {"stale": 1}
+            return False, "Already in Radarr"
+
+        with mock.patch.object(radarr.RadarrClient, "add", fake_add):
+            self.assertEqual(sources.add_to_library("movie", 5), (False, "Already in Radarr", None))
+
+    def test_tv_passes_the_seasons_and_returns_the_item(self):
+        config.SONARR_URL, config.SONARR_API_KEY, config.TMDB_TOKEN = "http://s", "k", "t" * 32
+
+        def fake_add(self, tvdb_id, search=True, seasons=None):
+            self.last_item = {"arr_id": 8, "seasons": seasons}
+            return True, "Added"
+
+        with mock.patch("tmdb.TmdbClient.external_ids", return_value={"tvdb_id": 77}), \
+             mock.patch.object(sonarr.SonarrClient, "add", fake_add):
+            self.assertEqual(sources.add_to_library("tv", 5, seasons=[2]), (True, "Added", {"arr_id": 8, "seasons": [2]}))
+
+    def test_tv_resolution_failure_is_a_three_tuple(self):
+        config.SONARR_URL, config.SONARR_API_KEY, config.TMDB_TOKEN = "http://s", "k", "t" * 32
+        with mock.patch("tmdb.TmdbClient.external_ids", side_effect=RuntimeError("down")):
+            ok, msg, item = sources.add_to_library("tv", 5)
+        self.assertEqual((ok, item), (False, None))
+        self.assertIn("down", msg)
 
 
 if __name__ == "__main__":

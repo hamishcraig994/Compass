@@ -349,8 +349,10 @@ class TestLibraryPage(PatchedState):
         self.assertIn('class="subtab on" href="/library?type=movie&amp;q=arr"', html)
         self.assertIn('href="/library?type=watched&amp;q=arr"', html)
         self.assertNotRegex(html, r'class="subtab[^"]*" href="[^"]*sort=')
-        for label in ("All", "Movies", "TV shows", "Watched", "Added here"):
+        for label in ("All", "Movies", "TV shows", "Watched", "Requests", "Lists"):
             self.assertIn(f">{label}</a>", html)
+        self.assertNotIn("Added here", html)
+        self.assertIn('<a class="subtab" href="/lists">Lists</a>', html)
 
     def test_toolbar_is_a_get_form_following_the_tab(self):
         html = self.render([self.lib()], tab="all")
@@ -363,7 +365,10 @@ class TestLibraryPage(PatchedState):
         self.assertIn('<option value="rated">', watched)
         self.assertNotIn('<option value="unwatched">', watched)
         added = self.render([self.lib()], tab="added")
-        self.assertNotIn('name="show"', added)
+        self.assertIn('name="show"', added)
+        for value, label in (("all", "Everything"), ("open", "Not available yet"), ("available", "Available")):
+            self.assertIn(f'<option value="{value}"{" selected" if value == "all" else ""}>{label}</option>', added)
+        self.assertNotIn(">open<", added)
 
     def test_pager_keeps_params_and_is_omitted_for_one_page(self):
         items = [self.lib(tmdb_id=n, title=f"Film {n:03d}") for n in range(1, 120)]
@@ -606,28 +611,34 @@ class TestBrowseHero(PatchedState):
         with mock.patch.object(web, "owned_keys", return_value={("movie", 101)}):
             owned = hero_html(self.render([rec(1)]))
         self.assertIn('<span class="lib-tag">In library</span>', owned)
-        hero_actions = re.search(r'<div class="hero-actions">(.*?)<details', owned, re.S).group(1)
+        hero_actions = re.search(r'<div class="hero-actions">(.*?)</div></div></article>', owned, re.S).group(1)
         self.assertNotIn("btn-add", hero_actions)
+        self.assertIn('class="btn-ghost hero-more" href="/title/movie/101"', hero_actions)
 
     def test_add_only_when_configured_and_not_sample(self):
         self.assertNotIn("btn-add", self.render([rec(1)]))
         set_config(self, RADARR_URL="x", RADARR_API_KEY="x")
         html = self.render([rec(1), rec(2, media_type="tv")])
         self.assertIn('href="/add-dialog?type=movie&amp;id=101&amp;return_to=%2F"', html)
-        self.assertNotIn("type=tv&amp;id=102", html)        # Sonarr isn't configured
+        self.assertNotIn("/add-dialog?type=tv&amp;id=102", html)        # Sonarr isn't configured
         self.use(browse_result([rec(1)], sample=True))
         self.assertNotIn("btn-add", pages.render_browse("all"))
         self.assertNotIn("/dismiss", pages.render_browse("all"))
 
-    def test_more_info_lives_in_details_with_actions(self):
+    def test_more_info_is_a_link_to_the_title_page_and_there_is_no_details_block(self):
         hero = hero_html(self.render([rec(1, url="https://www.themoviedb.org/movie/1")]))
-        details = re.search(r'<details class="card-details hero-details">.*?</details>', hero, re.S).group(0)
-        self.assertIn("More info<span class=\"visually-hidden\">: Film 1</span>", details)
-        self.assertIn('class="detail-body"', details)
-        self.assertIn("Overview 1.", details)
-        self.assertIn('class="ext-link"', details)
-        self.assertIn('action="/dismiss" data-enhance="dismiss"', details)
-        self.assertIn('<div class="card-poster" hidden>', hero)
+        self.assertIn('<a class="btn-ghost hero-more" href="/title/movie/101">More info'
+                      '<span class="visually-hidden">: Film 1</span></a>', hero)
+        for gone in ("<details", "hero-details", "detail-body", 'class="card-poster"', "/dismiss", "ext-link"):
+            self.assertNotIn(gone, hero)
+
+    def test_hero_tools_are_the_watchlist_toggle_only(self):
+        hero = hero_html(self.render([rec(1)]))
+        tools = re.search(r'<div class="card-tools hero-tools">.*?</div></div></article>', hero, re.S).group(0)
+        self.assertNotIn('class="rate', hero)
+        self.assertIn("list-toggle-form", tools)
+        self.assertIn('<input type="hidden" name="list" value="watchlist">', tools)
+        self.assertNotIn("list-link", tools)
 
 
 class TestBrowseRows(PatchedState):
@@ -658,7 +669,8 @@ class TestBrowseRows(PatchedState):
         set_config(self, RADARR_URL="x", RADARR_API_KEY="x")
         html = self.render([rec(n) for n in range(1, 9)])
         card = re.search(r'<article class="card row-card" data-card="movie-106">.*?</article>', html, re.S).group(0)
-        self.assertIn('<div class="card-poster" data-open-detail>', card)
+        self.assertIn('<div class="card-poster"><a class="poster-link" href="/title/movie/106" aria-label="More info: Film 6 (2006)">', card)
+        self.assertNotIn("data-open-detail", card)
         self.assertIn("93% match", card)
         self.assertIn('<h4 class="title">Film 6 (2006)</h4>', card)
         details = re.search(r'<details class="card-details">.*</details>', card, re.S).group(0)
@@ -675,21 +687,29 @@ class TestBrowseRows(PatchedState):
         other = re.search(r'<article class="card row-card" data-card="movie-107">.*?</article>', html, re.S).group(0)
         self.assertNotIn("lib-tag", other)
 
-    def test_library_cards_have_no_data_card_or_actions(self):
+    def test_library_row_cards_link_to_the_title_page_and_carry_tools(self):
         lib = [{"media_type": "movie", "tmdb_id": 900, "title": "<b>Owned</b>", "year": 2020, "added_at": "2024-01-01T00:00:00Z",
                 "url": "https://www.themoviedb.org/movie/900"},
-               {"media_type": "tv", "tmdb_id": 901, "title": "Show", "year": None, "added_at": None, "url": "javascript:x"}]
+               {"media_type": "tv", "tmdb_id": None, "title": "Show", "year": None, "added_at": None, "url": "javascript:x"}]
         html = self.render([rec(1)], library=lib)
         row = re.search(r'<section class="row" data-row="library_new".*?</section>', html, re.S).group(0)
-        self.assertEqual(row.count('<article class="card row-card lib-card">'), 2)
+        self.assertEqual(row.count('<article class="card row-card lib-card" data-preview>'), 2)
         self.assertNotIn("data-card", row)
-        self.assertNotIn("<form", row)
         self.assertNotIn("<details", row)
-        self.assertIn('<a href="https://www.themoviedb.org/movie/900"', row)
-        self.assertIn("&lt;b&gt;Owned&lt;/b&gt;", row)
+        self.assertNotIn("data-open-detail", row)
         self.assertNotIn("javascript:", row)
+        self.assertNotIn("themoviedb.org", row)                       # titles go to our page, not TMDB
+        self.assertIn("&lt;b&gt;Owned&lt;/b&gt;", row)
         self.assertEqual(row.count('<span class="lib-tag">In library</span>'), 2)
-        for card in re.findall(r'<article class="card row-card lib-card">.*?</article>', row, re.S):
+        owned, bare = re.findall(r'<article class="card row-card lib-card" data-preview>.*?</article>', row, re.S)
+        self.assertIn('<a class="poster-link" href="/title/movie/900"', owned)
+        self.assertIn('<h4 class="title"><a href="/title/movie/900">', owned)
+        self.assertIn('<div class="card-tools">', owned)
+        self.assertIn('<form class="rate rate-compact"', owned)
+        self.assertIn('class="list-link"', owned)
+        for gone in ("poster-link", "card-tools", "<a ", "<form"):     # no tmdb_id: nothing to link or rate
+            self.assertNotIn(gone, bare)
+        for card in (owned, bare):
             poster = re.search(r'<div class="card-poster">.*?</div>', card, re.S).group(0)
             self.assertNotIn("lib-tag", poster)                      # a direct child of the article instead
             self.assertIn('</div><span class="lib-tag">In library</span><div class="card-info">', card)
@@ -727,7 +747,7 @@ class TestBrowseRows(PatchedState):
 
 
 class TestBrowseRate(PatchedState):
-    def test_rate_form_in_hero_and_row_cards_posts_to_rate(self):
+    def test_rate_form_in_row_cards_posts_to_rate_and_not_in_hero(self):
         self.use(browse_result([rec(n) for n in range(1, 9)]))
         html = pages.render_browse("movie")
         card = re.search(r'<article class="card row-card" data-card="movie-106">.*?</article>', html, re.S).group(0)
@@ -741,7 +761,7 @@ class TestBrowseRate(PatchedState):
         self.assertEqual(form.count('aria-pressed="false"'), 5)
         self.assertIn('aria-label="Rate 3 out of 5"', form)
         self.assertNotIn('value="0"', form)
-        self.assertIn('data-enhance="rate"', hero_html(html))
+        self.assertNotIn('data-enhance="rate"', hero_html(html))
 
     def test_rate_form_escapes_title_and_shows_in_sample_mode(self):
         self.use(browse_result([rec(1, title='"><script>x</script>')], sample=True))
@@ -755,7 +775,7 @@ class TestBrowseRate(PatchedState):
         with mock.patch.object(web, "_is_sample", return_value=False), \
                 mock.patch.object(db, "ratings", return_value={("movie", 101): 4}):
             html = pages.render_browse("all")
-        form = re.search(r'<form class="rate".*?</form>', hero_html(html), re.S).group(0)
+        form = re.search(r'<form class="rate[^"]*" (?:(?!</form>).)*?name="id" value="101".*?</form>', html, re.S).group(0)
         self.assertRegex(form, r'value="4" class="star on" aria-pressed="true"')
         self.assertEqual(form.count('aria-pressed="true"'), 1)
         self.assertEqual(form.count('class="star on"'), 4)
@@ -768,7 +788,7 @@ class TestBrowseRate(PatchedState):
             with mock.patch.object(web, "_is_sample", return_value=False), \
                     mock.patch.object(db, "ratings", return_value={("movie", 101): value}):
                 html = pages.render_browse("all")
-            form = re.search(r'<form class="rate".*?</form>', hero_html(html), re.S).group(0)
+            form = re.search(r'<form class="rate[^"]*" (?:(?!</form>).)*?name="id" value="101".*?</form>', html, re.S).group(0)
             self.assertIn("Not rated", form, value)
             self.assertNotIn("star-clear", form)
             self.assertNotIn('aria-pressed="true"', form)
@@ -776,9 +796,10 @@ class TestBrowseRate(PatchedState):
     def test_js_preview_icons_poster_click_and_focus_rules(self):
         js = read_static("app.js")
         body = js[js.index("function openPreview"):]
-        for needle in ('title: "More info"', '"Not interested"', "setIcon(more, \"chevron\")", "openDetail(card, card.querySelector"):
-            self.assertIn(needle, body)
-        self.assertIn("closeFallback: true", js)
+        for needle in ('title: "More info"', '"Not interested"', "setIcon(more, \"chevron\")", "a.poster-link", "cloneListTools"):
+            self.assertIn(needle, body + js[js.index("function cloneListTools"):])
+        self.assertNotIn("openDetail", js)
+        self.assertNotIn("closeFallback", js)
         self.assertIn("main .row:not([hidden])", js)
         self.assertIn("override", js)
         self.assertIn("inSlide(e.target)", js)
@@ -1250,7 +1271,8 @@ class TestSearchCard(SearchBase):
     def test_keep_on_add_and_card_key(self):
         html = self.card()
         self.assertIn('data-card="movie-11" data-keep-on-add', html)
-        self.assertIn("data-open-detail", html)
+        self.assertIn('<a class="poster-link" href="/title/movie/11"', html)
+        self.assertNotIn("data-open-detail", html)
 
     def test_undismiss_form_only_when_dismissed(self):
         self.assertNotIn("/undismiss", self.card())
@@ -1470,3 +1492,834 @@ class TestAddKeepsFocus(unittest.TestCase):
         self.assertIn("markAdded(card)", add)
         self.assertIn("focusCard(kept[0])", add)
         self.assertIn("function focusCard", js)
+
+
+# ---------------------------------------------------------------------------
+# Seerr parity, phase B: title page, poster links and card tools, season picker, lists, Requests
+# ---------------------------------------------------------------------------
+STATUS_NONE = {"status": "none", "in_library": False, "sources": [], "arr_state": None, "episodes": None,
+               "watched": False, "dismissed": False}
+
+
+def season_row(number, **kw):
+    base = {"number": number, "name": f"Season {number}", "episodes": 8, "air_date": f"{2019 + number}-05-01",
+            "monitored": None, "have": None, "total": None, "state": None, "requested": False, "selectable": True}
+    base.update(kw)
+    return base
+
+
+def title_view(media_type="movie", tmdb_id=7, **kw):
+    item = {"media_type": media_type, "tmdb_id": tmdb_id, "title": "Heat", "year": 1995, "release_date": "1995-12-15",
+            "overview": "A heist.", "poster_url": "https://i/p.jpg", "poster_large_url": "https://i/big.jpg",
+            "backdrop_url": "https://i/b.jpg", "url": f"https://www.themoviedb.org/{media_type}/{tmdb_id}",
+            "genres": ["Crime", "Drama"], "directors": ["Michael Mann"], "cast": ["Al Pacino"],
+            "vote_average": 8.2, "vote_count": 100, "runtime": 170 if media_type == "movie" else None,
+            "seasons": 2 if media_type == "tv" else None, "certification": "R"}
+    base = {"media_type": media_type, "tmdb_id": tmdb_id, "state": "ok", "message": None, "item": item, "extras": {
+                "tagline": "A los angeles crime saga", "status": "Released", "cast": [
+                    {"name": "Al Pacino", "character": "Vincent", "profile_url": "https://i/al.jpg"},
+                    {"name": "Val Kilmer", "character": "", "profile_url": None}],
+                "crew": [{"name": "Michael Mann", "job": "Director"}], "trailer": {"name": "T", "url": "https://www.youtube.com/watch?v=abcdef"},
+                "seasons": [], "networks": [], "studios": ["Regency"], "tvdb_id": None, "imdb_id": "tt0113277", "similar": []},
+            "rec": None, "fit": None, "status": dict(STATUS_NONE), "arr": None, "seasons": [], "stars": None, "lists": [],
+            "on_watchlist": False, "list_names": [], "similar": [], "can_add": False, "sample": False, "library_known": True}
+    base.update(kw)
+    return base
+
+
+class TitleBase(PatchedState):
+    def setUp(self):
+        super().setUp()
+        self.old_cfg = (config.RADARR_URL, config.RADARR_API_KEY, config.SONARR_URL, config.SONARR_API_KEY)
+        self.addCleanup(lambda: (setattr(config, "RADARR_URL", self.old_cfg[0]), setattr(config, "RADARR_API_KEY", self.old_cfg[1]),
+                                 setattr(config, "SONARR_URL", self.old_cfg[2]), setattr(config, "SONARR_API_KEY", self.old_cfg[3])))
+        config.RADARR_URL = config.RADARR_API_KEY = config.SONARR_URL = config.SONARR_API_KEY = ""
+
+    def configure(self):
+        config.RADARR_URL = config.RADARR_API_KEY = config.SONARR_URL = config.SONARR_API_KEY = "x"
+
+    def render(self, **kw):
+        msg, undo = kw.pop("msg", ""), kw.pop("undo", None)
+        return pages.render_title(title_view(**kw), msg, undo)
+
+
+class TestTitlePage(TitleBase):
+    def test_ok_movie_structure(self):
+        html = self.render()
+        self.assertIn('<body class="cinematic">', html)
+        self.assertIn('<article class="title-page" data-card="movie-7" data-keep-on-add>', html)
+        self.assertIn('<h2 class="visually-hidden">Heat (1995)</h2>', html)
+        self.assertIn("<title>Heat (1995) - Compass</title>", html)
+        self.assertEqual(html.count("<h1 "), 2)                       # the brand and the title
+        self.assertIn('<h1 class="title title-name">Heat</h1>', html)
+        self.assertIn('<p class="kicker">Movie</p>', html)
+        self.assertIn('<p class="title-tagline">A los angeles crime saga</p>', html)
+        self.assertIn('<img class="title-backdrop" src="https://i/b.jpg" alt="">', html)
+        self.assertIn('<img class="poster" src="https://i/big.jpg"', html)                  # the large poster wins
+        self.assertIn('<span class="title-genres">Crime &middot; Drama</span>', html)
+        self.assertIn('<span class="badge cert">R</span>', html)
+        self.assertIn("<span>2h 50m</span>", html)
+        self.assertNotIn("% match", html)                           # no match for a non-recommendation
+        self.assertIn('<h2>Overview</h2><p class="overview">A heist.</p>', html)
+        for fact in ("<dt>Status</dt><dd>Released</dd>", "<dt>Release</dt><dd>1995-12-15</dd>", "<dt>Runtime</dt><dd>2h 50m</dd>",
+                     "<dt>Studio</dt><dd>Regency</dd>", "<dt>Director</dt><dd>Michael Mann</dd>", "<dt>TMDB</dt><dd>8.2 / 10</dd>"):
+            self.assertIn(fact, html)
+        self.assertIn('href="https://www.themoviedb.org/movie/7"', html)
+        self.assertIn('href="https://www.imdb.com/title/tt0113277/"', html)
+        self.assertIn('href="https://www.youtube.com/watch?v=abcdef" target="_blank" rel="noopener noreferrer">Watch trailer', html)
+        self.assertIn("(opens YouTube in a new tab)", html)
+        self.assertNotIn("seasons\"><h2", html)
+
+    def test_actions_full_rate_form_watchlist_toggle_and_list_link(self):
+        html = self.render(stars=4)
+        actions = re.search(r'<div class="title-actions">.*?</div></div></div></section>', html, re.S).group(0)
+        self.assertIn('<form class="rate" method="post" action="/rate" data-enhance="rate">', actions)    # not compact
+        self.assertNotIn("rate-compact", actions)
+        self.assertRegex(actions, r'value="4" class="star on" aria-pressed="true"')
+        self.assertIn("Your rating: 4/5", actions)
+        self.assertNotIn("card-tools", actions)                    # the toggle and link are direct children
+        self.assertIn('action="/lists/add" data-enhance="list"', actions)
+        self.assertIn('<span class="list-toggle-text">Watchlist</span>', actions)
+        self.assertIn('<span class="list-link-text">Add to list</span>', actions)
+        self.assertIn('aria-label="Add to list: Heat (1995)"', actions)      # starts with the visible text
+        self.assertNotIn('<span class="visually-hidden">Lists</span>', actions)
+        self.assertIn('href="/list-dialog?type=movie&amp;id=7&amp;return_to=%2Ftitle%2Fmovie%2F7" data-list-dialog', actions)
+        self.assertEqual(actions.count('name="return_to" value="/title/movie/7"'), 3)      # rate, toggle, dismiss
+        on = self.render(on_watchlist=True)
+        self.assertIn('action="/lists/remove"', on)
+        self.assertIn('class="list-toggle on" aria-pressed="true"', on)
+        self.assertIn(">On Watchlist<", on)
+
+    def test_add_request_more_and_in_library_actions(self):
+        self.configure()
+        self.assertIn('class="btn-add" href="/add-dialog?type=movie&amp;id=7&amp;return_to=%2Ftitle%2Fmovie%2F7" data-add-dialog>Add to library',
+                      self.render(can_add=True))
+        self.assertNotIn("btn-add", self.render(can_add=False))
+        owned = self.render(status=dict(STATUS_NONE, status="radarr", in_library=True, sources=["radarr"], arr_state="missing"))
+        self.assertIn('<span class="lib-tag">In library</span>', owned)
+        self.assertIn('<span class="lib-tag status-tag status-radarr">In Radarr</span>', owned)
+        self.assertIn('<span class="badge arr-state state-missing">Missing</span>', owned)
+        self.assertNotIn("btn-add", owned)
+        tv = self.render(media_type="tv", tmdb_id=9, status=dict(STATUS_NONE, status="sonarr", in_library=True),
+                         arr={"service": "sonarr"}, seasons=[season_row(1, requested=True, selectable=False), season_row(2)])
+        self.assertIn('data-add-dialog>Request more seasons</a>', tv)
+        done = self.render(media_type="tv", tmdb_id=9, status=dict(STATUS_NONE, status="sonarr", in_library=True),
+                           arr={"service": "sonarr"}, seasons=[season_row(1, requested=True, selectable=False)])
+        self.assertNotIn("Request more seasons", done)
+        self.assertIn('<span class="lib-tag">In library</span>', done)
+
+    def test_dismiss_or_undismiss_and_nothing_destructive_in_sample(self):
+        html = self.render()
+        self.assertIn('action="/dismiss"', html)
+        self.assertNotIn('action="/dismiss" data-enhance', html)    # plain: the redirect brings the Undo note back
+        self.assertNotIn("/undismiss", html)
+        hidden = self.render(status=dict(STATUS_NONE, dismissed=True))
+        self.assertIn('action="/undismiss"', hidden)
+        self.assertIn("Show in recommendations again", hidden)
+        self.assertNotIn('action="/dismiss"', hidden)
+        self.assertIn('<span class="badge">Not interested</span>', hidden)
+        self.configure()
+        sample = self.render(sample=True, can_add=True, status=dict(STATUS_NONE, dismissed=True))
+        for gone in ("/dismiss", "/undismiss", "btn-add", "data-add-dialog"):
+            self.assertNotIn(gone, sample)
+        self.assertIn('data-enhance="rate"', sample)                # rating and lists still render (the POST refuses)
+        self.assertIn("list-toggle", sample)
+
+    def test_status_badges_and_in_lists_links(self):
+        html = self.render(status=dict(STATUS_NONE, status="plex", watched=True), on_watchlist=True,
+                           list_names=[{"id": 1, "name": "Watchlist"}, {"id": 3, "name": "Horror <b>night</b>"}])
+        self.assertIn('<p class="title-status badges">', html)
+        self.assertIn('<span class="lib-tag status-tag status-plex">In library</span>', html)
+        self.assertIn('<span class="badge">Watched</span>', html)
+        self.assertIn('<span class="badge">On Watchlist</span>', html)
+        self.assertIn('<p class="in-lists">On your lists: <a href="/lists/1">Watchlist</a>, '
+                      '<a href="/lists/3">Horror &lt;b&gt;night&lt;/b&gt;</a></p>', html)
+        plain = self.render()
+        self.assertNotIn("title-status", plain)
+        self.assertNotIn("in-lists", plain)
+
+    def test_why_for_recommendations_and_fit_for_the_rest(self):
+        rec_html = self.render(rec={"match": 91, "reason": "Because you liked Ronin", "matches": ["Crime", "Mann"],
+                                    "because": ["Ronin", "Collateral"], "new": False, "trending": False, "source": "main"},
+                               fit=None)
+        self.assertIn("<h2>Why Compass picked this</h2>", rec_html)
+        self.assertIn('<p class="why-match match">91% match</p>', rec_html)
+        self.assertIn('<span class="match">91% match</span>', rec_html)                 # also in the meta line
+        self.assertIn('<p class="reason">Because you liked Ronin</p>', rec_html)
+        self.assertIn('<span class="chip">Mann</span>', rec_html)
+        self.assertIn("Because you watched Ronin, Collateral", rec_html)
+        self.assertNotIn("How it fits", rec_html)
+        fit = self.render(fit={"matches": ["Crime"]})
+        self.assertIn("<h2>How it fits your taste</h2>", fit)
+        self.assertIn('<span class="chip">Crime</span>', fit)
+        self.assertNotIn("Why Compass picked this", fit)
+        self.assertNotIn("% match", fit)
+        plain = self.render()
+        self.assertNotIn("Why Compass", plain)
+        self.assertNotIn("How it fits", plain)
+
+    def test_cast_section_and_name_only_fallback(self):
+        html = self.render()
+        self.assertIn('<ul class="cast-list">', html)
+        self.assertIn('<span class="cast-photo" style="--h:', html)
+        self.assertIn('<img src="https://i/al.jpg" alt="" loading="lazy">', html)
+        self.assertIn('<span class="cast-name">Al Pacino</span><span class="cast-role">Vincent</span>', html)
+        self.assertRegex(html, r'<span class="cast-photo" style="--h:\d+">V</span><span class="cast-name">Val Kilmer</span></li>')
+        view = title_view()
+        view["extras"]["cast"] = []
+        names = pages.render_title(view)
+        self.assertIn('<span class="cast-name">Al Pacino</span></li>', names)             # from item["cast"]
+        view["item"]["cast"] = []
+        self.assertNotIn("cast-list", pages.render_title(view))
+
+    def test_similar_row_uses_row_cards_with_match_only_for_recs(self):
+        sim = [{"media_type": "movie", "tmdb_id": 21, "title": "Ronin", "year": 1998, "poster_url": None, "url": None,
+                "status": "none", "match": 77, "stars": None, "lists": [], "on_watchlist": False},
+               {"media_type": "movie", "tmdb_id": 22, "title": "Collateral", "year": 2004, "poster_url": None, "url": None,
+                "status": "radarr", "match": None, "stars": 3, "lists": [2], "on_watchlist": True},
+               {"media_type": "movie", "tmdb_id": None, "title": "No id", "year": None, "match": None}]
+        html = self.render(similar=sim)
+        row = re.search(r'<section class="row title-similar".*?</section>', html, re.S).group(0)
+        self.assertIn('<h3 id="row-similar">More like this</h3>', row)
+        cards = re.findall(r'<article class="card row-card" data-card="[^"]*">.*?</article>', row, re.S)
+        self.assertEqual(len(cards), 2)                             # the title without an id is dropped
+        self.assertIn('<span class="match">77% match</span>', cards[0])
+        self.assertNotIn("% match", cards[1])
+        self.assertIn('status-tag status-radarr">In Radarr<', cards[1])
+        self.assertIn('<a class="poster-link" href="/title/movie/21"', cards[0])
+        self.assertNotIn("data-add-dialog", cards[1])               # already tracked: no Add
+        self.assertIn('name="return_to" value="/title/movie/7"', cards[0])
+        self.assertNotIn("title-similar", self.render())
+
+    def test_tv_facts_use_networks_and_creators_and_season_count(self):
+        view = title_view("tv", 9)
+        view["extras"].update(networks=["HBO", "Max"], studios=[], crew=[{"name": "Vince", "job": "Creator"}], status="Returning Series")
+        html = pages.render_title(view)
+        for fact in ("<dt>First aired</dt>", "<dt>Seasons</dt><dd>2</dd>", "<dt>Networks</dt><dd>HBO, Max</dd>",
+                     "<dt>Creator</dt><dd>Vince</dd>", "<dt>Status</dt><dd>Returning Series</dd>"):
+            self.assertIn(fact, html)
+        self.assertIn('<p class="kicker">TV series</p>', html)
+        self.assertIn("<span>2 seasons</span>", html)
+        self.assertIn('data-card="tv-9"', html)
+        self.assertIn('<body class="cinematic">', html)
+        self.assertRegex(html, r'<a class="nav-item active" href="/tv" aria-current="page">')
+
+    def test_notes_message_undo_and_partial(self):
+        html = self.render(msg="Hidden <b>x</b>", undo=("movie", 7))
+        self.assertIn('<div class="note undo-note" role="status"><span>Hidden &lt;b&gt;x&lt;/b&gt;</span>', html)
+        self.assertIn('name="return_to" value="/title/movie/7"', re.search(r'<div class="note undo-note".*?</div>', html).group(0))
+        self.assertIn('<p class="note" role="status">Saved</p>', self.render(msg="Saved"))
+        part = self.render(state="partial", message=web.TITLE_PARTIAL)
+        self.assertIn(f'<p class="note">{escape(web.TITLE_PARTIAL)}</p>', part)
+        self.assertIn('<h2>Overview</h2>', part)
+        self.assertNotIn('class="note">Some details', self.render())
+
+    def test_unavailable_and_not_found_render_inside_the_shell(self):
+        for state, message, status_code in (("unavailable", web.TITLE_UNAVAILABLE, 200), ("not_found", web.TITLE_NOT_FOUND, 404)):
+            html = pages.render_title(title_view(state=state, message=message, item=None, extras=None), msg="hi")
+            self.assertIn("<html", html)
+            self.assertIn(f'<div class="empty"><h3>{escape(message)}</h3><a class="btn-ghost" href="/search">Search instead</a></div>', html)
+            self.assertIn('<p class="note" role="status">hi</p>', html)
+            self.assertNotIn("title-hero", html)
+            self.assertNotIn("data-card", html)
+        self.assertIn("<title>Title not found - Compass</title>",
+                      pages.render_title(title_view(state="not_found", message="x", item=None)))
+
+    def test_hostile_values_are_escaped_and_bad_urls_dropped(self):
+        evil = "<script>alert('x')</script>"
+        view = title_view("tv", 9, state="partial", message=evil, seasons=[season_row(1, name=evil)],
+                          rec={"match": 50, "reason": evil, "matches": [evil], "because": [evil], "new": False,
+                               "trending": False, "source": "main"},
+                          list_names=[{"id": 4, "name": evil}],
+                          similar=[{"media_type": "tv", "tmdb_id": 3, "title": evil, "year": 2020, "poster_url": 'http://a/"onerror="x',
+                                    "url": "javascript:alert(1)", "status": "none", "match": None}])
+        view["item"].update(title=evil, overview=evil, genres=[evil], certification=evil, backdrop_url="javascript:alert(1)",
+                            poster_large_url="javascript:alert(2)", poster_url="javascript:alert(3)", url="javascript:alert(4)",
+                            directors=[evil], cast=[evil])
+        view["extras"].update(tagline=evil, status=evil, networks=[evil], studios=[evil], imdb_id='tt1"><x',
+                              trailer={"name": evil, "url": "javascript:alert(5)"},
+                              cast=[{"name": evil, "character": evil, "profile_url": "javascript:alert(6)"}],
+                              crew=[{"name": evil, "job": "Creator"}])
+        self.configure()
+        html = pages.render_title(view, msg=evil)
+        for raw in ("<script>", "javascript:", '"onerror="', 'tt1"><x', "<b>"):
+            self.assertNotIn(raw, html)
+        self.assertIn("&lt;script&gt;alert(", html)
+        self.assertNotIn("title-backdrop", html)
+        self.assertNotIn("trailer-link", html)
+        self.assertNotIn("imdb.com", html)
+        self.assertNotIn("ext-link", html)
+        self.assertIn("poster-empty", html)
+
+    def test_bad_ids_and_types_cannot_break_the_markup(self):
+        html = pages.render_title(title_view(media_type='"><x', tmdb_id="12"))
+        self.assertNotIn('"><x', html)
+        self.assertIn('data-card="movie-12"', html)
+
+
+class TestTitleSeasons(TitleBase):
+    def tv(self, rows, **kw):
+        return pages.render_title(title_view("tv", 9, seasons=rows, **kw))
+
+    def form(self, html):
+        return re.search(r'<form class="season-form".*?</form>', html, re.S).group(0)
+
+    def test_untracked_series_with_sonarr_has_checkboxes_two_submits_and_reload_contract(self):
+        self.configure()
+        form = self.form(self.tv([season_row(1), season_row(2)], can_add=True))
+        self.assertIn('method="post" action="/add" data-enhance="add" data-after="reload"', form)
+        self.assertIn('<input type="hidden" name="type" value="tv"><input type="hidden" name="id" value="9">'
+                      '<input type="hidden" name="return_to" value="/title/tv/9">', form)
+        self.assertEqual(re.findall(r'<input type="checkbox" class="season-check" name="season" value="(\d+)" id="s-\d+">', form), ["1", "2"])
+        self.assertIn('<label for="s-1" class="season-name">Season 1</label>', form)
+        self.assertIn('<span class="season-eps">8 episodes &middot; 2020</span>', form)
+        self.assertIn('<input type="checkbox" name="search" value="1" checked> Search now', form)
+        self.assertIn('<button type="submit" name="seasons" value="pick" class="btn-add">Request selected seasons</button>', form)
+        self.assertIn('<button type="submit" name="seasons" value="all" class="btn-ghost">Request all seasons</button>', form)
+        self.assertIn('href="/add-dialog?type=tv&amp;id=9&amp;return_to=%2Ftitle%2Ftv%2F9" data-add-dialog>More options</a>', form)
+
+    def test_requested_and_complete_seasons_have_no_checkbox_and_show_their_state(self):
+        self.configure()
+        rows = [season_row(1, requested=True, selectable=False, state="available", have=8, total=8, monitored=True),
+                season_row(2, requested=True, selectable=False, state="partial", have=3, total=8, monitored=True),
+                season_row(3, requested=True, selectable=False, state="missing", monitored=True, air_date="2020-01-01"),
+                season_row(4, requested=True, selectable=False, state="upcoming", monitored=True, air_date=None, episodes=None),
+                season_row(5, state="unmonitored", monitored=False)]
+        form = self.form(self.tv(rows, arr={"service": "sonarr"}))
+        self.assertEqual(form.count('class="season-check"'), 1)
+        self.assertIn('value="5"', form)
+        for label, state in (("Available", "available"), ("3/8 episodes", "partial"), ("Wanted", "missing"),
+                             ("Upcoming", "upcoming"), ("Not requested", "unmonitored")):
+            self.assertIn(f'<span class="badge arr-state season-state state-{state}">{label}</span>', form)
+        self.assertIn('<span class="season-name">Season 1</span>', form)
+        self.assertNotIn("season-eps\"></span>", form)
+
+    def test_no_checkboxes_or_buttons_without_sonarr_or_in_sample_or_when_nothing_is_selectable(self):
+        rows = [season_row(1, state="missing", monitored=True), season_row(2)]
+        no_sonarr = self.form(self.tv(rows))
+        sample = None
+        self.configure()
+        sample = self.form(self.tv(rows, sample=True))
+        done = self.form(self.tv([season_row(1, requested=True, selectable=False, state="available", have=8, total=8)]))
+        for form in (no_sonarr, sample, done):
+            self.assertNotIn("season-check", form)
+            self.assertNotIn('name="seasons"', form)
+            self.assertNotIn("season-actions", form)
+            self.assertIn("season-name", form)
+
+    def test_no_seasons_section_for_movies_or_empty_lists(self):
+        self.assertNotIn("season-form", self.render())
+        self.assertNotIn("season-form", self.tv([]))
+
+
+class TestPosterLinksAndTools(unittest.TestCase):
+    def test_pages_py_has_no_modal_hooks(self):
+        with open(os.path.join(ROOT, "pages.py"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertNotIn("data-open-detail", text)
+        self.assertNotIn("hero-details", text)
+
+    def test_title_url_and_poster_link(self):
+        self.assertEqual(pages._title_url({"media_type": "tv", "tmdb_id": 5}), "/title/tv/5")
+        self.assertEqual(pages._title_url({"media_type": "movie", "tmdb_id": "12"}), "/title/movie/12")
+        link = pages._poster_linked(dict(ITEM, title="<b>x</b>"))
+        self.assertIn('<a class="poster-link" href="/title/movie/7" aria-label="More info: &lt;b&gt;x&lt;/b&gt; (1995)"><div class="poster', link)
+        for bad in (dict(ITEM, tmdb_id=None), dict(ITEM, media_type="book"), dict(ITEM, tmdb_id=0)):
+            self.assertNotIn("poster-link", pages._poster_linked(bad))
+
+    def test_every_card_renderer_links_the_poster_to_the_title_page(self):
+        lib = {"media_type": "movie", "tmdb_id": 7, "title": "Heat", "year": 1995, "added_at": "2024-01-01T00:00:00Z",
+               "watched": False, "progress": None, "poster_key": None, "url": None}
+        watched = dict(lib, last_viewed="2024-01-01T00:00:00Z", view_count=1, stars=None, plex_stars=None)
+        search = {"media_type": "movie", "tmdb_id": 7, "title": "Heat", "year": 1995, "status": "none", "poster_url": None}
+        listed = dict(search, position=0, match=None, stars=None, lists=[], on_watchlist=False)
+        view = {"list": {"id": 3, "name": "L", "description": "", "kind": "custom", "count": 1, "url": "/lists/3", "posters": []},
+                "sort": "manual", "can_move": True}
+        cards = {"ai": pages._card(ITEM, "/ai", True), "row": pages._row_card(ITEM, "/", True),
+                 "search": pages._search_card(search, "/search", True), "library": pages._library_card(lib),
+                 "requests": pages._library_card(lib, True), "watched": pages._watched_card(watched, "/library"),
+                 "libcard": pages._library_row_card(lib), "list": pages._list_card(listed, view, "/lists/3"),
+                 "hero": pages._hero_slide(dict(ITEM, genres=[]), 1, 1, "/", True)}
+        for name, card in cards.items():
+            if name != "hero":
+                self.assertIn('<a class="poster-link" href="/title/movie/7"', card, name)
+            self.assertIn('class="card-tools', card, name)
+            # row and watched cards keep their full stars (row: in the details block); the rest get the compact line
+            if name == "hero":
+                self.assertNotIn('<form class="rate', card)
+            else:
+                self.assertIn('<form class="rate" ' if name in ("row", "watched") else '<form class="rate rate-compact"', card, name)
+            self.assertNotIn("data-open-detail", card, name)
+        self.assertIn('href="/title/movie/7"', cards["hero"])
+
+    def test_cards_without_a_tmdb_id_have_no_link_and_no_tools(self):
+        lib = {"media_type": "movie", "tmdb_id": None, "title": "Heat", "year": 1995, "added_at": None, "watched": False,
+               "progress": None, "poster_key": None, "url": "https://www.themoviedb.org/movie/7"}
+        watched = dict(lib, last_viewed=None, view_count=1, stars=None, plex_stars=None)
+        for card in (pages._library_card(lib), pages._library_card(lib, True), pages._library_row_card(lib)):
+            self.assertNotIn("poster-link", card)
+            self.assertNotIn("card-tools", card)
+            self.assertNotIn("<a ", card)                           # the title stays unlinked (no TMDB link either)
+            self.assertNotIn("<form", card)
+        self.assertEqual(pages._card_tools(lib, "/"), "")
+        self.assertEqual(pages._poster_linked(lib).count("<a "), 0)
+
+    def test_library_titles_link_to_the_title_page_not_tmdb(self):
+        lib = {"media_type": "tv", "tmdb_id": 12, "title": "Show", "year": 2020, "added_at": "2024-01-01T00:00:00Z", "watched": False,
+               "progress": None, "poster_key": None, "url": "https://www.themoviedb.org/tv/12"}
+        for card in (pages._library_card(lib), pages._library_card(lib, True),
+                     pages._watched_card(dict(lib, last_viewed=None, view_count=1, stars=None, plex_stars=None), "/library")):
+            self.assertIn('<h3 class="title"><a href="/title/tv/12">', card)
+            self.assertNotIn("themoviedb.org", card)
+            self.assertNotIn("_blank", card)
+
+    def test_card_tools_markup_and_states(self):
+        tools = pages._card_tools(dict(ITEM, stars=3, on_watchlist=True), "/movies")
+        self.assertTrue(tools.startswith('<div class="card-tools">'))
+        self.assertIn('<form class="rate rate-compact" method="post" action="/rate" data-enhance="rate">', tools)
+        self.assertIn('<p class="rating-text visually-hidden">Your rating: 3/5</p>', tools)
+        self.assertIn('<form class="inline list-toggle-form" method="post" action="/lists/remove" data-enhance="list">', tools)
+        self.assertIn('<input type="hidden" name="list" value="watchlist">', tools)
+        self.assertIn('class="list-toggle on" aria-pressed="true"', tools)
+        self.assertIn('<svg class="list-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"', tools)
+        self.assertIn('<span class="list-toggle-text">On Watchlist</span>', tools)
+        self.assertIn('data-list-dialog aria-label="Add Heat (1995) to a list">', tools)
+        self.assertIn('<span class="visually-hidden">Lists</span></a></div>', tools)
+        self.assertIn('href="/list-dialog?type=movie&amp;id=7&amp;return_to=%2Fmovies"', tools)
+        off = pages._card_tools(ITEM, "/movies")
+        self.assertIn('action="/lists/add"', off)
+        self.assertIn('class="list-toggle" aria-pressed="false"', off)
+        self.assertIn("Not rated", off)
+        no_stars = pages._card_tools(ITEM, "/", stars=False)
+        self.assertNotIn('action="/rate"', no_stars)
+        self.assertIn("list-toggle", no_stars)
+        no_lists = pages._card_tools(ITEM, "/", lists=False)
+        self.assertIn('action="/rate"', no_lists)
+        self.assertNotIn("list-toggle", no_lists)
+        self.assertNotIn("list-link", no_lists)
+        self.assertEqual(pages._card_tools(ITEM, "/", stars=False, lists=False), "")
+        self.assertEqual(pages._card_tools(dict(ITEM, tmdb_id=None), "/"), "")
+
+    def test_card_tools_hostile_title_is_escaped(self):
+        tools = pages._card_tools(dict(HOSTILE), "/")
+        self.assertNotIn("<script>", tools)
+        self.assertIn("&lt;script&gt;", tools)
+
+    def test_rate_form_compact_variant(self):
+        compact = pages._rate_form(ITEM, "/", compact=True)
+        full = pages._rate_form(ITEM, "/")
+        self.assertIn('<form class="rate rate-compact"', compact)
+        self.assertIn('class="rating-text visually-hidden"', compact)
+        self.assertIn('<form class="rate" ', full)
+        self.assertIn('<p class="rating-text">', full)
+        self.assertEqual(compact.count('name="stars"'), full.count('name="stars"'))
+        clear = pages._rate_form(dict(ITEM, stars=2), "/", compact=True)
+        self.assertIn("star-clear", clear)
+
+    def test_row_card_details_carry_the_watchlist_toggle_for_the_preview_and_no_js(self):
+        card = pages._row_card(ITEM, "/", True)
+        details = re.search(r'<details class="card-details">.*</details>', card, re.S).group(0)
+        self.assertEqual(details.count("list-toggle-form"), 1)
+        self.assertIn("data-list-dialog", details)
+        self.assertEqual(card.count('action="/rate"'), 1)           # still one (full) rate form per row card
+
+    def test_ai_page_applies_user_state(self):
+        old = config.AI_TOKEN
+        self.addCleanup(setattr, config, "AI_TOKEN", old)
+        config.AI_TOKEN = "sk-x"
+        with mock.patch.object(web, "build_status", return_value=status()), \
+                mock.patch.object(web, "with_user_state", side_effect=lambda items: [dict(i, on_watchlist=True) for i in items]) as ws, \
+                mock.patch.dict(web._ai_state, {"result": result(), "time": time.time()}):
+            html = pages.render_ai_page()
+        ws.assert_called_once()
+        self.assertIn('class="list-toggle on"', html)
+        self.assertIn('class="poster-link"', html)
+
+
+class TestAddDialogSeasons(TitleBase):
+    def dialog(self, media_type="tv", choices=None, partial=True, title="Show <b>"):
+        item = {"media_type": media_type, "tmdb_id": 9, "title": title, "year": 2020, "poster_url": None}
+        patches = [mock.patch.object(web, "_is_sample", return_value=False),
+                   mock.patch.object(web, "lookup_item", return_value=item),
+                   mock.patch.object(web, "season_choices", return_value=choices),
+                   mock.patch.object(pages, "_configured_profiles", return_value=[(1, "HD")])]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return pages.render_add_dialog(media_type, 9, "/tv", partial=partial)
+
+    def test_untracked_series_gets_the_radios_and_the_season_list(self):
+        html = self.dialog(choices={"seasons": [season_row(1), season_row(2, name="Season <i>2</i>")], "tracked": False, "known": True})
+        picker = re.search(r'<fieldset class="season-picker".*?</fieldset>', html, re.S).group(0)
+        self.assertIn('<input type="radio" name="seasons" value="all" checked> All seasons', picker)
+        self.assertIn('<input type="radio" name="seasons" value="pick"> Choose seasons', picker)
+        self.assertEqual(re.findall(r'class="season-check"\s+name="season" value="(\d+)">', picker), ["1", "2"])
+        self.assertNotIn("disabled", picker)
+        self.assertIn("Season &lt;i&gt;2&lt;/i&gt;", picker)
+        self.assertIn('<span class="season-eps">8 episodes &middot; 2020</span>', picker)
+        self.assertIn('<select name="quality_profile_id">', html)
+        self.assertIn('<h3 id="add-dialog-title">Add &quot;Show &lt;b&gt;&quot; to library</h3>', html)
+        self.assertIn('name="search" value="1" checked', html)
+        self.assertLess(html.index("season-picker"), html.index("quality_profile_id"))
+        self.assertNotIn("<html", html)
+
+    def test_tracked_series_says_request_more_and_hides_the_profile_select(self):
+        rows = [season_row(1, requested=True, selectable=False, state="available", have=8, total=8), season_row(2)]
+        html = self.dialog(choices={"seasons": rows, "tracked": True, "known": True})
+        self.assertIn("Request more seasons of &quot;Show &lt;b&gt;&quot;", html)
+        self.assertIn("All remaining seasons", html)
+        self.assertNotIn("quality_profile_id", html)
+        self.assertRegex(html, r'name="season" value="1" checked disabled>')
+        self.assertRegex(html, r'name="season" value="2">')
+        self.assertIn('<span class="badge arr-state season-state state-available">Available</span>', html)
+        self.assertIn(">Request</button>", html)
+        self.assertIn('name="search" value="1" checked', html)
+
+    def test_unknown_seasons_offer_only_all_and_a_note(self):
+        html = self.dialog(choices={"seasons": [], "tracked": False, "known": False})
+        self.assertIn('name="seasons" value="all" checked', html)
+        self.assertNotIn('value="pick"', html)
+        self.assertNotIn("season-check", html)
+        self.assertIn("Season list unavailable right now - you can still add all seasons.", html)
+
+    def test_a_failing_season_lookup_degrades_to_the_note(self):
+        with mock.patch.object(web, "season_choices", side_effect=RuntimeError("boom")):
+            item = {"media_type": "tv", "tmdb_id": 9, "title": "S", "year": 2020, "poster_url": None}
+            with mock.patch.object(web, "lookup_item", return_value=item), mock.patch.object(web, "_is_sample", return_value=False), \
+                    mock.patch.object(pages, "_configured_profiles", return_value=[]):
+                html = pages.render_add_dialog("tv", 9, "/tv", partial=True)
+        self.assertIn("Season list unavailable", html)
+        self.assertNotIn("boom", html)
+
+    def test_movies_have_no_picker_and_never_ask_for_seasons(self):
+        with mock.patch.object(web, "season_choices") as choices:
+            html = self.dialog("movie", choices=None)
+        choices.assert_not_called()
+        self.assertNotIn("season", html)
+        self.assertIn('<select name="quality_profile_id">', html)
+        self.assertIn(">Add</button>", html)
+
+    def test_season_picker_function_directly(self):
+        self.assertIn('id="x-seasons"', pages._season_picker({"seasons": [], "tracked": False, "known": False}, "x"))
+        rows = [season_row(1, requested=True, selectable=False)]
+        self.assertIn("checked disabled", pages._season_picker({"seasons": rows, "tracked": True, "known": True}, "x"))
+
+    def test_section_follows_the_new_return_targets(self):
+        for return_to, expected in (("/title/movie/3", "movies"), ("/title/tv/3", "tv"), ("/lists/2", "library"),
+                                    ("/watchlist", "library"), ("/ai", "ai")):
+            self.assertEqual(pages._section_for(return_to), expected, return_to)
+        self.assertEqual(pages._section_for("/"), "home")
+
+
+def summary(list_id=1, name="Watchlist", kind="watchlist", count=0, description="", posters=()):
+    return {"id": list_id, "name": name, "description": description, "kind": kind, "count": count,
+            "url": f"/lists/{list_id}" if list_id is not None else None, "posters": list(posters)}
+
+
+def lists_view(*lists, sample=False, can_create=True):
+    return {"lists": list(lists), "sample": sample, "can_create": can_create, "max_lists": 50}
+
+
+class TestListDialog(PatchedState):
+    STUB = {"media_type": "movie", "tmdb_id": 7, "title": "Heat <b>", "year": 1995, "poster_url": None, "url": None}
+
+    def render(self, view=None, member=(1,), stub="stub", partial=True, sample=False, return_to="/title/movie/7"):
+        stub = self.STUB if stub == "stub" else stub
+        view = view or lists_view(summary(1, "Watchlist", count=2), summary(3, "Horror <i>night</i>", "custom", 5))
+        patches = [mock.patch.object(web, "_is_sample", return_value=sample),
+                   mock.patch.object(web, "title_stub", return_value=stub),
+                   mock.patch.object(web, "lists_view", return_value=view),
+                   mock.patch.object(web, "with_user_state", return_value=[dict(self.STUB or {}, lists=list(member))])]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return pages.render_list_dialog("movie", 7, return_to, partial=partial)
+
+    def test_partial_has_the_form_with_checked_state_and_no_shell(self):
+        html = self.render()
+        self.assertNotIn("<html", html)
+        self.assertIn('<div class="dialog-box list-dialog">', html)
+        self.assertIn('<h3 id="list-dialog-title">Add &quot;Heat &lt;b&gt;&quot; to lists</h3>', html)
+        self.assertIn('<form method="post" action="/lists/set" data-enhance="lists">', html)
+        self.assertIn('name="return_to" value="/title/movie/7"', html)
+        self.assertIn('<legend class="visually-hidden">Lists</legend>', html)
+        self.assertIn('<input type="checkbox" name="list_id" value="1" checked> Watchlist <span class="muted">2</span>', html)
+        self.assertIn('<input type="checkbox" name="list_id" value="3"> Horror &lt;i&gt;night&lt;/i&gt; <span class="muted">5</span>', html)
+        self.assertLess(html.index('value="1"'), html.index('value="3"'))
+        self.assertIn('<label class="list-new">New list<input type="text" name="new_list" maxlength="60" placeholder="Name"></label>', html)
+        self.assertIn('<a class="btn-ghost" href="/title/movie/7" data-close>Cancel</a>', html)
+        self.assertIn('<button type="submit" class="btn-add">Save</button>', html)
+
+    def test_new_list_field_only_when_can_create(self):
+        view = lists_view(summary(1), can_create=False)
+        self.assertNotIn("new_list", self.render(view))
+
+    def test_page_mode_has_the_shell_and_the_right_nav(self):
+        html = self.render(partial=False, return_to="/lists/3")
+        self.assertIn("<html", html)
+        self.assertIn('<div class="dialog-page">', html)
+        self.assertRegex(html, r'<a class="nav-item active" href="/library" aria-current="page">')
+
+    def test_sample_mode_shows_a_note_and_no_form(self):
+        html = self.render(sample=True)
+        self.assertIn("Sample data - lists aren't saved.", html)
+        self.assertNotIn("<form", html)
+        self.assertIn("data-close", html)
+
+    def test_unknown_title_is_a_safe_message(self):
+        html = self.render(stub=None)
+        self.assertIn("Can&#39;t add this one", html)
+        self.assertNotIn("<form", html)
+        self.assertIn('data-close', html)
+
+    def test_return_to_is_made_safe(self):
+        html = self.render(return_to="http://evil.example/x")
+        self.assertNotIn("evil.example", html)
+
+
+class TestListsPages(PatchedState):
+    def test_lists_page_tiles_create_form_and_subtabs(self):
+        view = lists_view(summary(1, "Watchlist", count=1, posters=["https://i/a.jpg", "javascript:x"]),
+                          summary(3, "Horror <b>", "custom", 0, "Scary <i>things</i>"))
+        with mock.patch.object(web, "lists_view", return_value=view):
+            html = pages.render_lists(msg="Created <b>")
+        self.assertRegex(html, r'<a class="subtab on" href="/lists">Lists</a>')
+        self.assertRegex(html, r'<a class="nav-item active" href="/library" aria-current="page">')
+        self.assertIn('<p class="note" role="status">Created &lt;b&gt;</p>', html)
+        tile = re.search(r'<a class="list-tile" href="/lists/1">.*?</a>', html, re.S).group(0)
+        self.assertEqual(tile.count("<img"), 1)                    # the javascript: poster is dropped
+        self.assertEqual(tile.count('<span aria-hidden="true"></span>'), 3)    # always four cells
+        self.assertIn('<span class="list-tile-name">Watchlist</span><span class="list-tile-meta">1 title</span>', tile)
+        self.assertIn('<span class="list-tile-meta">0 titles</span><span class="list-tile-desc">Scary &lt;i&gt;things&lt;/i&gt;</span>', html)
+        self.assertIn("Horror &lt;b&gt;", html)
+        self.assertNotIn("<b>", html)
+        self.assertIn('<form class="list-create" method="post" action="/lists/create">', html)
+        self.assertIn('<input name="name" maxlength="60" required>', html)
+        self.assertIn('<input name="description" maxlength="300">', html)
+        self.assertIn(">Create list</button>", html)
+
+    def test_sample_virtual_watchlist_is_not_a_link_and_there_is_no_create_form(self):
+        view = lists_view(summary(None, "Watchlist"), sample=True, can_create=False)
+        with mock.patch.object(web, "lists_view", return_value=view):
+            html = pages.render_lists()
+        self.assertIn('<div class="list-tile">', html)
+        self.assertNotIn('<a class="list-tile"', html)
+        self.assertIn("Sample data - lists aren't saved.", html)
+        self.assertNotIn("list-create", html)
+
+    def test_create_form_hidden_at_the_limit(self):
+        with mock.patch.object(web, "lists_view", return_value=lists_view(summary(1), can_create=False)):
+            self.assertNotIn("list-create", pages.render_lists())
+
+    def list_view(self, kind="custom", sort="manual", page=1, pages_=1, items=None, can_move=True, **kw):
+        base = {"list": summary(3, "Horror <b>night</b>", kind, 2, "A <i>desc</i>"), "sort": sort, "sorts": web.LIST_SORTS,
+                "page": page, "pages": pages_, "total": 2, "can_move": can_move, "sample": False,
+                "items": [] if items is None else items}
+        base.update(kw)
+        return base
+
+    def card(self, n=1, **kw):
+        base = {"media_type": "movie", "tmdb_id": n, "title": f"Film {n}", "year": 2000 + n, "poster_url": None, "status": "none",
+                "arr_state": None, "episodes": None, "watched": False, "dismissed": False, "match": None, "stars": None,
+                "lists": [3], "on_watchlist": False, "position": n, "added_at": "2024-01-01"}
+        base.update(kw)
+        return base
+
+    def test_custom_list_header_has_edit_and_delete_details(self):
+        html = pages.render_list(self.list_view(items=[self.card()]), msg="Saved")
+        head = re.search(r'<header class="list-head">.*?</header>', html, re.S).group(0)
+        self.assertIn("<h3>Horror &lt;b&gt;night&lt;/b&gt;</h3>", head)
+        self.assertIn('<p class="muted">A &lt;i&gt;desc&lt;/i&gt;</p>', head)
+        self.assertIn('<details class="list-edit"><summary>Edit</summary>', head)
+        self.assertIn('action="/lists/update"', head)
+        self.assertIn('<input type="hidden" name="list_id" value="3">', head)
+        self.assertIn('value="Horror &lt;b&gt;night&lt;/b&gt;"', head)
+        self.assertIn('<details class="list-delete"><summary>Delete list</summary>', head)
+        self.assertIn("Delete &quot;Horror &lt;b&gt;night&lt;/b&gt;&quot;? This can't be undone.", head)
+        self.assertIn('action="/lists/delete"', head)
+        self.assertIn('<button type="submit" class="btn-ghost danger">Delete</button>', head)
+        self.assertIn('<input type="hidden" name="return_to" value="/lists">', head)
+        self.assertRegex(html, r'<a class="subtab on" href="/lists">Lists</a>')
+        self.assertIn('<p class="note" role="status">Saved</p>', html)
+
+    def test_watchlist_has_no_edit_or_delete(self):
+        html = pages.render_list(self.list_view(kind="watchlist", items=[self.card()]))
+        self.assertNotIn("list-edit", html)
+        self.assertNotIn("list-delete", html)
+        self.assertNotIn("/lists/update", html)
+
+    def test_toolbar_sort_options_and_selection(self):
+        html = pages.render_list(self.list_view(sort="rating", items=[self.card()]))
+        toolbar = re.search(r'<form class="toolbar".*?</form>', html, re.S).group(0)
+        self.assertIn('method="get" action="/lists/3"', toolbar)
+        for value, label in (("manual", "Your order"), ("added", "Recently added"), ("title", "Title A-Z"),
+                             ("year", "Newest year"), ("rating", "Your rating"), ("match", "Match %")):
+            self.assertIn(f'<option value="{value}"{" selected" if value == "rating" else ""}>{label}</option>', toolbar)
+
+    def test_cards_have_move_forms_only_when_can_move_and_always_a_remove_form(self):
+        movable = pages.render_list(self.list_view(items=[self.card(1)]))
+        card = re.search(r'<article class="card search-card list-card".*?</article>', movable, re.S).group(0)
+        self.assertIn('data-card="movie-1"', card)
+        self.assertIn('<a class="poster-link" href="/title/movie/1"', card)
+        self.assertIn('<div class="list-move" role="group" aria-label="Reorder Film 1 (2001)">', card)
+        self.assertEqual(re.findall(r'<input type="hidden" name="direction" value="(\w+)">', card), ["up", "down", "top"])
+        self.assertEqual(card.count('action="/lists/move" data-enhance="list-move"'), 3)
+        self.assertIn('<input type="hidden" name="list_id" value="3">', card)
+        self.assertIn('class="inline list-remove" method="post" action="/lists/remove" data-enhance="list" data-remove-card', card)
+        self.assertIn('aria-label="Remove Film 1 (2001) from this list"', card)
+        self.assertIn('class="card-tools"', card)
+        fixed = pages.render_list(self.list_view(sort="title", can_move=False, items=[self.card(1)]))
+        self.assertNotIn("list-move", fixed)
+        self.assertNotIn("/lists/move", fixed)
+        self.assertIn("list-remove", fixed)
+        self.assertIn('name="return_to" value="/lists/3?sort=title"', fixed)
+
+    def test_card_badges_match_and_hostile_titles(self):
+        html = pages.render_list(self.list_view(items=[self.card(1, title="<script>x</script>", match=82, status="plex", watched=True,
+                                                                   arr_state="missing")]))
+        self.assertNotIn("<script>x", html)
+        self.assertIn("&lt;script&gt;x", html)
+        self.assertIn('<span class="match">82% match</span>', html)
+        self.assertIn('status-tag status-plex">In library<', html)
+        self.assertIn('<span class="badge">Watched</span>', html)
+        self.assertIn('<p class="card-sub arr-line">Missing</p>', html)
+
+    def test_pager_keeps_the_sort_and_is_omitted_for_one_page(self):
+        html = pages.render_list(self.list_view(sort="title", page=2, pages_=3, items=[self.card()], can_move=False))
+        self.assertIn("Page 2 of 3", html)
+        self.assertIn('href="/lists/3?sort=title" rel="prev"', html)
+        self.assertIn('href="/lists/3?sort=title&amp;page=3" rel="next"', html)
+        self.assertNotIn('class="pager"', pages.render_list(self.list_view(items=[self.card()])))
+        manual = pages.render_list(self.list_view(page=1, pages_=2, items=[self.card()]))
+        self.assertIn('href="/lists/3?page=2" rel="next"', manual)
+
+    def test_empty_state(self):
+        html = pages.render_list(self.list_view(items=[]))
+        self.assertIn("<h3>Nothing on this list yet</h3>", html)
+        self.assertIn('<a class="btn-add" href="/">Browse recommendations</a>', html)
+        self.assertNotIn('class="grid"', html)
+
+
+class TestRequestsTab(PatchedState):
+    def lib(self, **kw):
+        base = {"media_type": "tv", "tmdb_id": 5, "title": "Show", "year": 2016, "added_at": "2024-03-01T10:00:00Z", "watched": False,
+                "progress": None, "poster_key": None, "url": None, "seasons": None, "request_state": None, "episodes": None,
+                "sources": [], "stars": None, "lists": [], "on_watchlist": False}
+        base.update(kw)
+        return base
+
+    def render(self, items, **kw):
+        self.use(result())
+        with mock.patch.object(web, "library_items", return_value=items):
+            return web.render_library(tab="added", **kw)
+
+    def test_tab_label_and_nav(self):
+        html = self.render([self.lib()])
+        self.assertIn('<a class="subtab on" href="/library?type=added">Requests</a>', html)
+        self.assertNotIn("Added here", html)
+
+    def test_every_state_has_a_badge_with_text(self):
+        cases = (("requested", None, "Requested"), ("processing", None, "Searching"), ("upcoming", None, "Upcoming"),
+                 ("unmonitored", None, "Not monitored"), ("available", None, "Available"),
+                 ("partial", {"have": 3, "total": 10}, "3/10 episodes"), ("partial", None, "Partly available"))
+        for state, episodes, label in cases:
+            html = self.render([self.lib(request_state=state, episodes=episodes)])
+            self.assertIn(f'<span class="badge req-state req-{state}">{label}</span>', html, state)
+            self.assertIn('<div class="poster-top"><span class="badges">', html)
+        none = self.render([self.lib(request_state=None)])
+        self.assertNotIn("req-state", none)
+
+    def test_seasons_line_for_tv_only(self):
+        self.assertIn('<p class="card-sub req-seasons">All seasons</p>', self.render([self.lib(seasons="all")]))
+        self.assertIn('<p class="card-sub req-seasons">Seasons 1, 3</p>', self.render([self.lib(seasons=[1, 3])]))
+        self.assertIn('<p class="card-sub req-seasons">Season 2</p>', self.render([self.lib(seasons=[2])]))
+        self.assertNotIn("req-seasons", self.render([self.lib(seasons=None)]))
+        self.assertNotIn("req-seasons", self.render([self.lib(media_type="movie", seasons="all")]))
+        self.assertNotIn("req-seasons", self.render([self.lib(seasons=[])]))
+
+    def test_cards_link_to_the_title_page_show_added_date_and_have_tools(self):
+        html = self.render([self.lib(stars=4, on_watchlist=True)])
+        self.assertIn('<a class="poster-link" href="/title/tv/5"', html)
+        self.assertIn('<h3 class="title"><a href="/title/tv/5">Show (2016)</a></h3>', html)
+        self.assertIn("Added 2024-03-01", html)
+        self.assertIn("Your rating: 4/5", html)
+        self.assertIn('class="list-toggle on"', html)
+        self.assertIn('name="return_to" value="/library?type=added&amp;sort=added&amp;show=all"', html)
+
+    def test_show_filter_labels_and_empty_copy(self):
+        html = self.render([self.lib()], show="open")
+        self.assertIn('<option value="open" selected>Not available yet</option>', html)
+        self.assertIn('<option value="available">Available</option>', html)
+        empty = self.render([])
+        self.assertIn("No requests yet", empty)
+        self.assertIn("Nothing added yet", empty)
+        self.assertIn("Requests", empty)
+
+    def test_library_cards_get_user_state_and_watched_keeps_its_stars(self):
+        self.use(result())
+        lib = {"media_type": "movie", "tmdb_id": 5, "title": "Arrival", "year": 2016, "added_at": "2024-03-01T10:00:00Z",
+               "watched": False, "progress": None, "poster_key": None, "url": None}
+        def fake(items, maps=None):
+            return [dict(i, stars=2, lists=[1], on_watchlist=True) for i in items]
+        with mock.patch.object(web, "library_items", return_value=[lib]), mock.patch.object(web, "with_user_state", side_effect=fake):
+            html = web.render_library(tab="all")
+        self.assertIn('class="list-toggle on"', html)
+        self.assertIn("Your rating: 2/5", html)
+        wat = {"media_type": "movie", "tmdb_id": 5, "title": "Arrival", "year": 2016, "last_viewed": "2024-05-02T10:00:00Z", "view_count": 1,
+               "poster_key": None, "poster_url": None, "url": None, "stars": 4, "plex_stars": None}
+        with mock.patch.object(web, "library_items", return_value=[wat]), mock.patch.object(web, "with_user_state", side_effect=fake):
+            html = web.render_library(tab="watched")
+        self.assertIn("Your rating: 4/5", html)               # the watched list's own stars win
+        self.assertEqual(html.count('action="/rate"'), 1)       # full stars only: the tools line has no second form
+        self.assertIn('class="list-toggle on"', html)
+        self.assertIn('class="list-link"', html)
+
+
+class TestTitlePageJsHooks(unittest.TestCase):
+    def test_app_js_has_the_new_hooks_and_no_modal_leftovers(self):
+        js = read_static("app.js")
+        for needle in ("data-list-dialog", "poster-link", "data-after", "list-move", "data-remove-card", "season-check",
+                       "on_watchlist", "openFragmentDialog", "syncWatchlist", "withMessage", "title-backdrop", "cloneListTools"):
+            self.assertIn(needle, js)
+        for gone in ("openDetail(", "data-open-detail", "openAddDialog"):
+            self.assertNotIn(gone, js)
+        self.assertEqual(len(re.findall(r"innerHTML", js)), 1)
+        self.assertEqual(len(re.findall(r"\.innerHTML\s*=", js)), 1)
+
+    def test_handlers_exist_for_every_new_form_kind(self):
+        js = read_static("app.js")
+        pages_text = open(os.path.join(ROOT, "pages.py"), encoding="utf-8").read()
+        for kind in re.findall(r'data-enhance="([a-z-]+)"', pages_text):
+            self.assertTrue(f"{kind}: function" in js or f'"{kind}": function' in js, kind)
+
+    def test_add_handler_sends_the_pressed_button_and_reloads_title_pages(self):
+        js = read_static("app.js")
+        add = js[js.index("    add: function"):js.index("    list: function")]
+        self.assertIn("postForm(form, submitter)", add)
+        self.assertIn('getAttribute("data-after") === "reload"', add)
+        self.assertIn("withMessage(", add)
+        self.assertIn("failed(form, err, submitter)", add)
+
+    def test_season_ticks_select_the_pick_radio(self):
+        js = read_static("app.js")
+        self.assertIn('input[name=seasons][value=pick]', js)
+
+    def test_move_handler_keeps_focus_and_handles_cross_page_swaps(self):
+        js = read_static("app.js")
+        move = js[js.index('"list-move": function'):js.index("    refresh: function")]
+        for needle in ("data.moved", "insertBefore", "button.focus()", "window.location.href"):
+            self.assertIn(needle, move)
+
+
+class TestSubmitterFallbackAndMoveTop(unittest.TestCase):
+    def test_last_pressed_named_button_stands_in_for_a_missing_submitter(self):
+        js = read_static("app.js")
+        self.assertIn("e.submitter || form._lastSubmit", js)
+        self.assertIn('closest("button[name]")', js)
+        self.assertIn("named.form._lastSubmit = named", js)
+
+    def test_move_top_only_moves_in_place_on_page_one_and_bottom_reloads(self):
+        js = read_static("app.js")
+        move = js[js.index('"list-move": function'):js.index("    refresh: function")]
+        self.assertIn('direction === "top" && before && onFirstPage()', move)
+        self.assertNotIn('direction === "bottom"', move)

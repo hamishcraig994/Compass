@@ -90,3 +90,18 @@ def post_json(url, headers=None, body=None, timeout=20):
             return json.loads(raw) if raw else None
     except urllib.error.HTTPError as e:
         raise RuntimeError(_http_error_message(e)) from e
+
+
+def put_json(url, headers=None, body=None, timeout=20):
+    """PUT a JSON body and return the decoded JSON response (None for an empty body). Like post_json,
+    no retries: it's a write, so a failure is surfaced rather than blindly repeated."""
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(url, data=data, method="PUT",
+                                     headers={"Accept": "application/json", "Content-Type": "application/json",
+                                             **(headers or {})})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(_http_error_message(e)) from e

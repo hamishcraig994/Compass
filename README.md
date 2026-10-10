@@ -1,166 +1,77 @@
 # Compass
 
-Suggests movies and TV shows you *don't* have yet, based on what you've watched in Plex.
+A self-hosted, Seerr-style movie and TV app that recommends what you *don't* have yet, based on
+what you've watched in Plex. Add titles to Radarr/Sonarr, rate anything, and keep Trakt-style lists.
+Stdlib-only Python 3 and plain JS: no pip, no build step.
 
-## How it works
-1. Reads your watch history (read-only) - from Plex directly, or from Tautulli
-   (`HISTORY_SOURCE=tautulli`), which keeps history even for titles you've since deleted from Plex.
-   Either way, Plex (if `PLEX_TOKEN` is set) also supplies everything currently in your library, so
-   owned-but-unwatched titles aren't suggested. Recent watches, rewatches and your own Plex
-   ratings count more; abandoned shows and titles you rated 4/10 or lower count less or not at all.
-2. Builds a taste profile: genres, themes (TMDB keywords), directors/creators and actors you keep coming back to.
-3. Finds candidates from TMDB: what's linked to your favourites ("people who liked this also liked..."),
-   well-rated titles in your top genres, this week's trending titles, and releases from the last 6 months in
-   your top genres. Anything already in your Plex library is dropped, and so is anything not out yet.
-4. If an AI is configured, its own dedicated **AI** page (top bar) can, on request, ask it for a
-   batch of ideas grounded in your taste profile - see "AI-assisted suggestions" below. This never
-   happens automatically as part of the list above; every suggestion names a title, never a trusted
-   id, so it's looked up on TMDB ourselves (matching by year, not just taking the first search
-   result) before being treated as real, and it's scored by the exact same formula as everything
-   else below, with no bonus for coming from the AI.
-5. Ranks candidates: 50% fit with your profile, 28% how many of your favourites link to it, 12% general
-   quality, 10% buzz (trending, or recently released). Taste dominates: trending or new titles that don't fit
-   your profile are left out entirely, and can't outrank a strong match. "Match %" is relative to the best
-   suggestion in the batch, not a probability.
-6. Anything trending or released in the last 6 months gets a badge and also appears on the
-   "New & trending" tab (`python3 cli.py --type new`), as well as in the main list.
-7. If Radarr/Sonarr are configured, movie/TV cards get an "Add to library" button - opening a
-   dialog to pick a quality profile and whether to search immediately - and anything already
-   tracked there is excluded from recommendations too, not just what's already in Plex.
-
-Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gentle on TMDB.
-
-## Try it now (no accounts needed)
+## Try it
+    python3 web.py                    # no tokens set -> sample data on http://localhost:8080
+    SAMPLE=1 PORT=8099 python3 web.py # force sample mode on another port
     python3 cli.py --sample --profile
-    python3 web.py                    # no tokens set -> shows sample data; http://localhost:8080
     python3 -m unittest discover -s tests
 
-## The web page
-- **First load after a restart** takes a minute or two (a cold TMDB cache means ~190 lookups).
-  That now happens in the background: you get a "Finding your recommendations..." screen that
-  swaps itself for the list when it's ready, instead of a page that looks hung. After that, the
-  list is reused for an hour and rebuilt in the background - you keep seeing the old one, with an
-  "Updating..." badge, until the new one is ready. `GET /api/status` reports where a build is at.
-- **Buttons work in place.** "Not interested", "Add to library", "Refresh" and "Generate" don't
-  reload the page; a small message confirms what happened, and "Not interested" has an **Undo**.
-  Clicking a poster opens the full description and why it was picked.
-- **JavaScript is optional.** It's one small plain-JS file (`static/app.js`, no libraries) that
-  enhances ordinary forms. With it off, every button still works as a normal form post, Undo is a
-  note at the top of the page, and loading screens reload themselves every 5 seconds instead.
-- **Cinematic browsing.** Home, **Movies** and **TV** look like a streaming service: a big hero at the top
-  rotates through your five best picks (every 6 seconds on desktop, swipe on phones; it pauses on hover
-  and has a Pause button; nothing rotates if your device asks for reduced motion), then headed rows to
-  scroll: *Recommended for You*, *Because you watched ...*, *Top 10 picks for you*, *Trending in <your
-  favourite genre>*, *Hidden Gems* (high match, lower popularity) and *New in your library*. Rows only
-  appear when they have enough titles. Hovering a poster on desktop opens a small preview with Add,
-  Not interested, a star rating and More info; tapping a poster opens the full description. Rating a
-  recommendation saves your rating (it feeds your taste profile like any other) and keeps the title
-  listed. Hero banners use TMDB backdrops; a live build fetches up to 15 missing ones, otherwise a
-  tinted fallback is shown. `/recommended` still works and redirects here.
-- **Themes.** Settings -> Appearance (`/appearance`) lets you pick a colour theme: Crimson (the default),
-  Amber, Lime, Ocean, Teal Night or Mono (pure black, good for OLED screens). Each swatch previews its
-  own colours and, with JavaScript, applies instantly. The choice is remembered per device in a cookie
-  (`compass_theme`), so your phone and TV can differ; there's no flash on load and it works without JS.
-  Every theme still follows your device's light/dark setting. Nothing is stored in the database.
-- **Search.** The search box (top bar; an icon on narrow screens) opens `/search`, which searches all of
-  TMDB for any movie or TV show as you type. Each result is tagged In Plex, In Radarr, In Sonarr or
-  Added, or has an Add button that opens the usual Add dialog. Titles you marked "Not interested" can
-  still be found. Searching is cached for a day and capped at 60 new TMDB lookups a minute (10 are kept
-  for adding), and it still works as a plain form without JavaScript.
-- **Library** (top bar) shows everything you have: your Plex library plus the titles Radarr and Sonarr
-  already hold, merged into one entry per title with small badges for where it lives (Plex, Radarr,
-  Sonarr) and its download state (Missing, Upcoming, 5/10 episodes, Unmonitored). Tabs: All, Movies,
-  TV shows, **Watched** and "Added here"; a Source filter narrows to Plex, Radarr/Sonarr or Wanted
-  (not downloaded yet). Radarr and Sonarr are read during each build, never per page view; if one is
-  unreachable you get a note and the rest still loads. Posters from Plex come through the app
-  (`/poster`), so your Plex token never reaches the browser; Radarr/Sonarr posters use the image URLs
-  they provide. No new Plex, Radarr or Sonarr requests are made per page view.
-- **Rate what you've watched.** The Watched tab lists your history with 1-5 star buttons. Your
-  rating overrides your Plex rating (clear it to fall back to Plex's) and feeds the taste profile:
-  4-5 stars count more, 3 counts less, 1-2 count for nothing, and titles TMDB links to a 1 or 2
-  star title are ranked lower (never hidden). Ratings are stored locally in SQLite and are never
-  written to Plex. After rating, "Update recommendations" rebuilds the list. In sample mode the
-  stars show but nothing is saved.
-- Dark by default, with a light theme if your device asks for one; the top navigation becomes a bottom
-  bar on phones.
+## How recommendations work
+1. **History:** reads your watch history (read-only) from Plex or Tautulli. Recent watches, rewatches
+   and high ratings count more; abandoned shows and low ratings count less or not at all.
+2. **Taste profile:** genres, TMDB keywords, directors/creators and actors you keep coming back to.
+3. **Candidates from TMDB:** titles linked to your favourites, well-rated titles in your top genres,
+   trending titles and recent releases. Anything in Plex, Radarr or Sonarr, or not out yet, is dropped.
+4. **Ranking:** 50% profile fit, 28% links to your favourites, 12% quality, 10% buzz. Trending titles
+   that don't fit your taste are left out. "Match %" is relative to the best pick, not a probability.
 
-## Use your own library
-Easiest: `python3 web.py`, then open the page and go to **Settings** - one tab per app (Plex,
-Watch history, TMDB, Radarr & Sonarr). Fill a tab in, hit **Test connection** to check it before
-saving (it tests whatever's in the form, not necessarily what's already saved), then **Save**.
-Nothing to restart; it applies immediately. Radarr/Sonarr's quality profile and root folder become
-dropdowns, pulled live from your instance, once that tab's URL/API key are reachable.
+TMDB data is cached for 30 days in SQLite (`data/`). The first build after a restart runs in the
+background (a minute or two); after that the list is rebuilt hourly while you keep the old one.
 
-Or, without the web UI: copy `.env.example` to `.env` and fill in `PLEX_TOKEN` and `TMDB_TOKEN`,
-then `python3 cli.py --profile`. A setting saved through the Settings page always wins over its
-`.env`/environment-variable equivalent, so `.env` is really just the first-boot default.
+## Features
+- **Home, Movies, TV:** streaming-style browsing with a rotating hero of your top picks, then rows like
+  *Because you watched...*, *Top 10*, *Hidden Gems* and *New in your library*.
+- **Title pages** (`/title/movie/<id>`, `/title/tv/<id>`): backdrop, cast, trailer link, where you
+  already have it, why Compass picked it, similar titles ranked by your taste, and for TV each
+  season's status. Clicking any poster opens one.
+- **Add to Radarr/Sonarr:** pick a quality profile and whether to search now. For TV, request all
+  seasons or tick specific ones; for a show Sonarr already has, request more seasons (it never
+  unmonitors any).
+- **Rate anything, anywhere:** 1-5 stars on every card, preview and title page. Ratings feed your
+  taste profile (4-5 stars count more, 1-2 count for nothing), and rating a title you haven't
+  watched counts as seen. Ratings stay local and are never written to Plex.
+- **Lists:** a Watchlist plus up to 50 custom lists (Library -> Lists), Trakt-style. Add from any
+  card or title page; sort or reorder. Lists don't change your recommendations.
+- **Library:** your Plex library plus everything in Radarr/Sonarr, with badges for where it lives and
+  its download state. Tabs: All, Movies, TV shows, Watched, **Requests** (what you added here, with
+  status and requested seasons) and Lists.
+- **Search:** live search across all of TMDB, with each result tagged In Plex, In Radarr, In Sonarr or
+  Added.
+- **AI picks (optional, manual only):** an AI page that, only when you click Generate, asks any
+  OpenAI-compatible endpoint for ideas grounded in your profile. Every suggestion is looked up on
+  TMDB and scored by the same formula as everything else, with no bonus.
+- **Themes:** Crimson (default), Amber, Lime, Ocean, Teal Night and Mono, each with light and dark
+  variants, remembered per device. The logo follows the theme.
+- **Works without JavaScript:** every button is a plain form; JS only makes things happen in place.
 
-### Using Tautulli instead of Plex for history
-Set `HISTORY_SOURCE=tautulli`, `TAUTULLI_URL` and `TAUTULLI_API_KEY` in `.env`. Worth it because
-Tautulli keeps a permanent history log, so a title you watched and later deleted from Plex still
-shapes your taste - reading Plex directly loses it the moment it leaves your library.
+## Setup
+Run `python3 web.py`, open **Settings** and fill in each tab (Plex, Watch history, TMDB, Radarr &
+Sonarr, AI). **Test connection** checks the form before you save; changes apply immediately.
+Environment variables (`.env`, see `.env.example`) still work as first-boot defaults; anything saved
+in Settings wins.
 
-**Check it before trusting it:** Tautulli's exact field names have shifted across versions and
-this integration hasn't been checked against a live server. Run
-`python3 cli.py --tautulli-probe` first - it prints the raw history/metadata shapes your server
-actually returns, so a field-name mismatch is obvious instead of silently losing watch history.
+**Tautulli** (`HISTORY_SOURCE=tautulli`) keeps history for titles you've deleted from Plex. Its field
+names vary by version and haven't been checked against a live server, so run
+`python3 cli.py --tautulli-probe` first. Set `PLEX_TOKEN` too so owned titles are excluded, and
+`TAUTULLI_USER` to avoid mixing in other household members.
 
-Limits worth knowing:
-- Watch state is for one account (yours) - Plex's token, or `TAUTULLI_USER` if set; leave the
-  latter blank to pull every user on the server, which mixes household members' taste together.
-- With Tautulli, unwatched-but-owned titles are only excluded if `PLEX_TOKEN` is *also* set -
-  Tautulli's history alone doesn't know what's currently in your library, only what's been played.
-- Titles with no TMDB id (old "Legacy" Plex agents) are skipped; the page tells you how many.
-- "Not interested" is remembered in the database; sample data never writes to it.
-- No login - keep it on the home network. Cross-site requests are refused, though: any
-  form post or button press your browser says came from another website (or another app on a
-  different port of the same host) gets a 403, so a page you visit can't quietly change Settings
-  or add titles. If you ever put it behind a reverse proxy, the proxy must pass the original
-  `Host` header through, or the app's own buttons will look cross-site and be refused.
+**Good to know**
+- Single user, no login: keep it on your home network. Cross-site form posts are refused (403). Behind
+  a reverse proxy, pass the original `Host` header through.
+- Titles with no TMDB id (old Plex "Legacy" agents) are skipped.
+- Radarr/Sonarr are read during each build, never per page view. Quality profiles are fetched only when
+  you open the Add dialog, and are cached for 10 minutes.
+- Sample mode never saves anything or touches Radarr/Sonarr.
 
-### Adding to Radarr/Sonarr
-Set them up in Settings -> Radarr & Sonarr (or `RADARR_URL`/`RADARR_API_KEY` and/or
-`SONARR_URL`/`SONARR_API_KEY` in `.env` - see `.env.example`). "Add to library" opens a dialog to
-pick a quality profile for that title (defaulting to whichever's configured in Settings) and
-whether to search for it immediately; leaving the profile on "Default" uses Settings' choice, and
-whichever root folder is configured there is always used (there's no per-title override for that).
-A movie is added straight from its TMDB id; a TV show's TMDB id is converted to the TVDB id Sonarr
-needs via TMDB's `external_ids` (cached, same as everything else). Sample data never touches
-Radarr/Sonarr - the button doesn't even appear until you're on your own library.
+## Deploy (Docker / Portainer)
+1. Get an image: publish a GitHub release to have Actions push `ghcr.io/hamishcraig994/compass:<version>`
+   (and `:latest`), or build locally with `docker build -t compass:latest .`.
+2. Portainer -> Stacks -> paste `docker-compose.yml` (set `image:` to match) -> Deploy.
+3. Open `http://<host>:8091` -> Settings.
 
-The dialog is its own page (`/add-dialog`; with JavaScript on it opens as a pop-up over the list,
-loading that same page), not pre-rendered into the Home/Movies/TV rows, specifically so
-quality profiles are only ever fetched when you actually open it - viewing or refreshing the
-recommendations never touches Radarr/Sonarr just to pre-populate a dropdown you might not use.
-Whichever list Radarr/Sonarr gave that day is also cached for 10 minutes either way.
-
-### AI-assisted suggestions
-Set it up in Settings -> AI (or `AI_PROVIDER_URL`/`AI_TOKEN`/`AI_MODEL` in `.env`). Any
-OpenAI-compatible endpoint works - OpenAI itself, a self-hosted server, OpenRouter, etc. - not just
-OpenAI, so change the provider URL for anything else.
-
-**Manual only, by design.** Once configured, a new **AI** section appears in the top bar with its
-own **Generate** button. Clicking it is the only thing that ever triggers an AI request - it never
-runs as part of the automatic recommendations, their hourly refresh, or Home. That's
-deliberate: every click is a real request (and, depending on your provider, a real cost), so it
-should only ever happen because you asked. The AI page shows whatever your last Generate produced
-until you generate again; "Add to library" and "Not interested" work the same as they do on
-Home, Movies and TV.
-
-Two rules keep this from being a black box or a liability:
-- **Nothing the AI says is trusted outright.** It names a title and year; that gets looked up on
-  TMDB ourselves (preferring a result within a year of the one given, over just the first search
-  hit) before it's treated as a real candidate. If nothing matches closely, the suggestion is
-  dropped rather than guessed at.
-- **No special scoring bonus.** An AI-sourced candidate is scored by the exact same formula as
-  everything else in this list - it competes on fit and quality, not on where it came from.
-
-## Deploy with Docker / Portainer
-1. Build the image `compass:latest` on the Docker host (`docker build -t compass:latest .`) or via
-   Portainer -> Images -> Build a new image.
-2. Portainer -> Stacks -> Add stack -> Web editor -> paste `docker-compose.yml`. Deploy.
-3. Open http://<arr-vm-ip>:8091 -> Settings, and fill everything in there (no environment
-   variables needed - though they still work as the first-boot default if you'd rather set them
-   in the Portainer stack instead).
-
-The container needs the LAN (Plex) and the internet (TMDB). It's deliberately not behind the gluetun VPN.
+The container needs the LAN (Plex, Radarr, Sonarr) and the internet (TMDB). Data lives in the
+`/app/data` volume.

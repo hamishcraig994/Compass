@@ -149,3 +149,96 @@ def annotate(items, plex_items=None, arr_items=(), watched_items=(), added_keys=
                      "watched": watched.find(item) is not None, "dismissed": key in dismissed})
         out.append(item)
     return out
+
+
+REQUEST_STATES = ("requested", "processing", "upcoming", "partial", "available", "unmonitored")
+
+
+def find(arr_items, media_type, tmdb_id, tvdb_id=None, title=None, year=None):
+    """The arr item for a title, or None. Match order: (media_type, tmdb_id); then tvdb_id (tv only);
+    then same_title() - but only against arr items that have no tmdb_id of their own."""
+    items = [i for i in arr_items or () if i.get("media_type") == media_type]
+    if tmdb_id:
+        for i in items:
+            if i.get("tmdb_id") == tmdb_id:
+                return i
+    if tvdb_id and media_type == "tv":
+        for i in items:
+            if i.get("tvdb_id") == tvdb_id:
+                return i
+    if title:
+        probe = {"media_type": media_type, "title": title, "year": year}
+        for i in items:
+            if not i.get("tmdb_id") and same_title(probe, i):
+                return i
+    return None
+
+
+def _valid_date(value):
+    return value if isinstance(value, str) and len(value) == 10 and value[4] == "-" and value[7] == "-" else None
+
+
+def season_rows(tmdb_seasons, arr_item, today):
+    """The detail page's season list (specials hidden): TMDB seasons merged with the arr item's per-season
+    data. today is a date. See specs/seerr-parity.md "SeasonRow"."""
+    tmdb = {s["number"]: s for s in tmdb_seasons or () if isinstance(s.get("number"), int) and s["number"] > 0}
+    arr = {}
+    if arr_item and isinstance(arr_item.get("seasons"), list):
+        arr = {s["number"]: s for s in arr_item["seasons"] if isinstance(s.get("number"), int) and s["number"] > 0}
+    tracked = arr_item is not None
+    today_text = today.isoformat()
+    rows = []
+    for n in sorted(set(tmdb) | set(arr)):
+        t, a = tmdb.get(n) or {}, arr.get(n)
+        air = _valid_date(t.get("air_date"))
+        episodes = t.get("episodes") if isinstance(t.get("episodes"), int) and t["episodes"] > 0 else None
+        if episodes is None and a and a["total"] > 0:
+            episodes = a["total"]
+        row = {"number": n, "name": t.get("name") or f"Season {n}", "episodes": episodes, "air_date": air,
+               "monitored": None, "have": None, "total": None, "state": None, "requested": False, "selectable": True}
+        if a is not None:
+            have, total, monitored = a["have"], a["total"], bool(a["monitored"])
+            if total > 0 and have >= total:
+                state = "available"
+            elif have > 0:
+                state = "partial"
+            elif not monitored:
+                state = "unmonitored"
+            elif air is None or air > today_text:
+                state = "upcoming"
+            else:
+                state = "missing"
+            row.update({"monitored": monitored, "have": have, "total": total, "state": state,
+                        "requested": monitored})
+        row["selectable"] = not row["requested"] if tracked else True
+        rows.append(row)
+    return rows
+
+
+_ARR_STATE_TO_REQUEST = {"missing": "processing", "upcoming": "upcoming", "unmonitored": "unmonitored"}
+
+
+def request_state(entry, arr_item, in_plex):
+    """(state, episodes|None) for one Requests entry, from the build snapshot only (no calls).
+    entry: a Requests entry (uses "seasons": None | "all" | [int]); arr_item: the matching arr item or None."""
+    if arr_item is None:
+        return ("available", None) if in_plex else ("requested", None)
+    state = arr_item.get("arr_state")
+    episodes = arr_item.get("episodes") if arr_item.get("media_type") == "tv" else None
+    picked = entry.get("seasons") if isinstance(entry.get("seasons"), list) else None
+    if picked and isinstance(arr_item.get("seasons"), list):
+        by_number = {s["number"]: s for s in arr_item["seasons"]}
+        rows = [by_number[n] for n in picked if n in by_number]
+        if rows:
+            have, total = sum(s["have"] for s in rows), sum(s["total"] for s in rows)
+            episodes = {"have": have, "total": total}
+            if all(s["total"] > 0 and s["have"] >= s["total"] for s in rows):
+                return "available", episodes
+            if have > 0:
+                return "partial", episodes
+            return _ARR_STATE_TO_REQUEST.get(state, "processing"), episodes
+    if state == "downloaded":
+        return "available", episodes
+    if state == "partial":
+        return "partial", episodes
+    return _ARR_STATE_TO_REQUEST.get(state, "processing"), episodes

@@ -441,7 +441,7 @@ class TestAddJson(AsyncCase):
         web._state.update(result=fake_result([item(1, title="M")]), time=time.time())
 
     def test_success(self):
-        with mock.patch.object(sources, "add_to_library", return_value=(True, 'Added "M" to Radarr')) as add:
+        with mock.patch.object(sources, "add_to_library", return_value=(True, 'Added "M" to Radarr', None)) as add:
             status, body = self.post_json("/add", "type=movie&id=1&search=1&quality_profile_id=4&return_to=/recommended")
         self.assertEqual((status, body), (200, {"ok": True, "message": 'Added "M" to Radarr'}))
         add.assert_called_once_with("movie", 1, search=True, quality_profile_id=4)
@@ -449,7 +449,7 @@ class TestAddJson(AsyncCase):
         self.assertEqual(web._state["result"]["items"], [])
 
     def test_failure(self):
-        with mock.patch.object(sources, "add_to_library", return_value=(False, "Radarr isn't configured")):
+        with mock.patch.object(sources, "add_to_library", return_value=(False, "Radarr isn't configured", None)):
             _, body = self.post_json("/add", "type=movie&id=1")
         self.assertEqual(body, {"ok": False, "message": "Radarr isn't configured"})
         self.assertEqual(db.added_items(), [])
@@ -462,7 +462,7 @@ class TestAddJson(AsyncCase):
         self.assertIn("timed out", body["message"])
 
     def test_non_js_add_still_redirects_with_msg(self):
-        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")):
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added", None)):
             self.assertEqual(self.location("/add", "type=movie&id=1&return_to=%2Fai"), "/ai?msg=Added")
 
 
@@ -483,7 +483,7 @@ class TestAddFromSearch(AsyncCase):
 
     def test_success_records_a_title_in_no_cache(self):
         details = dict(item(77, "tv", "Found"), poster_url="https://image.tmdb.org/p.jpg")
-        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")), \
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added", None)), \
              mock.patch.object(web.tmdb.TmdbClient, "cached_details", return_value=None), \
              mock.patch.object(web.tmdb.TmdbClient, "details", return_value=details) as fetch:
             status, body = self.post_json("/add", "type=tv&id=77")
@@ -493,7 +493,7 @@ class TestAddFromSearch(AsyncCase):
         self.assertEqual((added["media_type"], added["tmdb_id"], added["title"]), ("tv", 77, "Found"))
 
     def test_failed_add_makes_no_tmdb_call_and_records_nothing(self):
-        with mock.patch.object(sources, "add_to_library", return_value=(False, "Already in Radarr")), \
+        with mock.patch.object(sources, "add_to_library", return_value=(False, "Already in Radarr", None)), \
              mock.patch.object(web.tmdb.TmdbClient, "cached_details", side_effect=AssertionError("no TMDB")), \
              mock.patch.object(web.tmdb.TmdbClient, "details", side_effect=AssertionError("no TMDB")):
             _, body = self.post_json("/add", "type=movie&id=78")
@@ -502,7 +502,7 @@ class TestAddFromSearch(AsyncCase):
         self.assertEqual(db.added_items(), [])
 
     def test_lookup_failure_does_not_fail_the_add(self):
-        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")), \
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added", None)), \
              mock.patch.object(web.tmdb.TmdbClient, "cached_details", return_value=None), \
              mock.patch.object(web.tmdb.TmdbClient, "details", side_effect=RuntimeError("down")):
             _, body = self.post_json("/add", "type=movie&id=79")
@@ -511,7 +511,7 @@ class TestAddFromSearch(AsyncCase):
 
     def test_recommendation_is_still_recorded_without_tmdb(self):
         web._state.update(result=fake_result([item(5, title="Rec")]))
-        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")), \
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added", None)), \
              mock.patch.object(web.tmdb.TmdbClient, "details", side_effect=AssertionError("no TMDB")):
             self.post_json("/add", "type=movie&id=5")
         self.assertEqual([a["title"] for a in db.added_items()], ["Rec"])
@@ -1084,7 +1084,7 @@ class TestReview4And5ActionsDuringABuild(AsyncCase):
 
     def test_add_mid_build_doesnt_reappear(self):
         def add():
-            with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")):
+            with mock.patch.object(sources, "add_to_library", return_value=(True, "Added", None)):
                 self.post_json("/add", "type=movie&id=3")
         self.build_with(fake_result([item(1), item(2), item(3)]), add)
         self.assertEqual(self.ids(), [1, 2])
@@ -1113,7 +1113,7 @@ class TestReview6AiFiltering(AsyncCase):
             self.post_json("/ai/generate")
             self.assertTrue(gate.entered.wait(2))
             self.post_json("/dismiss", "type=movie&id=5")
-            with mock.patch.object(sources, "add_to_library", return_value=(True, "Added")):
+            with mock.patch.object(sources, "add_to_library", return_value=(True, "Added", None)):
                 self.post_json("/add", "type=movie&id=6")
             gate.release.set()
             wait_idle()
@@ -1170,7 +1170,11 @@ class TestReview7Hardening(AsyncCase):
 
 POST_ROUTES = (("/settings?section=arr", "action=save&RADARR_URL=http%3A%2F%2Fevil"),
                ("/rate", "type=movie&id=1&stars=3"), ("/add", "type=movie&id=1"), ("/dismiss", "type=movie&id=1"), ("/undismiss", "type=movie&id=1"),
-               ("/refresh", ""), ("/ai/generate", ""), ("/theme", "theme=crimson"))
+               ("/refresh", ""), ("/ai/generate", ""), ("/theme", "theme=crimson"),
+               ("/lists/create", "name=Horror+night"), ("/lists/update", "list_id=1&name=X"), ("/lists/delete", "list_id=1"),
+               ("/lists/add", "list=watchlist&type=movie&id=1"), ("/lists/remove", "list=watchlist&type=movie&id=1"),
+               ("/lists/set", "type=movie&id=1&list_id=1&new_list=Y"),
+               ("/lists/move", "list_id=1&type=movie&id=1&direction=up"))
 
 
 class TestCsrf(AsyncCase):
@@ -1186,10 +1190,13 @@ class TestCsrf(AsyncCase):
         config.AI_TOKEN = "sk-x"
         # anything that would do real work, so a test that wrongly gets through can't
         for target, value in ((sources, "run"), (sources, "generate_ai_recommendations"), (sources, "add_to_library")):
-            patch = mock.patch.object(target, value, return_value=(True, "Added") if value == "add_to_library"
+            patch = mock.patch.object(target, value, return_value=(True, "Added", None) if value == "add_to_library"
                                       else fake_result([item(1)]))
             self.addCleanup(patch.stop)
             setattr(self, "mock_" + value, patch.start())
+        patch = mock.patch.object(web, "lookup_item", return_value=None)   # no TMDB, whatever the config says
+        self.addCleanup(patch.stop)
+        patch.start()
 
     def own_origin(self):
         return self.base  # http://127.0.0.1:<port>, which is what urllib sends as Host
@@ -1209,6 +1216,7 @@ class TestCsrf(AsyncCase):
         self.assertIsNone(db.get_setting("RADARR_URL"))
         self.assertEqual(db.dismissed(), set())
         self.assertEqual(db.ratings(), {})
+        self.assertEqual(db.lists(), [])
         self.mock_add_to_library.assert_not_called()
         self.mock_generate_ai_recommendations.assert_not_called()
         self.mock_run.assert_not_called()
@@ -1373,6 +1381,730 @@ class TestTheme(AsyncCase):
                                lambda self, form, as_json: (seen.append(web.current_theme()), self._json({}))):
             self.request("POST", "/theme", "theme=lime", extra_headers={"Cookie": "compass_theme=mono"})
         self.assertEqual(seen, ["mono"])
+
+
+def lookup_stub(media_type, tmdb_id):
+    return {"media_type": media_type, "tmdb_id": tmdb_id, "title": f"Title{tmdb_id}", "year": 2020,
+            "poster_url": f"https://image.tmdb.org/p/{tmdb_id}.jpg", "url": f"https://www.themoviedb.org/{media_type}/{tmdb_id}"}
+
+
+class TestAddSeasons(AsyncCase):
+    def setUp(self):
+        super().setUp()
+        self.live()
+        web._state.update(result=fake_result([item(5, "tv", "Show")]), time=time.time())
+        self.arr = {"media_type": "tv", "service": "sonarr", "tmdb_id": 5, "tvdb_id": 55, "title": "Show", "arr_id": 9,
+                    "seasons": [], "arr_state": "missing", "episodes": None, "year": 2020, "added_at": None,
+                    "monitored": True, "poster_url": None, "url": None}
+        # a result with the arr snapshot, so note_arr_item has somewhere to put it
+        web._state["result"]["arr"] = {"items": [], "radarr": {"state": "off", "count": 0}, "sonarr": {"state": "ok", "count": 0}}
+
+    def add(self, data, ok=True, msg="Added", arr=True):
+        with mock.patch.object(sources, "add_to_library", return_value=(ok, msg, self.arr if arr and ok else None)) as add:
+            status, body = self.post_json("/add", "type=tv&id=5" + data)
+        return status, body, add
+
+    def test_pick_reaches_add_to_library_sorted_and_deduped(self):
+        status, body, add = self.add("&seasons=pick&season=3&season=1&season=3&search=1")
+        self.assertEqual((status, body), (200, {"ok": True, "message": "Added"}))
+        add.assert_called_once_with("tv", 5, search=True, quality_profile_id=None, seasons=[1, 3])
+
+    def test_all_and_absent(self):
+        self.assertEqual(self.add("&seasons=all&season=2")[2].call_args.kwargs["seasons"], "all")
+        self.assertIsNone(self.add("")[2].call_args.kwargs["seasons"])
+        self.assertIsNone(self.add("&season=2")[2].call_args.kwargs["seasons"])
+
+    def test_success_records_the_seasons_and_injects_the_arr_item(self):
+        patch = mock.patch.object(web, "lookup_item", return_value=item(5, "tv", "Show"))   # the repeat request's lookup
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.add("&seasons=pick&season=2")
+        self.assertEqual([(a["tmdb_id"], a["seasons"]) for a in db.added_items()], [(5, [2])])
+        self.assertEqual(web._state["result"]["arr"]["items"], [self.arr])
+        self.add("&seasons=pick&season=1", msg="Now monitoring")
+        self.assertEqual(db.added_items()[0]["seasons"], [1, 2])   # a repeat request merges
+        self.add("&seasons=all")
+        self.assertEqual(db.added_items()[0]["seasons"], "all")
+        self.assertEqual(len(web._state["result"]["arr"]["items"]), 1)   # replaced, not duplicated
+
+    def test_legacy_add_records_no_seasons(self):
+        self.add("")
+        self.assertIsNone(db.added_items()[0]["seasons"])
+
+    def test_a_failed_add_records_nothing_and_injects_nothing(self):
+        _, body, _ = self.add("&seasons=pick&season=7", ok=False, msg='Season 7 isn\'t listed for "Show" in Sonarr')
+        self.assertEqual(body["ok"], False)
+        self.assertEqual(db.added_items(), [])
+        self.assertEqual(web._state["result"]["arr"]["items"], [])
+        self.assertEqual(len(web._state["result"]["items"]), 1)   # still recommended
+
+    def test_a_success_without_an_arr_item_still_records(self):
+        self.add("&seasons=all", arr=False)
+        self.assertEqual(len(db.added_items()), 1)
+        self.assertEqual(web._state["result"]["arr"]["items"], [])
+
+    def test_bad_input_is_a_400_and_never_reaches_sonarr(self):
+        cases = [("&seasons=bogus", "That isn't a valid season choice"), ("&seasons=pick", "Pick at least one season"),
+                 ("&seasons=pick&season=0", "That isn't a valid season"), ("&seasons=pick&season=x", "That isn't a valid season"),
+                 ("&seasons=pick&season=10000", "That isn't a valid season"),
+                 ("&seasons=pick" + "".join(f"&season={n}" for n in range(1, 202)), "That isn't a valid season")]
+        for data, message in cases:
+            status, body, add = self.add(data)
+            self.assertEqual((status, body), (400, {"ok": False, "message": message}), data[:40])
+            add.assert_not_called()
+        self.assertEqual(db.added_items(), [])
+
+    def test_200_seasons_are_fine(self):
+        _, body, add = self.add("&seasons=pick" + "".join(f"&season={n}" for n in range(1, 201)))
+        self.assertTrue(body["ok"])
+        self.assertEqual(len(add.call_args.kwargs["seasons"]), 200)
+
+    def test_movies_ignore_seasons_entirely(self):
+        web._state["result"]["items"].append(item(1))
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added", None)) as add:
+            for extra in ("&seasons=bogus", "&seasons=pick", "&seasons=pick&season=x&season=0"):
+                status, body = self.post_json("/add", "type=movie&id=1" + extra)
+                self.assertEqual((status, body["ok"]), (200, True), extra)
+        self.assertTrue(all("seasons" not in call.kwargs for call in add.call_args_list))
+        self.assertIsNone(db.added_items()[0]["seasons"])
+
+    def test_no_js_success_and_error_redirects(self):
+        with mock.patch.object(sources, "add_to_library", return_value=(True, "Added", None)):
+            self.assertEqual(self.location("/add", "type=tv&id=5&seasons=all&return_to=%2Ftitle%2Ftv%2F5"),
+                             "/title/tv/5?msg=Added")
+        with mock.patch.object(sources, "add_to_library") as add:
+            self.assertEqual(self.location("/add", "type=tv&id=5&seasons=pick&return_to=%2Fai"),
+                             "/ai?msg=Pick+at+least+one+season")
+        add.assert_not_called()
+
+    def test_sample_mode_refuses_after_validating(self):
+        with mock.patch.object(sources, "use_sample", return_value=True), \
+             mock.patch.object(sources, "add_to_library") as add:
+            self.assertEqual(self.post_json("/add", "type=tv&id=5&seasons=pick&season=1"),
+                             (200, {"ok": False, "message": web.SAMPLE_MESSAGE}))
+            self.assertEqual(self.post_json("/add", "type=tv&id=5&seasons=pick")[0], 400)   # parse errors win
+        add.assert_not_called()
+        self.assertEqual(db.added_items(), [])
+
+
+class TestRateTitle(AsyncCase):
+    def test_message_uses_the_stub_title_for_an_unwatched_recommendation(self):
+        self.live()
+        web._state.update(result=fake_result([item(5, title="Rec Title")]), time=time.time())
+        _, body = self.post_json("/rate", "type=movie&id=5&stars=4")
+        self.assertEqual(body["message"], 'Rated "Rec Title" 4/5')
+        self.assertIsNone(body["rating"]["plex_stars"])
+        _, body = self.post_json("/rate", "type=movie&id=5&stars=0")
+        self.assertEqual(body["message"], 'Cleared your rating for "Rec Title"')
+        self.assertEqual(self.location("/rate", "type=movie&id=5&stars=2&return_to=%2Fai"), "/ai?msg=Rated+%22Rec+Title%22+2%2F5")
+
+    def test_unknown_titles_keep_the_plain_message_and_make_no_request(self):
+        self.live()
+        web._state.update(result=fake_result([]), time=time.time())
+        with mock.patch.object(web, "lookup_item", side_effect=AssertionError("fetch")), \
+             mock.patch.object(web.tmdb.TmdbClient, "details", side_effect=AssertionError("fetch")):
+            _, body = self.post_json("/rate", "type=movie&id=424242&stars=3")
+        self.assertEqual(body["message"], "Rated 3/5")
+
+    def test_library_and_arr_items_name_the_title_too(self):
+        self.live()
+        result = fake_result([])
+        result["library"] = [{"media_type": "movie", "tmdb_id": 8, "title": "Owned", "year": 2000}]
+        result["arr"] = {"items": [{"media_type": "tv", "service": "sonarr", "tmdb_id": 9, "title": "Tracked"}]}
+        web._state.update(result=result, time=time.time())
+        self.assertEqual(self.post_json("/rate", "type=movie&id=8&stars=5")[1]["message"], 'Rated "Owned" 5/5')
+        self.assertEqual(self.post_json("/rate", "type=tv&id=9&stars=1")[1]["message"], 'Rated "Tracked" 1/5')
+
+
+class ListsCase(AsyncCase):
+    def setUp(self):
+        super().setUp()
+        self.live()
+        web._state.update(result=fake_result([]), time=time.time())
+        patch = mock.patch.object(web, "lookup_item", side_effect=lookup_stub)
+        self.lookup = patch.start()
+        self.addCleanup(patch.stop)
+
+    def new_list(self, name="Horror night", description=""):
+        return db.create_list(name, description)
+
+    def put(self, list_id, n, media_type="movie"):
+        db.add_to_list(list_id, lookup_stub(media_type, n))
+
+
+class TestListsCreate(ListsCase):
+    def test_success_shape_and_the_new_list(self):
+        status, body = self.post_json("/lists/create", "name=++Horror+++night&description=Scary%0A%0Astuff++here")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["ok"], True)
+        self.assertEqual(body["message"], 'Created "Horror night"')
+        (row,) = db.lists()
+        self.assertEqual(body["list"], {"id": row["id"], "name": "Horror night", "description": "Scary stuff here",
+                                        "kind": "custom", "count": 0, "url": f"/lists/{row['id']}", "posters": []})
+
+    def test_with_a_title_adds_it(self):
+        _, body = self.post_json("/lists/create", "name=Picks&type=tv&id=7")
+        self.assertEqual(body["list"]["count"], 1)
+        self.assertEqual([(i["media_type"], i["tmdb_id"], i["title"]) for i in db.list_items(body["list"]["id"])], [("tv", 7, "Title7")])
+
+    def test_a_title_that_cannot_be_looked_up_creates_nothing(self):
+        self.lookup.side_effect = lambda *a: None
+        status, body = self.post_json("/lists/create", "name=Picks&type=movie&id=7")
+        self.assertEqual((status, body), (200, {"ok": False, "message": web.LOOKUP_FAILED}))
+        self.assertEqual(db.lists(), [])
+
+    def test_names_and_descriptions_are_validated(self):
+        cases = [("name=", "Give the list a name"), ("name=+%09+", "Give the list a name"), ("", "Give the list a name"),
+                 ("name=" + "a" * 61, "List names can be up to 60 characters"),
+                 ("name=ok&description=" + "d" * 301, "Descriptions can be up to 300 characters")]
+        for data, message in cases:
+            self.assertEqual(self.post_json("/lists/create", data), (400, {"ok": False, "message": message}), data[:30])
+        self.assertEqual(db.lists(), [])
+        status, body = self.post_json("/lists/create", "name=" + "a" * 60 + "&description=" + "d" * 300)
+        self.assertEqual((status, body["ok"]), (200, True))
+
+    def test_control_characters_are_dropped(self):
+        _, body = self.post_json("/lists/create", "name=A%00B%07C")
+        self.assertEqual(body["list"]["name"], "ABC")
+
+    def test_duplicate_names_ignore_case_and_watchlist_is_reserved(self):
+        self.new_list("Horror night")
+        for name in ("horror NIGHT", "Watchlist", "WATCHLIST"):
+            status, body = self.post_json("/lists/create", "name=" + name.replace(" ", "+"))
+            self.assertEqual((status, body), (400, {"ok": False, "message": f'You already have a list called "{name}"'}), name)
+        self.assertEqual(len(db.lists()), 1)
+
+    def test_bad_title_is_a_400(self):
+        for data in ("type=film&id=1", "type=movie&id=x", "type=movie", "id=3"):
+            status, body = self.post_json("/lists/create", "name=Ok&" + data)
+            self.assertEqual((status, body), (400, {"ok": False, "message": "That isn't a valid title"}), data)
+        self.assertEqual(db.lists(), [])
+
+    def test_the_fifty_list_limit(self):
+        for n in range(web.MAX_LISTS):
+            self.new_list(f"List {n}")
+        self.assertEqual(self.post_json("/lists/create", "name=One+more"), (200, {"ok": False, "message": "You can have up to 50 lists"}))
+        self.assertEqual(len(db.lists()), 50)
+
+    def test_the_watchlist_does_not_count_towards_the_limit(self):
+        db.ensure_watchlist()
+        for n in range(web.MAX_LISTS - 1):
+            self.new_list(f"List {n}")
+        self.assertTrue(self.post_json("/lists/create", "name=Last")[1]["ok"])
+
+    def test_no_js_redirects(self):
+        loc = self.location("/lists/create", "name=Mine")
+        (row,) = db.lists()
+        self.assertEqual(loc, f"/lists/{row['id']}?msg=Created+%22Mine%22")
+        self.assertEqual(self.location("/lists/create", "name=Two&return_to=%2Fsearch%3Fq%3Dx"), "/search?q=x&msg=Created+%22Two%22")
+        self.assertTrue(self.location("/lists/create", "name=Three&return_to=https%3A%2F%2Fevil.example").startswith("/lists/"))
+        self.assertEqual(self.location("/lists/create", "name="), "/lists?msg=Give+the+list+a+name")
+        self.assertEqual(self.location("/lists/create", "name=x&type=film&id=1"), "/lists")   # bad title: no message
+
+    def test_sample_mode_refuses_without_writing(self):
+        with mock.patch.object(sources, "use_sample", return_value=True), \
+             mock.patch.object(db, "create_list", side_effect=AssertionError("write")), \
+             mock.patch.object(db, "ensure_watchlist", side_effect=AssertionError("write")):
+            self.assertEqual(self.post_json("/lists/create", "name=Mine"), (200, {"ok": False, "message": web.SAMPLE_MESSAGE}))
+            self.assertEqual(self.location("/lists/create", "name=Mine&return_to=%2Flists"), "/lists?msg=Sample+data+-+not+saved")
+            self.assertEqual(self.post_json("/lists/create", "name=")[0], 400)   # validation first
+
+
+class TestListsUpdateDelete(ListsCase):
+    def test_update_success(self):
+        lid = self.new_list("Old", "d")
+        status, body = self.post_json("/lists/update", f"list_id={lid}&name=New+name&description=fresh")
+        self.assertEqual((status, body["ok"], body["message"]), (200, True, 'Saved "New name"'))
+        self.assertEqual((body["list"]["name"], body["list"]["description"]), ("New name", "fresh"))
+        self.assertEqual(db.get_list(lid)["name"], "New name")
+
+    def test_keeping_the_same_name_is_fine_but_a_taken_one_is_not(self):
+        a, b = self.new_list("Alpha"), self.new_list("Beta")
+        self.assertTrue(self.post_json("/lists/update", f"list_id={a}&name=ALPHA&description=x")[1]["ok"])
+        status, body = self.post_json("/lists/update", f"list_id={a}&name=beta")
+        self.assertEqual((status, body["message"]), (400, 'You already have a list called "beta"'))
+        self.assertEqual(self.post_json("/lists/update", f"list_id={a}&name=Watchlist")[0], 400)
+
+    def test_errors(self):
+        lid = self.new_list()
+        watch = db.ensure_watchlist()
+        cases = [(f"list_id={lid}&name=", "Give the list a name"), (f"list_id={lid}&name=" + "a" * 61, "List names can be up to 60 characters"),
+                 (f"list_id={lid}&name=x&description=" + "d" * 301, "Descriptions can be up to 300 characters"),
+                 ("list_id=9999&name=x", "That list doesn't exist"), ("list_id=abc&name=x", "That list doesn't exist"),
+                 ("name=x", "That list doesn't exist"),
+                 (f"list_id={watch}&name=Mine", "The Watchlist can't be renamed or deleted")]
+        for data, message in cases:
+            self.assertEqual(self.post_json("/lists/update", data), (400, {"ok": False, "message": message}), data)
+        self.assertEqual(db.get_list(lid)["name"], "Horror night")
+        self.assertEqual(db.get_list(watch)["name"], "Watchlist")
+
+    def test_delete_success_removes_the_items(self):
+        lid = self.new_list("Gone")
+        self.put(lid, 1)
+        status, body = self.post_json("/lists/delete", f"list_id={lid}")
+        self.assertEqual((status, body), (200, {"ok": True, "message": 'Deleted "Gone"'}))
+        self.assertIsNone(db.get_list(lid))
+        self.assertEqual(db.memberships(), {})
+
+    def test_delete_errors(self):
+        watch = db.ensure_watchlist()
+        for data, message in (("list_id=9999", "That list doesn't exist"), ("list_id=x", "That list doesn't exist"), ("", "That list doesn't exist"),
+                              (f"list_id={watch}", "The Watchlist can't be renamed or deleted")):
+            self.assertEqual(self.post_json("/lists/delete", data), (400, {"ok": False, "message": message}), data)
+        self.assertEqual(len(db.lists()), 1)
+
+    def test_no_js_defaults(self):
+        lid = self.new_list("Mine")
+        self.assertEqual(self.location("/lists/update", f"list_id={lid}&name=Renamed"), f"/lists/{lid}?msg=Saved+%22Renamed%22")
+        self.assertEqual(self.location("/lists/update", f"list_id={lid}&name=Again&return_to=%2Fsearch"), "/search?msg=Saved+%22Again%22")
+        self.assertEqual(self.location("/lists/update", f"list_id={lid}&name=X&return_to=%2F%2Fevil.example"), f"/lists/{lid}?msg=Saved+%22X%22")
+        self.assertEqual(self.location("/lists/delete", f"list_id={lid}"), "/lists?msg=Deleted+%22X%22")
+        self.assertEqual(self.location("/lists/delete", f"list_id={lid}"), "/lists?msg=That+list+doesn%27t+exist")
+
+    def test_sample_mode_refuses_without_writing(self):
+        lid = self.new_list("Keep")
+        with mock.patch.object(sources, "use_sample", return_value=True):
+            for path, data in (("/lists/update", f"list_id={lid}&name=Changed"), ("/lists/delete", f"list_id={lid}")):
+                self.assertEqual(self.post_json(path, data), (200, {"ok": False, "message": web.SAMPLE_MESSAGE}), path)
+                self.assertEqual(self.location(path, data), "/lists?msg=Sample+data+-+not+saved" if "delete" in path
+                                 else f"/lists/{lid}?msg=Sample+data+-+not+saved")
+        self.assertEqual(db.get_list(lid)["name"], "Keep")
+
+
+class TestListsAddRemove(ListsCase):
+    def test_add_to_the_watchlist_creates_it_on_first_use(self):
+        self.assertEqual(db.lists(), [])
+        status, body = self.post_json("/lists/add", "list=watchlist&type=movie&id=7")
+        watch = db.lists()[0]
+        self.assertEqual((watch["kind"], watch["count"]), ("watchlist", 1))
+        self.assertEqual((status, body), (200, {"ok": True, "message": 'Added "Title7" to Watchlist',
+                                                "list": {"id": watch["id"], "name": "Watchlist", "kind": "watchlist"},
+                                                "item": {"type": "movie", "id": 7}, "in_list": True,
+                                                "lists": [watch["id"]], "on_watchlist": True}))
+        self.assertEqual(db.list_items(watch["id"])[0]["poster_url"], "https://image.tmdb.org/p/7.jpg")
+
+    def test_add_to_a_custom_list_by_id(self):
+        lid = self.new_list("Horror night")
+        _, body = self.post_json("/lists/add", f"list_id={lid}&type=tv&id=7")
+        self.assertEqual((body["message"], body["on_watchlist"], body["lists"]), ('Added "Title7" to Horror night', False, [lid]))
+
+    def test_already_there_is_ok_and_does_no_lookup(self):
+        lid = self.new_list("L")
+        self.put(lid, 7)
+        self.lookup.reset_mock()
+        _, body = self.post_json("/lists/add", f"list_id={lid}&type=movie&id=7")
+        self.assertEqual((body["ok"], body["message"], body["in_list"]), (True, "Already on L", True))
+        self.lookup.assert_not_called()
+
+    def test_remove(self):
+        lid = self.new_list("L")
+        self.put(lid, 7)
+        status, body = self.post_json("/lists/remove", f"list_id={lid}&type=movie&id=7")
+        self.assertEqual((status, body), (200, {"ok": True, "message": 'Removed "Title7" from L', "list": {"id": lid, "name": "L", "kind": "custom"},
+                                                "item": {"type": "movie", "id": 7}, "in_list": False, "lists": [], "on_watchlist": False}))
+        _, body = self.post_json("/lists/remove", f"list_id={lid}&type=movie&id=7")
+        self.assertEqual((body["ok"], body["message"], body["in_list"]), (True, "Not on L", False))
+
+    def test_remove_from_the_watchlist(self):
+        _, added = self.post_json("/lists/add", "list=watchlist&type=movie&id=7")
+        _, body = self.post_json("/lists/remove", "list=watchlist&type=movie&id=7")
+        self.assertEqual((body["message"], body["on_watchlist"]), ('Removed "Title7" from Watchlist', False))
+        self.assertEqual(db.list_items(added["list"]["id"]), [])
+
+    def test_other_memberships_are_reported(self):
+        lid = self.new_list("L")
+        self.put(lid, 7)
+        _, body = self.post_json("/lists/add", "list=watchlist&type=movie&id=7")
+        self.assertEqual(sorted(body["lists"]), sorted([lid, body["list"]["id"]]))
+
+    def test_bad_input(self):
+        lid = self.new_list()
+        for path in ("/lists/add", "/lists/remove"):
+            for data, message in (("list=watchlist&type=film&id=1", "That isn't a valid title"), ("list=watchlist&type=movie&id=x", "That isn't a valid title"),
+                                  ("type=movie&id=1", "That list doesn't exist"), ("list=other&type=movie&id=1", "That list doesn't exist"),
+                                  ("list_id=abc&type=movie&id=1", "That list doesn't exist"), ("list_id=9999&type=movie&id=1", "That list doesn't exist")):
+                self.assertEqual(self.post_json(path, data), (400, {"ok": False, "message": message}), (path, data))
+        self.assertEqual(db.list_items(lid), [])
+        self.assertEqual([r["kind"] for r in db.lists()], ["custom"])   # nothing created by a refused request
+
+    def test_a_full_list_refuses_new_titles(self):
+        lid = self.new_list("Full")
+        with mock.patch.object(web, "MAX_LIST_ITEMS", 2):
+            self.put(lid, 1)
+            self.put(lid, 2)
+            self.assertEqual(self.post_json("/lists/add", f"list_id={lid}&type=movie&id=3"),
+                             (200, {"ok": False, "message": "That list is full (2 titles)"}))
+            self.assertTrue(self.post_json("/lists/add", f"list_id={lid}&type=movie&id=2")[1]["ok"])   # already there: fine
+        self.assertEqual(len(db.list_items(lid)), 2)
+
+    def test_the_1000_item_default(self):
+        self.assertEqual(web.MAX_LIST_ITEMS, 1000)
+
+    def test_lookup_failure_is_a_refusal(self):
+        self.lookup.side_effect = lambda *a: None
+        self.assertEqual(self.post_json("/lists/add", "list=watchlist&type=movie&id=7"),
+                         (200, {"ok": False, "message": "Couldn't look that title up right now - try again in a minute."}))
+        self.assertEqual(db.memberships(), {})
+
+    def test_a_known_title_needs_no_lookup(self):
+        web._state.update(result=fake_result([item(7, title="Known")]), time=time.time())
+        self.lookup.side_effect = AssertionError("fetch")
+        _, body = self.post_json("/lists/add", "list=watchlist&type=movie&id=7")
+        self.assertEqual(body["message"], 'Added "Known" to Watchlist')
+
+    def test_no_js(self):
+        self.assertEqual(self.location("/lists/add", "list=watchlist&type=movie&id=7&return_to=%2Ftitle%2Fmovie%2F7"),
+                         "/title/movie/7?msg=Added+%22Title7%22+to+Watchlist")
+        self.assertEqual(self.location("/lists/remove", "list=watchlist&type=movie&id=7&return_to=%2Flists%2F1%3Fsort%3Dtitle%26page%3D2"),
+                         "/lists/1?sort=title&page=2&msg=Removed+%22Title7%22+from+Watchlist")
+        self.assertEqual(self.location("/lists/add", "list=watchlist&type=movie&id=7&return_to=%2F%2Fevil.example"),
+                         "/recommended?msg=Added+%22Title7%22+to+Watchlist")
+        self.assertEqual(self.location("/lists/add", "list=watchlist&type=film&id=7&return_to=%2Fai"), "/ai")
+
+    def test_sample_mode_refuses_without_writing(self):
+        with mock.patch.object(sources, "use_sample", return_value=True), \
+             mock.patch.object(db, "ensure_watchlist", side_effect=AssertionError("write")), \
+             mock.patch.object(db, "add_to_list", side_effect=AssertionError("write")):
+            for path in ("/lists/add", "/lists/remove"):
+                data = "list=watchlist&type=movie&id=1005"
+                self.assertEqual(self.post_json(path, data), (200, {"ok": False, "message": web.SAMPLE_MESSAGE}))
+                self.assertEqual(self.location(path, data + "&return_to=%2Fai"), "/ai?msg=Sample+data+-+not+saved")
+            self.assertEqual(self.post_json("/lists/add", "list=watchlist&type=film&id=1")[0], 400)   # validation first
+            self.assertEqual(self.post_json("/lists/add", "type=movie&id=1")[0], 200)
+
+
+class TestListsSet(ListsCase):
+    def setUp(self):
+        super().setUp()
+        self.watch = db.ensure_watchlist()
+        self.a, self.b = self.new_list("Alpha"), self.new_list("Beta")
+
+    def set(self, ids, extra=""):
+        return self.post_json("/lists/set", "type=movie&id=7" + "".join(f"&list_id={i}" for i in ids) + extra)
+
+    def test_adds_removes_and_creates_in_one_go(self):
+        self.put(self.a, 7)
+        self.put(self.b, 7)
+        status, body = self.set([self.b, self.watch], "&new_list=Fresh")
+        created = next(l for l in db.lists() if l["name"] == "Fresh")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["ok"], True)
+        self.assertEqual(body["message"], "Saved - on 3 lists")
+        self.assertEqual(body["created"], {"id": created["id"], "name": "Fresh"})
+        self.assertEqual(sorted(body["lists"]), sorted([self.b, self.watch, created["id"]]))
+        self.assertEqual((body["item"], body["on_watchlist"]), ({"type": "movie", "id": 7}, True))
+        self.assertEqual(sorted(db.memberships()[("movie", 7)]), sorted(body["lists"]))
+        self.assertEqual(db.list_items(self.a), [])
+
+    def test_clearing_everything(self):
+        self.put(self.a, 7)
+        _, body = self.set([])
+        self.assertEqual((body["message"], body["lists"], body["on_watchlist"], body["created"]), ("Saved - not on any list", [], False, None))
+
+    def test_one_list_message_is_singular(self):
+        self.assertEqual(self.set([self.a])[1]["message"], "Saved - on 1 list")
+
+    def test_nothing_changes_when_the_set_is_the_same_and_no_lookup_is_made(self):
+        self.put(self.a, 7)
+        self.lookup.reset_mock()
+        _, body = self.set([self.a])
+        self.assertEqual(body["lists"], [self.a])
+        self.lookup.assert_not_called()
+
+    def test_only_resolves_the_title_when_it_adds_somewhere(self):
+        self.put(self.a, 7)
+        self.lookup.reset_mock()
+        self.set([])
+        self.lookup.assert_not_called()
+        self.set([self.b])
+        self.lookup.assert_called_once()
+
+    def test_lookup_failure_changes_nothing(self):
+        self.put(self.a, 8)
+        self.lookup.side_effect = lambda *a: None
+        data = f"type=movie&id=9&list_id={self.a}&new_list=Z"   # 9 isn't stored anywhere, so it needs a lookup
+        self.assertEqual(self.post_json("/lists/set", data), (200, {"ok": False, "message": web.LOOKUP_FAILED}))
+        self.assertEqual(db.memberships(), {("movie", 8): [self.a]})
+        self.assertNotIn("Z", [l["name"] for l in db.lists()])
+
+    def test_a_title_already_on_a_list_needs_no_lookup_to_join_another(self):
+        self.put(self.a, 7)
+        self.lookup.side_effect = lambda *a: None
+        self.assertTrue(self.set([self.a, self.b])[1]["ok"])
+        self.assertEqual(sorted(db.memberships()[("movie", 7)]), sorted([self.a, self.b]))
+
+    def test_bad_input_is_a_400_and_changes_nothing(self):
+        self.put(self.a, 7)
+        cases = [("type=film&id=7&list_id=1", "That isn't a valid title"), ("type=movie&id=x", "That isn't a valid title"),
+                 (f"type=movie&id=7&list_id={self.b}&list_id=9999", "That list doesn't exist"),
+                 ("type=movie&id=7&list_id=abc", "That list doesn't exist"),
+                 ("type=movie&id=7&new_list=" + "a" * 61, "List names can be up to 60 characters"),
+                 ("type=movie&id=7&new_list=beta", 'You already have a list called "beta"'),
+                 ("type=movie&id=7&new_list=Watchlist", 'You already have a list called "Watchlist"')]
+        for data, message in cases:
+            self.assertEqual(self.post_json("/lists/set", data), (400, {"ok": False, "message": message}), data)
+        self.assertEqual(db.memberships()[("movie", 7)], [self.a])
+        self.assertEqual(len(db.lists()), 3)
+
+    def test_the_list_limits(self):
+        for n in range(web.MAX_LISTS - 2):
+            self.new_list(f"Filler {n}")
+        self.assertEqual(self.set([], "&new_list=Over"), (200, {"ok": False, "message": "You can have up to 50 lists"}))
+        full = self.new_list("Full")
+        self.assertEqual(self.set([]), (200, {"ok": True, "message": "Saved - not on any list", "item": {"type": "movie", "id": 7},
+                                              "lists": [], "on_watchlist": False, "created": None}))
+        with mock.patch.object(web, "MAX_LIST_ITEMS", 1):
+            self.put(full, 1)
+            self.assertEqual(self.set([full]), (200, {"ok": False, "message": "That list is full (1 titles)"}))
+
+    def test_no_js_and_sample(self):
+        self.assertEqual(self.location("/lists/set", f"type=movie&id=7&list_id={self.a}&return_to=%2Ftitle%2Fmovie%2F7"),
+                         "/title/movie/7?msg=Saved+-+on+1+list")
+        self.assertEqual(self.location("/lists/set", "type=film&id=7&return_to=%2Fai"), "/ai")
+        with mock.patch.object(sources, "use_sample", return_value=True), mock.patch.object(db, "add_to_list", side_effect=AssertionError):
+            self.assertEqual(self.set([self.a]), (200, {"ok": False, "message": web.SAMPLE_MESSAGE}))
+            self.assertEqual(self.location("/lists/set", f"type=movie&id=7&list_id={self.a}&return_to=%2Fai"), "/ai?msg=Sample+data+-+not+saved")
+            self.assertEqual(self.post_json("/lists/set", "type=film&id=7")[0], 400)
+
+
+class TestListsMove(ListsCase):
+    def setUp(self):
+        super().setUp()
+        self.lid = self.new_list("L")
+        for n in (3, 2, 1):
+            self.put(self.lid, n)    # order 1, 2, 3
+
+    def order(self):
+        return [i["tmdb_id"] for i in db.list_items(self.lid)]
+
+    def move(self, n, direction):
+        return self.post_json("/lists/move", f"list_id={self.lid}&type=movie&id={n}&direction={direction}")
+
+    def test_every_direction(self):
+        self.assertEqual(self.move(1, "down"), (200, {"ok": True, "message": "Moved", "moved": True}))
+        self.assertEqual(self.order(), [2, 1, 3])
+        self.move(1, "up")
+        self.move(3, "top")
+        self.assertEqual(self.order(), [3, 1, 2])
+        self.move(3, "bottom")
+        self.assertEqual(self.order(), [1, 2, 3])
+
+    def test_already_at_the_end_is_ok_but_not_moved(self):
+        status, body = self.move(1, "up")
+        self.assertEqual((status, body["ok"], body["moved"]), (200, True, False))
+        self.assertEqual(self.order(), [1, 2, 3])
+        self.assertFalse(self.move(99, "up")[1]["moved"])
+
+    def test_bad_input(self):
+        for data, message in ((f"list_id={self.lid}&type=movie&id=1&direction=sideways", "That isn't a valid move"),
+                              (f"list_id={self.lid}&type=movie&id=1", "That isn't a valid move"),
+                              ("list_id=9999&type=movie&id=1&direction=up", "That list doesn't exist"),
+                              ("list_id=x&type=movie&id=1&direction=up", "That list doesn't exist"),
+                              (f"list_id={self.lid}&type=film&id=1&direction=up", "That isn't a valid title")):
+            self.assertEqual(self.post_json("/lists/move", data), (400, {"ok": False, "message": message}), data)
+        self.assertEqual(self.order(), [1, 2, 3])
+
+    def test_no_js_defaults_and_return_to(self):
+        self.assertEqual(self.location("/lists/move", f"list_id={self.lid}&type=movie&id=1&direction=down"), f"/lists/{self.lid}?msg=Moved")
+        self.assertEqual(self.location("/lists/move", f"list_id={self.lid}&type=movie&id=1&direction=down&return_to=%2Flists%2F{self.lid}%3Fpage%3D2"),
+                         f"/lists/{self.lid}?page=2&msg=Moved")
+        self.assertEqual(self.location("/lists/move", f"list_id={self.lid}&type=movie&id=1&direction=zzz"), f"/lists/{self.lid}")
+
+    def test_sample_mode_refuses_without_writing(self):
+        with mock.patch.object(sources, "use_sample", return_value=True), mock.patch.object(db, "move_in_list", side_effect=AssertionError):
+            data = f"list_id={self.lid}&type=movie&id=1&direction=down"
+            self.assertEqual(self.post_json("/lists/move", data), (200, {"ok": False, "message": web.SAMPLE_MESSAGE}))
+            self.assertEqual(self.location("/lists/move", data), f"/lists/{self.lid}?msg=Sample+data+-+not+saved")
+            self.assertEqual(self.post_json("/lists/move", data.replace("down", "zzz"))[0], 400)
+
+
+class TestListRoutesBasics(ListsCase):
+    def test_an_unknown_lists_path_is_a_404(self):
+        status, _, _ = self.request("POST", "/lists/bogus", "")
+        self.assertEqual(status, 404)
+        status, _, _ = self.request("POST", "/lists/", "")
+        self.assertEqual(status, 404)
+
+    def test_post_only_list_paths_are_404_for_get(self):
+        for path in ("/lists/create", "/lists/add", "/lists/move"):
+            self.assertEqual(self.request("GET", path)[0], 404)
+
+    def test_a_10kb_form_body_is_read_whole(self):
+        body = "pad=" + "a" * 10000 + "&name=After+the+padding&return_to=%2Fsearch"
+        self.assertGreater(len(body), 4096)
+        self.assertEqual(self.location("/lists/create", body), "/search?msg=Created+%22After+the+padding%22")
+        self.assertEqual(web.MAX_FORM_BYTES, 16384)
+
+    def test_a_300_char_utf8_description_fits(self):
+        description = urllib.parse.quote("é" * 300)
+        status, body = self.post_json("/lists/create", f"name=Ok&description={description}")
+        self.assertEqual((status, body["list"]["description"]), (200, "é" * 300))
+
+    def test_bodies_over_the_cap_are_cut_and_do_not_crash(self):
+        body = "pad=" + "a" * 30000 + "&name=Never+seen"
+        status, resp = self.post_json("/lists/create", body)
+        self.assertEqual((status, resp["message"]), (400, "Give the list a name"))
+
+
+class TestListsConcurrency(ListsCase):
+    def test_parallel_adds_of_the_same_title_end_up_with_one_row(self):
+        lid = self.new_list("Race")
+        results = []
+
+        def worker():
+            results.append(self.post_json("/lists/add", f"list_id={lid}&type=movie&id=7")[1]["ok"])
+
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        [t.start() for t in threads]
+        [t.join(10) for t in threads]
+        self.assertEqual(results, [True] * 6)
+        self.assertEqual(len(db.list_items(lid)), 1)
+
+    def test_a_list_write_never_waits_for_a_build(self):
+        gate = Gate()
+        web._state.update(result=None, time=0.0)
+        with mock.patch.object(sources, "run", gate):
+            threading.Thread(target=web._start_build, daemon=True).start()
+            self.assertTrue(gate.entered.wait(2))
+            started = time.time()
+            self.assertTrue(self.post_json("/lists/add", "list=watchlist&type=movie&id=7")[1]["ok"])
+            self.assertLess(time.time() - started, 2)
+            gate.release.set()
+            wait_idle()
+
+    def test_a_note_arr_item_during_a_build_is_kept_on_the_cached_result(self):
+        gate = Gate()
+        web._state.update(result=dict(fake_result([]), arr={"items": [], "sonarr": {"state": "ok", "count": 0}}),
+                         time=time.time() - web.REFRESH_MIN_SECONDS - 5)
+        with mock.patch.object(sources, "run", gate):
+            threading.Thread(target=web._start_build, kwargs={"refresh": True}, daemon=True).start()
+            self.assertTrue(gate.entered.wait(2))
+            web.note_arr_item({"media_type": "tv", "service": "sonarr", "tmdb_id": 5, "tvdb_id": 55})
+            self.assertEqual(len(web._state["result"]["arr"]["items"]), 1)
+            gate.release.set()
+            wait_idle()
+
+
+class TestSeerrGetRoutes(ListsCase):
+    """Routing of the new GET routes (live mode, render functions mocked so only the wiring is tested)."""
+
+    def test_title_route_passes_the_view_msg_and_undo(self):
+        view = {"state": "ok", "media_type": "movie", "tmdb_id": 1001}
+        with mock.patch.object(web, "title_view", return_value=view) as tv, \
+             mock.patch.object(web, "render_title", return_value="<html>T</html>") as render:
+            status, _, body = self.request("GET", "/title/movie/1001?msg=Hi&undo_type=tv&undo_id=5")
+        self.assertEqual((status, body), (200, "<html>T</html>"))
+        tv.assert_called_once_with("movie", 1001)
+        render.assert_called_once_with(view, "Hi", ("tv", 5))
+
+    def test_title_route_without_undo_and_with_a_bad_undo(self):
+        with mock.patch.object(web, "title_view", return_value={"state": "ok"}), \
+             mock.patch.object(web, "render_title", return_value="x") as render:
+            self.request("GET", "/title/tv/7")
+            self.request("GET", "/title/tv/7?undo_type=film&undo_id=5")
+        self.assertEqual([c.args[1:] for c in render.call_args_list], [("", None), ("", None)])
+
+    def test_not_found_is_a_rendered_404(self):
+        with mock.patch.object(web, "title_view", return_value={"state": "not_found"}), \
+             mock.patch.object(web, "render_title", return_value="<html>nope</html>"):
+            self.assertEqual(self.request("GET", "/title/movie/9")[::2], (404, "<html>nope</html>"))
+
+    def test_unavailable_and_partial_are_200(self):
+        for state in ("unavailable", "partial"):
+            with mock.patch.object(web, "title_view", return_value={"state": state}), \
+                 mock.patch.object(web, "render_title", return_value="x"):
+                self.assertEqual(self.request("GET", "/title/movie/9")[0], 200)
+
+    def test_bad_title_paths_never_reach_the_view(self):
+        with mock.patch.object(web, "title_view", side_effect=AssertionError("view")):
+            for path in ("/title/film/1", "/title/movie/abc", "/title/movie/1/x", "/title/movie/", "/title/movie",
+                         "/title/", "/title/movie/-1", "/title/movie/%31", "/title/movie/1234567890123"):
+                status, _, body = self.request("GET", path)
+                self.assertEqual((status, body), (404, "Not found"), path)
+
+    def test_id_zero_and_negative_ids_are_404_without_a_request(self):
+        with mock.patch.object(web, "title_view", side_effect=AssertionError("view")), \
+             mock.patch.object(web, "render_list_dialog", side_effect=AssertionError("dialog")):
+            for path in ("/title/movie/0", "/title/tv/00", "/title/movie/-0", "/list-dialog?type=movie&id=0",
+                         "/list-dialog?type=tv&id=000&partial=1", "/add-dialog?type=movie&id=0"):
+                status, _, body = self.request("GET", path)
+                self.assertEqual((status, body), (404, "Not found"), path)
+
+    def test_id_zero_is_a_400_for_the_post_routes(self):
+        for path, data in (("/rate", "type=movie&id=0&stars=3"), ("/add", "type=movie&id=0"), ("/dismiss", "type=movie&id=0"),
+                           ("/lists/add", "list=watchlist&type=movie&id=0"), ("/lists/set", "type=movie&id=0")):
+            self.assertEqual(self.post_json(path, data), (400, {"ok": False, "message": "That isn't a valid title"}), path)
+
+    def test_list_page_route_parses_sort_and_page(self):
+        view = {"list": {}}
+        with mock.patch.object(web, "list_page_view", return_value=view) as page, \
+             mock.patch.object(web, "render_list", return_value="L") as render:
+            self.assertEqual(self.request("GET", "/lists/12?sort=title&page=3&msg=Hi")[::2], (200, "L"))
+            self.request("GET", "/lists/12?sort=bogus&page=0")
+        self.assertEqual([c.args for c in page.call_args_list], [(12,), (12,)])
+        self.assertEqual([c.kwargs for c in page.call_args_list], [{"sort": "title", "page": 3}, {"sort": "manual", "page": 1}])
+        render.assert_any_call(view, msg="Hi")
+
+    def test_list_page_404s(self):
+        with mock.patch.object(web, "list_page_view", return_value=None):
+            self.assertEqual(self.request("GET", "/lists/99")[::2], (404, "Not found"))
+        with mock.patch.object(web, "list_page_view", side_effect=AssertionError("view")):
+            for path in ("/lists/abc", "/lists/", "/lists/1/x", "/lists/-1"):
+                self.assertEqual(self.request("GET", path)[0], 404, path)
+
+    def test_a_real_list_page_and_the_lists_page_render(self):
+        lid = self.new_list("Horror night", "Scary")
+        self.put(lid, 7)
+        status, _, body = self.request("GET", f"/lists/{lid}")
+        self.assertEqual(status, 200)
+        self.assertIn("Horror night", body)
+        self.assertIn("Title7", body)
+        self.assertIn("Horror night", self.request("GET", "/lists?msg=Hello")[2])
+        self.assertEqual(self.request("GET", "/lists/999")[0], 404)
+
+    def test_watchlist_redirects_to_the_watchlist_page(self):
+        status, headers, _ = self.request("GET", "/watchlist")
+        watch = db.lists()[0]
+        self.assertEqual((status, headers["Location"], watch["kind"]), (303, f"/lists/{watch['id']}", "watchlist"))
+
+    def test_requests_redirect(self):
+        self.assertEqual(self.request("GET", "/requests")[1]["Location"], "/library?type=added")
+        self.assertEqual(self.request("GET", "/requests?msg=Hi+there")[1]["Location"], "/library?type=added&msg=Hi+there")
+
+    def test_list_dialog_routing(self):
+        with mock.patch.object(web, "render_list_dialog", return_value="D") as render:
+            status, headers, body = self.request("GET", "/list-dialog?type=tv&id=5&return_to=%2Ftitle%2Ftv%2F5&partial=1")
+            self.assertEqual((status, body, headers["Cache-Control"]), (200, "D", "no-store"))
+            render.assert_called_with("tv", 5, "/title/tv/5", partial=True)
+            status, headers, _ = self.request("GET", "/list-dialog?type=tv&id=5&partial=2")
+            render.assert_called_with("tv", 5, "/recommended", partial=False)
+            self.assertIsNone(headers.get("Cache-Control"))
+            for path in ("/list-dialog?type=x&id=1", "/list-dialog?type=tv&id=abc", "/list-dialog"):
+                self.assertEqual(self.request("GET", path)[::2], (404, "Not found"), path)
+
+    def test_the_real_list_dialog_lists_the_lists(self):
+        self.new_list("Horror night")
+        body = self.request("GET", "/list-dialog?type=movie&id=7&partial=1")[2]
+        self.assertIn("Horror night", body)
+        self.assertIn("Watchlist", body)
+        self.assertNotIn("<html", body)
+
+    def test_dismiss_from_a_title_page_redirects_back_with_undo(self):
+        web._state.update(result=fake_result([item(5)]), time=time.time())
+        loc = self.location("/dismiss", "type=movie&id=5&return_to=%2Ftitle%2Fmovie%2F5")
+        self.assertEqual(loc, "/title/movie/5?undo_type=movie&undo_id=5")
+        loc = self.location("/undismiss", "type=movie&id=5&return_to=%2Ftitle%2Fmovie%2F5")
+        self.assertEqual(loc, "/title/movie/5")
+
+    def test_a_title_page_renders_for_a_live_title_from_mocked_tmdb(self):
+        web._state.update(result=fake_result([item(5, title="Rec Title")]), time=time.time())
+        extras = {"media_type": "movie", "tmdb_id": 5, "tagline": "", "status": "", "cast": [], "crew": [], "trailer": None,
+                  "seasons": [], "networks": [], "studios": [], "tvdb_id": None, "imdb_id": None, "similar": []}
+        with mock.patch.object(web, "title_data", return_value={"details": None, "extras": extras, "state": "ok"}):
+            status, _, body = self.request("GET", "/title/movie/5?msg=Added+it")
+        self.assertEqual(status, 200)
+        self.assertIn("Rec Title", body)
+        self.assertIn("Added it", body)
 
 
 if __name__ == "__main__":

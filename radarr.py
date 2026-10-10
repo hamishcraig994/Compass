@@ -32,6 +32,7 @@ def normalize_movie(raw):
     return {"media_type": "movie", "service": "radarr", "tmdb_id": tmdb_id, "tvdb_id": None,
             "title": raw.get("title") or "?", "year": _positive_int(raw.get("year")), "added_at": _added_at(raw),
             "monitored": monitored, "arr_state": state, "episodes": None,
+            "arr_id": _positive_int(raw.get("id")), "seasons": None,
             "poster_url": arr_library.poster_url(raw.get("images")),
             "url": f"https://www.themoviedb.org/movie/{tmdb_id}" if tmdb_id else None}
 
@@ -40,6 +41,7 @@ class RadarrClient:
     def __init__(self, base_url, api_key, quality_profile_id=None, root_folder=None):
         self.base_url, self.api_key = base_url.rstrip("/"), api_key
         self._quality_profile_id, self._root_folder = quality_profile_id, root_folder or None
+        self.last_item = None  # normalize_movie() of the last successful add()'s response, else None
 
     def _get(self, path, params=None):
         return get_json(self.base_url + path, headers={"X-Api-Key": self.api_key}, params=params)
@@ -105,6 +107,7 @@ class RadarrClient:
     def add(self, tmdb_id, search=True):
         """Returns (success, message). Never raises for an expected outcome (already added, not
         found, nothing configured) - only a real connection problem surfaces as a message too."""
+        self.last_item = None
         try:
             if self._exists(tmdb_id):
                 return False, "Already in Radarr"
@@ -120,7 +123,8 @@ class RadarrClient:
             # search yet" has to mean "don't monitor yet" too, or it wouldn't actually be honored.
             movie.update({"qualityProfileId": quality_profile_id, "rootFolderPath": root_folder,
                          "monitored": search, "addOptions": {"searchForMovie": search}})
-            self._post("/api/v3/movie", movie)
+            created = self._post("/api/v3/movie", movie)
+            self.last_item = normalize_movie(created) if isinstance(created, dict) else None
             return True, f"Added \"{movie.get('title', 'the movie')}\" to Radarr"
         except Exception as e:
             return False, f"Radarr error: {e}"

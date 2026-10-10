@@ -7,6 +7,7 @@ import json
 import os
 import threading
 import time
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
 
@@ -16,6 +17,7 @@ import config
 import db
 import plex
 import profile
+import recommend
 import sample
 import settings_page
 import sources
@@ -26,7 +28,8 @@ import tmdb
 # tests that call or patch web.render_* / web._card / web._shell.
 from pages import (  # noqa: E402
     _card, _shell, render_add_dialog, render_ai_page, render_appearance, render_browse, render_home,
-    render_library, render_search, render_search_results,
+    render_library, render_list, render_list_dialog, render_lists, render_search, render_search_results,
+    render_title,
 )
 
 CACHE_SECONDS = 3600       # reuse the last result for an hour (finding suggestions takes a while)
@@ -284,7 +287,7 @@ LIST_OPTIONS = {   # tab -> (sorts, shows); the first of each is the default
     "movie":   (("added", "title", "year"), ("all", "unwatched", "watched")),
     "tv":      (("added", "title", "year"), ("all", "unwatched", "watched")),
     "watched": (("recent", "title", "rating"), ("all", "rated", "unrated")),
-    "added":   (("added", "title", "year"), ("all",)),
+    "added":   (("added", "title", "year"), ("all", "open", "available")),   # Requests
 }
 LIST_SOURCES = {   # tab -> Source filter values; the first is the default. LIST_OPTIONS is separate.
     "all":     ("all", "plex", "arr", "wanted"),
@@ -293,6 +296,14 @@ LIST_SOURCES = {   # tab -> Source filter values; the first is the default. LIST
     "watched": ("all",),
     "added":   ("all",),
 }
+MAX_FORM_BYTES = 16384   # POST bodies are read up to this (a 300-char UTF-8 description alone can reach 3600)
+SEASON_NUMBER_MAX, MAX_SEASONS_PER_REQUEST = 9999, 200
+MAX_LISTS, MAX_LIST_ITEMS, LIST_NAME_MAX, LIST_DESC_MAX = 50, 1000, 60, 300
+LIST_SORTS = ("manual", "added", "title", "year", "rating", "match")
+TITLE_PARTIAL = "Some details (cast, trailer, seasons) couldn't load right now - try again in a minute."
+TITLE_UNAVAILABLE = "Couldn't load this title right now - TMDB didn't answer. Try again in a minute."
+TITLE_NOT_FOUND = "TMDB doesn't know this title."
+LOOKUP_FAILED = "Couldn't look that title up right now - try again in a minute."
 LIST_PAGE_SIZE = 48  # divisible by the 2/3/4/6-column grids
 MAX_QUERY_CHARS = 100
 
@@ -373,6 +384,8 @@ def list_view(items, tab="all", q="", sort="added", show="all", page=1, per_page
             found = [i for i in found if i.get("arr_state") in arr_library.WANTED_STATES]
     if show in ("unwatched", "watched"):
         found = [i for i in found if bool(i.get("watched")) == (show == "watched")]
+    elif show in ("open", "available"):
+        found = [i for i in found if (i.get("request_state") == "available") == (show == "available")]
     elif show in ("rated", "unrated"):
         found = [i for i in found if (i.get("stars") is not None) == (show == "rated")]
     if sort == "title":
@@ -409,9 +422,7 @@ def library_items(result, tab):
     """The items for one Library tab, or None if there's neither a Plex library (Tautulli without PLEX_TOKEN)
     nor any Radarr/Sonarr item. all/movie/tv merge the Plex snapshot with Radarr/Sonarr (arr_library.merge)."""
     if tab == "added":
-        return [{"media_type": a["media_type"], "tmdb_id": a["tmdb_id"], "title": a["title"], "year": a["year"],
-                 "added_at": a["added_at"], "watched": False, "progress": None, "poster_key": None,
-                 "poster_url": a["poster_url"], "url": a["url"]} for a in db.added_items()]
+        return requests_items(result)
     if tab == "watched":
         return watched_items(result)
     plex_items = (result or {}).get("library")
@@ -444,15 +455,10 @@ def owned_keys(result):
 def browse_view(result, kind):
     """The rows/hero for one browse page (cheap: no I/O beyond the local DB)."""
     view = browse.view(result, kind, owned_keys(result))
-    mine = {} if _is_sample() else db.ratings()
-
-    def stars(items):
-        return [{**i, "stars": mine.get((i.get("media_type"), i["tmdb_id"])) if i.get("tmdb_id") else None}
-                for i in items]
-
-    view["hero"] = stars(view["hero"])
+    maps = _user_state_maps()
+    view["hero"] = with_user_state(view["hero"], maps)
     for row in view["rows"]:
-        row["items"] = stars(row["items"])
+        row["items"] = with_user_state(row["items"], maps)
     return view
 
 
@@ -522,11 +528,398 @@ def search_view(q, kind):
     result, _ = get_result_nowait()
     added = set() if sample_mode else {(a["media_type"], a["tmdb_id"]) for a in db.added_items()}
     hidden = set() if sample_mode else db.dismissed()
-    view["results"] = arr_library.annotate(
+    view["results"] = with_user_state(arr_library.annotate(
         found.get("results") or [], (result or {}).get("library"), _arr_items(result),
-        (result or {}).get("watched") or [], added, hidden)
+        (result or {}).get("watched") or [], added, hidden))
     view.update(state="ok", capped=bool(found.get("capped")), library_known=result is not None)
     return view
+
+
+# --- Per-user state on cards: stars, lists ---
+def _user_state_maps():
+    """(ratings, memberships, watchlist id) from the local db in one go; all empty in sample mode."""
+    if _is_sample():
+        return {}, {}, None
+    watch = next((entry["id"] for entry in db.lists() if entry["kind"] == "watchlist"), None)
+    return db.ratings(), db.memberships(), watch
+
+
+def with_user_state(items, maps=None):
+    """Copies of items with "stars", "lists" (list ids) and "on_watchlist". Sample mode: None, [], False.
+    One db.ratings() + one db.memberships() per call (pass maps from _user_state_maps() to share them)."""
+    ratings, member, watch = maps if maps is not None else _user_state_maps()
+    out = []
+    for raw in items:
+        item = dict(raw)
+        key = (item.get("media_type"), item.get("tmdb_id"))
+        ids = list(member.get(key, [])) if item.get("tmdb_id") else []
+        item["stars"] = ratings.get(key) if item.get("tmdb_id") else None
+        item["lists"] = ids
+        item["on_watchlist"] = watch is not None and watch in ids
+        out.append(item)
+    return out
+
+
+# --- Seasons (POST /add) ---
+def parse_seasons(form):
+    """form: parse_qs dict -> (None | "all" | [int], error message | None). Absent `seasons` is the
+    legacy behaviour (None). "all" ignores any `season` values; "pick" needs 1..200 values, each
+    1..SEASON_NUMBER_MAX in ASCII digits (deduped, sorted)."""
+    if "seasons" not in form:
+        return None, None
+    mode = (form.get("seasons") or [""])[0]
+    if mode == "all":
+        return "all", None
+    if mode != "pick":
+        return None, "That isn't a valid season choice"
+    values = form.get("season") or []
+    if not values:
+        return None, "Pick at least one season"
+    if len(values) > MAX_SEASONS_PER_REQUEST:
+        return None, "That isn't a valid season"
+    numbers = set()
+    for raw in values:
+        if not (raw and len(raw) <= 4 and raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= SEASON_NUMBER_MAX:
+            return None, "That isn't a valid season"
+        numbers.add(int(raw))
+    return sorted(numbers), None
+
+
+# --- Title pages: stub, data, view ---
+def _snapshot_result():
+    with _status_lock:
+        return _state["result"]
+
+
+def _tmdb_url(media_type, tmdb_id):
+    return f"https://www.themoviedb.org/{media_type}/{tmdb_id}"
+
+
+def title_stub(media_type, tmdb_id, fetch=False):
+    """{"media_type","tmdb_id","title","year","poster_url","url"} for a title, or None. Sources, in order:
+    a recommendation, the watched snapshot, the library snapshot, Radarr/Sonarr items, cached TMDB
+    details (live) / the sample catalogue (sample). Only with fetch=True (and live) does it fall back to
+    lookup_item() (one budgeted TMDB request). Never holds a lock while fetching."""
+    key = (media_type, tmdb_id)
+    candidates = []
+    rec = _find_item(media_type, tmdb_id)
+    if rec is not None:
+        candidates.append(rec)
+    result = _snapshot_result() or {}
+    for source in (result.get("watched") or [], result.get("library") or [], _arr_items(result)):
+        for entry in source:
+            if (entry.get("media_type"), entry.get("tmdb_id")) == key:
+                candidates.append(entry)
+                break
+    sample_mode = _is_sample()
+    try:
+        if sample_mode:
+            candidates.append(sample.SampleTmdb().details(media_type, tmdb_id))
+        elif config.TMDB_TOKEN:
+            cached = tmdb.TmdbClient(config.TMDB_TOKEN).cached_details(media_type, tmdb_id)
+            if cached:
+                candidates.append(cached)
+    except Exception:
+        pass
+    if not sample_mode:   # offline fallbacks: what we stored when the title was listed or requested
+        try:
+            for list_id in db.memberships().get(key, [])[:1]:
+                candidates.extend(i for i in db.list_items(list_id) if (i["media_type"], i["tmdb_id"]) == key)
+            candidates.extend(a for a in db.added_items() if (a["media_type"], a["tmdb_id"]) == key)
+        except Exception:
+            pass
+    if not any(c.get("title") for c in candidates) and fetch and not sample_mode:
+        found = lookup_item(media_type, tmdb_id)
+        if found:
+            candidates.append(found)
+    named = [c for c in candidates if c.get("title")]
+    if not named:
+        return None
+    first = named[0]
+    return {"media_type": media_type, "tmdb_id": tmdb_id, "title": first["title"],
+            "year": next((c.get("year") for c in named if c.get("year")), None),
+            "poster_url": next((c.get("poster_url") for c in named if c.get("poster_url")), None),
+            "url": next((c.get("url") for c in named if c.get("url")), None) or _tmdb_url(media_type, tmdb_id)}
+
+
+def title_data(media_type, tmdb_id):
+    """The TMDB side of a title page: {"details", "extras", "state"}. state: "ok" (both available),
+    "partial" (no TMDB token; whatever was cached), "limited" (budget used up), "error" (TMDB failed;
+    only the exception type is logged) or "not_found" (TMDB said 404). Cached data never uses the budget."""
+    if _is_sample():
+        try:
+            details, extras = sample.SampleTmdb().title(media_type, tmdb_id)
+        except KeyError:
+            return {"details": None, "extras": None, "state": "not_found"}
+        return {"details": details, "extras": extras, "state": "ok"}
+    if not config.TMDB_TOKEN:
+        return {"details": None, "extras": None, "state": "error"}
+    client = tmdb.TmdbClient(config.TMDB_TOKEN)
+    try:
+        details, extras = client.cached_details(media_type, tmdb_id), client.cached_title(media_type, tmdb_id)
+    except Exception:
+        details = extras = None
+    if details and extras:
+        return {"details": details, "extras": extras, "state": "ok"}
+    if not _tmdb_budget(reserve=LOOKUP_RESERVE):
+        return {"details": details, "extras": extras, "state": "limited"}
+    try:
+        details, extras = client.title(media_type, tmdb_id)
+    except Exception as e:
+        print(f"Title lookup failed: {type(e).__name__}")  # never the message: a v3 key sits in TMDB's URLs
+        if isinstance(e, RuntimeError) and str(e).startswith("HTTP 404"):
+            return {"details": None, "extras": None, "state": "not_found"}
+        return {"details": details, "extras": extras, "state": "error"}
+    return {"details": details, "extras": extras, "state": "ok"}
+
+
+def _find_rec(media_type, tmdb_id):
+    """(item, "main"|"ai") for a current recommendation, else (None, None)."""
+    for name, state in (("main", _state), ("ai", _ai_state)):
+        with _status_lock:
+            result = state["result"]
+            items = list(result["items"]) if result else []
+        for item in items:
+            if (item["media_type"], item["tmdb_id"]) == (media_type, tmdb_id):
+                return item, name
+    return None, None
+
+
+def _rec_matches():
+    """{(media_type, tmdb_id): match} over the current recommendations (main wins over AI)."""
+    out = {}
+    for state in (_ai_state, _state):
+        with _status_lock:
+            result = state["result"]
+            items = list(result["items"]) if result else []
+        for item in items:
+            out[(item["media_type"], item["tmdb_id"])] = item.get("match")
+    return out
+
+
+def _status_for(items, result):
+    """annotate() the items against the build snapshot (and, live, the added log and dismissed list)."""
+    sample_mode = _is_sample()
+    added = set() if sample_mode else {(a["media_type"], a["tmdb_id"]) for a in db.added_items()}
+    hidden = set() if sample_mode else db.dismissed()
+    return arr_library.annotate(items, (result or {}).get("library"), _arr_items(result),
+                                (result or {}).get("watched") or [], added, hidden)
+
+
+def _cached_or_sample_details(media_type, tmdb_id):
+    try:
+        if _is_sample():
+            return sample.SampleTmdb().details(media_type, tmdb_id)
+        if config.TMDB_TOKEN:
+            return tmdb.TmdbClient(config.TMDB_TOKEN).cached_details(media_type, tmdb_id)
+    except Exception:
+        pass
+    return None
+
+
+def _similar_view(extras, result, profile_features, maps):
+    """TMDB's similar titles, ordered by our engine: current recommendations first (by match), then titles
+    with cached details by content_score, then TMDB's order. Cache reads only - no requests."""
+    raw = list((extras or {}).get("similar") or [])
+    hidden = set() if _is_sample() else db.dismissed()
+    raw = [r for r in raw if (r["media_type"], r["tmdb_id"]) not in hidden]
+    matches = _rec_matches()
+    scored = []
+    for rank, entry in enumerate(raw):
+        match = matches.get((entry["media_type"], entry["tmdb_id"]))
+        score = None
+        if match is None and profile_features:
+            details = _cached_or_sample_details(entry["media_type"], entry["tmdb_id"])
+            if details:
+                try:
+                    score = recommend.content_score(profile_features, details)
+                except Exception:
+                    score = None
+        tier = 0 if match is not None else (1 if score is not None else 2)
+        scored.append((tier, -(match if match is not None else (score or 0)), rank, entry, match))
+    scored.sort(key=lambda t: t[:3])
+    annotated = _status_for([{**t[3]} for t in scored], result)
+    out = []
+    for t, item in zip(scored, annotated):
+        item["match"] = t[4]
+        out.append(item)
+    return with_user_state(out, maps)
+
+
+def title_view(media_type, tmdb_id):
+    """Everything the title detail page shows (the spec's TitleView). Never blocks on a build."""
+    sample_mode = _is_sample()
+    result, _ = get_result_nowait()
+    data = title_data(media_type, tmdb_id)
+    view = {"media_type": media_type, "tmdb_id": tmdb_id, "state": "ok", "message": None, "item": None,
+            "extras": data["extras"], "rec": None, "fit": None, "status": None, "arr": None, "seasons": [],
+            "stars": None, "lists": [], "on_watchlist": False, "list_names": [], "similar": [],
+            "can_add": False, "sample": sample_mode, "library_known": result is not None}
+    if data["state"] == "not_found":
+        view.update(state="not_found", message=TITLE_NOT_FOUND, extras=None)
+        return view
+    rec, source = _find_rec(media_type, tmdb_id)
+    details = data["details"]
+    base = dict(rec) if rec else (dict(details) if details else title_stub(media_type, tmdb_id))
+    if base is None:
+        view.update(state="unavailable", message=TITLE_UNAVAILABLE)
+        return view
+    if data["state"] != "ok":
+        view.update(state="partial", message=TITLE_PARTIAL)
+    view["item"] = base
+    features = (result or {}).get("profile") or None
+    if rec:
+        view["rec"] = {"match": rec.get("match"), "reason": rec.get("reason") or "", "matches": list(rec.get("matches") or []),
+                       "because": list(rec.get("because") or [])[:5], "new": bool(rec.get("new")),
+                       "trending": bool(rec.get("trending")), "source": source}
+    elif details and features:
+        try:
+            found = recommend.matches(features, details)
+        except Exception:
+            found = []
+        if found:
+            view["fit"] = {"matches": found}
+    probe = {"media_type": media_type, "tmdb_id": tmdb_id, "title": base.get("title"), "year": base.get("year")}
+    annotated = _status_for([probe], result)[0]
+    view["status"] = {k: annotated[k] for k in ("status", "in_library", "sources", "arr_state", "episodes",
+                                                "watched", "dismissed")}
+    extras = data["extras"]
+    arr = arr_library.find(_arr_items(result), media_type, tmdb_id, tvdb_id=(extras or {}).get("tvdb_id"),
+                           title=base.get("title"), year=base.get("year"))
+    view["arr"] = arr
+    if media_type == "tv":
+        view["seasons"] = arr_library.season_rows((extras or {}).get("seasons") or [], arr, date.today())
+    maps = _user_state_maps()
+    mine = with_user_state([probe], maps)[0]
+    view.update(stars=mine["stars"], lists=mine["lists"], on_watchlist=mine["on_watchlist"])
+    if not sample_mode and mine["lists"]:
+        view["list_names"] = [{"id": e["id"], "name": e["name"]} for e in db.lists() if e["id"] in mine["lists"]]
+    view["similar"] = _similar_view(extras, result, features, maps)
+    configured = config.radarr_configured() if media_type == "movie" else config.sonarr_configured()
+    view["can_add"] = view["status"]["status"] == "none" and configured and not sample_mode
+    return view
+
+
+def season_choices(tmdb_id):
+    """{"seasons": [SeasonRow], "tracked": bool, "known": bool} for the add dialog's season picker."""
+    data = title_data("tv", tmdb_id)
+    extras = data["extras"]
+    result = _snapshot_result()
+    stub = title_stub("tv", tmdb_id) or {}
+    arr = arr_library.find(_arr_items(result), "tv", tmdb_id, tvdb_id=(extras or {}).get("tvdb_id"),
+                           title=stub.get("title"), year=stub.get("year"))
+    rows = arr_library.season_rows((extras or {}).get("seasons") or [], arr, date.today())
+    return {"seasons": rows, "tracked": arr is not None, "known": bool(rows)}
+
+
+def note_arr_item(item):
+    """Puts a just-added Radarr/Sonarr item (the client's last_item) into the cached build result so Requests and
+    the title page show it at once, with no extra arr call. Replaces the same service + tmdb/tvdb id.
+    If a build is running, its result may lack the item until the next build (accepted)."""
+    if not isinstance(item, dict):
+        return
+    with _status_lock:
+        result = _state["result"]
+        arr = (result or {}).get("arr")
+        if arr is None:
+            return
+        same = lambda e: e.get("service") == item.get("service") and (
+            (item.get("tmdb_id") and e.get("tmdb_id") == item.get("tmdb_id"))
+            or (item.get("tvdb_id") and e.get("tvdb_id") == item.get("tvdb_id")))
+        items = [e for e in arr.get("items") or []]
+        replaced = any(same(e) for e in items)
+        items = [item if same(e) else e for e in items]
+        if not replaced:
+            items.append(item)
+            service = arr.get(item.get("service"))
+            if isinstance(service, dict):
+                service["count"] = service.get("count", 0) + 1
+        arr["items"] = items
+
+
+def requests_items(result):
+    """The Requests tab: everything logged as added, with its live-ish state from the build snapshot."""
+    entries = []
+    for a in db.added_items():
+        entries.append({"media_type": a["media_type"], "tmdb_id": a["tmdb_id"], "title": a["title"], "year": a["year"],
+                        "added_at": a["added_at"], "watched": False, "progress": None, "poster_key": None,
+                        "poster_url": a["poster_url"], "url": a["url"], "seasons": a.get("seasons")})
+    annotated = _status_for(entries, result) if entries else []
+    arr_items = _arr_items(result)
+    for entry, note in zip(entries, annotated):
+        entry["sources"] = note["sources"]
+        entry["request_state"], entry["episodes"] = None, None
+        if result is not None:
+            arr = arr_library.find(arr_items, entry["media_type"], entry["tmdb_id"],
+                                   title=entry["title"], year=entry["year"])
+            entry["request_state"], entry["episodes"] = arr_library.request_state(
+                entry, arr, "plex" in note["sources"])
+    return with_user_state(entries)
+
+
+# --- Lists ---
+def watchlist_id():
+    """The Watchlist's id (created on first use) in live mode; None in sample mode."""
+    return None if _is_sample() else db.ensure_watchlist()
+
+
+def _summary(entry, posters=None):
+    return {"id": entry["id"], "name": entry["name"], "description": entry["description"], "kind": entry["kind"],
+            "count": entry["count"], "url": f"/lists/{entry['id']}" if entry["id"] is not None else None,
+            "posters": posters if posters is not None else
+            [i["poster_url"] for i in db.list_items(entry["id"]) if i.get("poster_url")][:4]}
+
+
+def lists_view():
+    """The Lists page: every list with a count and up to 4 posters. Sample mode shows a virtual, empty
+    Watchlist and writes nothing."""
+    if _is_sample():
+        virtual = {"id": None, "name": "Watchlist", "description": "", "kind": "watchlist", "count": 0}
+        return {"lists": [_summary(virtual, [])], "sample": True, "can_create": False, "max_lists": MAX_LISTS}
+    db.ensure_watchlist()
+    entries = db.lists()
+    custom = sum(1 for e in entries if e["kind"] == "custom")
+    return {"lists": [_summary(e) for e in entries], "sample": False, "can_create": custom < MAX_LISTS,
+            "max_lists": MAX_LISTS}
+
+
+def parse_list_page_query(query):
+    """query: parse_qs dict -> {"sort": valid or "manual", "page": int >= 1}."""
+    sort = (query.get("sort") or [""])[0]
+    return {"sort": sort if sort in LIST_SORTS else "manual",
+            "page": max(1, _parse_id((query.get("page") or [""])[0]) or 1)}
+
+
+def list_page_view(list_id, sort="manual", page=1):
+    """One list's page (the spec's ListPageView), or None if it doesn't exist (always None in sample mode)."""
+    if _is_sample() or not isinstance(list_id, int):
+        return None
+    entry = db.get_list(list_id)
+    if entry is None:
+        return None
+    sort = sort if sort in LIST_SORTS else "manual"
+    raw = db.list_items(list_id)
+    result = _snapshot_result()
+    items = []
+    for note, row in zip(_status_for(raw, result) if raw else [], raw):
+        note["url"] = _tmdb_url(row["media_type"], row["tmdb_id"])
+        items.append(note)
+    matches = _rec_matches()
+    items = with_user_state([{**i, "match": matches.get((i["media_type"], i["tmdb_id"]))} for i in items])
+    by_title = sorted(items, key=lambda i: (i["title"] or "").casefold())
+    if sort == "title":
+        items = by_title
+    elif sort == "added":
+        items = sorted(by_title, key=lambda i: i["added_at"], reverse=True)
+    elif sort in ("year", "rating", "match"):
+        field = {"year": "year", "rating": "stars", "match": "match"}[sort]
+        items = _sorted_desc_none_last(items, lambda i: i.get(field))
+    per_page = LIST_PAGE_SIZE
+    pages = max(1, -(-len(items) // per_page))
+    page = min(max(1, page), pages)
+    return {"list": _summary(entry), "sort": sort, "sorts": LIST_SORTS, "page": page, "pages": pages,
+            "total": len(items), "items": items[(page - 1) * per_page:page * per_page],
+            "sample": False, "can_move": sort == "manual"}
 
 
 def forget(media_type, tmdb_id):
@@ -605,7 +998,7 @@ def _parse_id(raw):
 def _item_from(fields, type_key="type", id_key="id"):
     """(media_type, tmdb_id) from parsed form/query fields, or (None, None) if either is invalid."""
     media_type, tmdb_id = fields.get(type_key, [""])[0], _parse_id(fields.get(id_key, [""])[0])
-    return (media_type, tmdb_id) if media_type in ("movie", "tv") and tmdb_id is not None else (None, None)
+    return (media_type, tmdb_id) if media_type in ("movie", "tv") and tmdb_id else (None, None)
 
 
 _request = threading.local()  # per-request state; the Handler sets .theme first thing
@@ -645,6 +1038,45 @@ def _cross_site(headers):
         return (parsed.hostname, parsed.port or default) != (host.hostname, host.port or default)
     except ValueError:  # e.g. a non-numeric port
         return True
+
+
+# --- List form helpers ---
+def _clean_line(value):
+    """Whitespace collapsed to single spaces, non-printable characters dropped."""
+    return " ".join("".join(c for c in (value or "") if c.isprintable() or c.isspace()).split())
+
+
+def _parse_list_text(form, name_key="name", required=True):
+    """(name, description, error) from a list form. Errors are the spec's messages."""
+    name = _clean_line(form.get(name_key, [""])[0])
+    description = _clean_line(form.get("description", [""])[0])
+    if not name:
+        return name, description, ("Give the list a name" if required else None)
+    if len(name) > LIST_NAME_MAX:
+        return name, description, f"List names can be up to {LIST_NAME_MAX} characters"
+    if len(description) > LIST_DESC_MAX:
+        return name, description, f"Descriptions can be up to {LIST_DESC_MAX} characters"
+    return name, description, None
+
+
+def _name_taken(name, except_id=None):
+    folded = name.casefold()
+    return folded == "watchlist" or any(e["name"].casefold() == folded and e["id"] != except_id for e in db.lists())
+
+
+def _title_lists(media_type, tmdb_id):
+    """([list ids containing the title], on_watchlist)."""
+    ids = sorted(db.memberships().get((media_type, tmdb_id), []))
+    watch = next((e["id"] for e in db.lists() if e["kind"] == "watchlist"), None)
+    return ids, watch is not None and watch in ids
+
+
+def _parse_list_ref(form):
+    """('watchlist' | list id | None for bad input) from list_id (digits) or list=watchlist."""
+    if "list_id" in form:
+        return _parse_id(form["list_id"][0])
+    return "watchlist" if form.get("list", [""])[0] == "watchlist" else None
+
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -733,6 +1165,40 @@ class Handler(BaseHTTPRequestHandler):
             if query.get("partial", [""])[0] == "1":
                 return self._send(200, render_search_results(**args), headers={"Cache-Control": "no-store"})
             return self._send(200, render_search(**args, msg=query.get("msg", [""])[0]))
+        if url.path.startswith("/title/"):
+            parts = url.path.split("/")   # ["", "title", type, id]
+            media_type, tmdb_id = (parts[2], _parse_id(parts[3])) if len(parts) == 4 else (None, None)
+            if media_type not in ("movie", "tv") or not tmdb_id:   # id 0 would spend a TMDB request
+                return self._send(404, "Not found", "text/plain")
+            query = parse_qs(url.query)
+            undo = _item_from(query, "undo_type", "undo_id")
+            view = title_view(media_type, tmdb_id)
+            page = render_title(view, query.get("msg", [""])[0], undo if undo[0] else None)
+            return self._send(404 if view["state"] == "not_found" else 200, page)
+        if url.path == "/requests":
+            msg = parse_qs(url.query).get("msg", [""])[0]
+            return self._redirect("/library?type=added", msg or None)
+        if url.path == "/lists":
+            return self._send(200, render_lists(msg=parse_qs(url.query).get("msg", [""])[0]))
+        if url.path.startswith("/lists/"):
+            raw = url.path[len("/lists/"):]
+            query = parse_qs(url.query)
+            list_id = _parse_id(raw)
+            view = list_page_view(list_id, **parse_list_page_query(query)) if list_id is not None else None
+            if view is None:
+                return self._send(404, "Not found", "text/plain")
+            return self._send(200, render_list(view, msg=query.get("msg", [""])[0]))
+        if url.path == "/watchlist":
+            watch = watchlist_id()
+            return self._redirect(f"/lists/{watch}" if watch is not None else "/lists")
+        if url.path == "/list-dialog":
+            query = parse_qs(url.query)
+            media_type, tmdb_id = _item_from(query)
+            if media_type is None:
+                return self._send(404, "Not found", "text/plain")
+            partial = query.get("partial", [""])[0] == "1"
+            page = render_list_dialog(media_type, tmdb_id, query.get("return_to", ["/recommended"])[0], partial=partial)
+            return self._send(200, page, headers={"Cache-Control": "no-store"} if partial else None)
         if url.path == "/appearance":
             return self._send(200, render_appearance(msg=parse_qs(url.query).get("msg", [""])[0]))
         if url.path == "/poster":
@@ -762,7 +1228,7 @@ class Handler(BaseHTTPRequestHandler):
             if self._wants_json():
                 return self._json({"ok": False, "message": "Blocked: request came from another site"}, 403)
             return self._send(403, "Blocked: request came from another site", "text/plain; charset=utf-8")
-        length = min(int(self.headers.get("Content-Length") or 0), 4096)
+        length = min(int(self.headers.get("Content-Length") or 0), MAX_FORM_BYTES)
         form = parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
         return_to = form.get("return_to", ["/recommended"])[0]
         path = urlparse(self.path).path
@@ -814,12 +1280,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._post_theme(form, as_json)
         if path == "/rate":
             return self._post_rate(form, form.get("return_to", ["/library?type=watched"])[0], as_json)
+        if path.startswith("/lists/"):
+            handler = self.LIST_ROUTES.get(path[len("/lists/"):])
+            if handler is not None:
+                return handler(self, form, return_to, as_json)
         if path == "/add":
             media_type, tmdb_id = _item_from(form)
             if media_type is None:
                 if as_json:
                     return self._json({"ok": False, "message": "That isn't a valid title"}, 400)
                 return self._redirect(return_to)
+            seasons, season_error = parse_seasons(form) if media_type == "tv" else (None, None)
+            if season_error:
+                if as_json:
+                    return self._json({"ok": False, "message": season_error}, 400)
+                return self._redirect(return_to, season_error)
             if _is_sample():
                 if as_json:
                     return self._json({"ok": False, "message": SAMPLE_MESSAGE})
@@ -827,19 +1302,236 @@ class Handler(BaseHTTPRequestHandler):
             quality_profile_id = _parse_id(form.get("quality_profile_id", [""])[0])
             search = form.get("search", [""])[0] == "1"
             try:
-                ok, msg = sources.add_to_library(media_type, tmdb_id, search=search,
-                                                 quality_profile_id=quality_profile_id)
+                extra = {"seasons": seasons} if media_type == "tv" else {}  # movies ignore seasons
+                ok, msg, arr_item = sources.add_to_library(media_type, tmdb_id, search=search,
+                                                           quality_profile_id=quality_profile_id, **extra)
             except Exception as e:
-                ok, msg = False, f"Couldn't add it: {e}"
+                ok, msg, arr_item = False, f"Couldn't add it: {e}", None
             if ok:
-                item = lookup_item(media_type, tmdb_id)  # only on success, so a failed add costs no TMDB request
+                item = title_stub(media_type, tmdb_id, fetch=True)  # only on success: a failed add costs no TMDB request
                 if item:
-                    db.record_added(item)
+                    db.record_added(item, seasons)
+                note_arr_item(arr_item)
                 forget(media_type, tmdb_id)
             if as_json:
                 return self._json({"ok": bool(ok), "message": msg or ""})
             return self._redirect(return_to, msg)
         return self._send(404, "Not found", "text/plain")
+
+    # --- Lists (POST /lists/*) ---
+    def _reply(self, as_json, return_to, ok, message, status=200, payload=None, silent=False):
+        """One answer for both transports: JSON {"ok", "message", ...} or a 303 to return_to with the message."""
+        if as_json:
+            return self._json({"ok": ok, "message": message, **(payload or {})}, status)
+        return self._redirect(return_to, None if silent else message)
+
+    def _sample_refusal(self, as_json, return_to):
+        if as_json:
+            return self._json({"ok": False, "message": SAMPLE_MESSAGE})
+        return self._redirect(return_to, SAMPLE_MESSAGE)
+
+    def _bad_title(self, as_json, return_to):
+        return self._reply(as_json, return_to, False, "That isn't a valid title", 400, silent=True)
+
+    def _post_list_create(self, form, return_to, as_json):
+        back = _safe_path(form.get("return_to", [""])[0], "/lists")
+        name, description, error = _parse_list_text(form)
+        if error:
+            return self._reply(as_json, back, False, error, 400)
+        media_type, tmdb_id = _item_from(form)
+        if ("type" in form or "id" in form) and media_type is None:
+            return self._bad_title(as_json, back)
+        if _is_sample():
+            return self._sample_refusal(as_json, back)
+        if _name_taken(name):
+            return self._reply(as_json, back, False, f'You already have a list called "{name}"', 400)
+        if sum(1 for e in db.lists() if e["kind"] == "custom") >= MAX_LISTS:
+            return self._reply(as_json, back, False, f"You can have up to {MAX_LISTS} lists")
+        stub = None
+        if media_type is not None:
+            stub = title_stub(media_type, tmdb_id, fetch=True)
+            if stub is None:
+                return self._reply(as_json, back, False, LOOKUP_FAILED)
+        list_id = db.create_list(name, description)
+        if stub is not None:
+            db.add_to_list(list_id, stub)
+        message = f'Created "{name}"'
+        target = _safe_path(form.get("return_to", [""])[0], f"/lists/{list_id}")
+        return self._reply(as_json, target, True, message, payload={"list": _summary(db.get_list(list_id))})
+
+    def _existing_custom_list(self, form, as_json, return_to):
+        """The custom list a request means, or None after answering 400 (missing list, or the Watchlist)."""
+        list_id = _parse_id(form.get("list_id", [""])[0])
+        entry = db.get_list(list_id) if list_id is not None else None
+        if entry is None:
+            self._reply(as_json, return_to, False, "That list doesn't exist", 400)
+        elif entry["kind"] == "watchlist":
+            self._reply(as_json, return_to, False, "The Watchlist can't be renamed or deleted", 400)
+            return None
+        return entry
+
+    def _post_list_update(self, form, return_to, as_json):
+        list_id = _parse_id(form.get("list_id", [""])[0])
+        default = f"/lists/{list_id}" if list_id is not None else "/lists"
+        target = _safe_path(form.get("return_to", [""])[0], default)
+        if list_id is None:
+            return self._reply(as_json, "/lists", False, "That list doesn't exist", 400)
+        name, description, error = _parse_list_text(form)
+        if error:
+            return self._reply(as_json, target, False, error, 400)
+        if _is_sample():
+            return self._sample_refusal(as_json, target)
+        entry = self._existing_custom_list(form, as_json, target)
+        if entry is None:
+            return
+        if _name_taken(name, except_id=entry["id"]):
+            return self._reply(as_json, target, False, f'You already have a list called "{name}"', 400)
+        if not db.update_list(entry["id"], name, description):
+            return self._reply(as_json, target, False, "That list doesn't exist", 400)
+        return self._reply(as_json, target, True, f'Saved "{name}"', payload={"list": _summary(db.get_list(entry["id"]))})
+
+    def _post_list_delete(self, form, return_to, as_json):
+        list_id = _parse_id(form.get("list_id", [""])[0])
+        target = _safe_path(form.get("return_to", [""])[0], "/lists")
+        if list_id is None:
+            return self._reply(as_json, target, False, "That list doesn't exist", 400)
+        if _is_sample():
+            return self._sample_refusal(as_json, target)
+        entry = self._existing_custom_list(form, as_json, target)
+        if entry is None:
+            return
+        if not db.delete_list(entry["id"]):
+            return self._reply(as_json, target, False, "That list doesn't exist", 400)
+        return self._reply(as_json, target, True, f'Deleted "{entry["name"]}"')
+
+    def _list_target(self, form, as_json, return_to):
+        """The list a /lists/add|remove request means (the Watchlist is created on first use), or None after
+        answering 400. Call after the sample check."""
+        ref = _parse_list_ref(form)
+        entry = db.get_list(db.ensure_watchlist() if ref == "watchlist" else ref) if ref is not None else None
+        if entry is None:
+            self._reply(as_json, return_to, False, "That list doesn't exist", 400)
+        return entry
+
+    def _post_list_toggle(self, add, form, return_to, as_json):
+        media_type, tmdb_id = _item_from(form)
+        if media_type is None:
+            return self._bad_title(as_json, return_to)
+        if _parse_list_ref(form) is None:
+            if _is_sample():
+                return self._sample_refusal(as_json, return_to)
+            return self._reply(as_json, return_to, False, "That list doesn't exist", 400)
+        if _is_sample():
+            return self._sample_refusal(as_json, return_to)
+        entry = self._list_target(form, as_json, return_to)
+        if entry is None:
+            return
+        name, in_list = entry["name"], None
+        present = any((i["media_type"], i["tmdb_id"]) == (media_type, tmdb_id) for i in db.list_items(entry["id"]))
+        if add:
+            if present:
+                message, in_list = f"Already on {name}", True
+            elif entry["count"] >= MAX_LIST_ITEMS:
+                return self._reply(as_json, return_to, False, f"That list is full ({MAX_LIST_ITEMS} titles)")
+            else:
+                stub = title_stub(media_type, tmdb_id, fetch=True)
+                if stub is None:
+                    return self._reply(as_json, return_to, False, LOOKUP_FAILED)
+                added = db.add_to_list(entry["id"], stub)
+                message = f'Added "{stub["title"]}" to {name}' if added else f"Already on {name}"
+                in_list = True
+        else:
+            title = next((i["title"] for i in db.list_items(entry["id"])
+                          if (i["media_type"], i["tmdb_id"]) == (media_type, tmdb_id)), None)
+            if present and db.remove_from_list(entry["id"], media_type, tmdb_id):
+                message = f'Removed "{title}" from {name}'
+            else:
+                message = f"Not on {name}"
+            in_list = False
+        ids, on_watchlist = _title_lists(media_type, tmdb_id)
+        return self._reply(as_json, return_to, True, message, payload={
+            "list": {"id": entry["id"], "name": name, "kind": entry["kind"]},
+            "item": {"type": media_type, "id": tmdb_id}, "in_list": in_list, "lists": ids,
+            "on_watchlist": on_watchlist})
+
+    def _post_list_add(self, form, return_to, as_json):
+        return self._post_list_toggle(True, form, return_to, as_json)
+
+    def _post_list_remove(self, form, return_to, as_json):
+        return self._post_list_toggle(False, form, return_to, as_json)
+
+    def _post_list_set(self, form, return_to, as_json):
+        media_type, tmdb_id = _item_from(form)
+        if media_type is None:
+            return self._bad_title(as_json, return_to)
+        wanted = set()
+        for raw in form.get("list_id", []):
+            list_id = _parse_id(raw)
+            if list_id is None:
+                return self._reply(as_json, return_to, False, "That list doesn't exist", 400)
+            wanted.add(list_id)
+        new_name, new_desc, error = _parse_list_text(form, "new_list", required=False)
+        if error:
+            return self._reply(as_json, return_to, False, error, 400)
+        if _is_sample():
+            return self._sample_refusal(as_json, return_to)
+        known = {e["id"]: e for e in db.lists()}
+        if any(i not in known for i in wanted):
+            return self._reply(as_json, return_to, False, "That list doesn't exist", 400)
+        if new_name and _name_taken(new_name):
+            return self._reply(as_json, return_to, False, f'You already have a list called "{new_name}"', 400)
+        if new_name and sum(1 for e in known.values() if e["kind"] == "custom") >= MAX_LISTS:
+            return self._reply(as_json, return_to, False, f"You can have up to {MAX_LISTS} lists")
+        key = (media_type, tmdb_id)
+        current = set(db.memberships().get(key, []))
+        to_add, to_remove = wanted - current, current - wanted
+        full = [known[i]["name"] for i in to_add if known[i]["count"] >= MAX_LIST_ITEMS]
+        if full:
+            return self._reply(as_json, return_to, False, f"That list is full ({MAX_LIST_ITEMS} titles)")
+        stub = None
+        if to_add or new_name:
+            stub = title_stub(media_type, tmdb_id, fetch=True)
+            if stub is None:
+                return self._reply(as_json, return_to, False, LOOKUP_FAILED)
+        created = None
+        if new_name:
+            new_id = db.create_list(new_name, "")
+            created = {"id": new_id, "name": new_name}
+            to_add = to_add | {new_id}
+        for list_id in sorted(to_add):
+            db.add_to_list(list_id, stub)
+        for list_id in to_remove:
+            db.remove_from_list(list_id, media_type, tmdb_id)
+        ids, on_watchlist = _title_lists(media_type, tmdb_id)
+        message = ("Saved - not on any list" if not ids
+                   else f"Saved - on {len(ids)} list" + ("" if len(ids) == 1 else "s"))
+        return self._reply(as_json, return_to, True, message, payload={
+            "item": {"type": media_type, "id": tmdb_id}, "lists": ids, "on_watchlist": on_watchlist,
+            "created": created})
+
+    MOVES = ("up", "down", "top", "bottom")
+
+    def _post_list_move(self, form, return_to, as_json):
+        list_id = _parse_id(form.get("list_id", [""])[0])
+        target = _safe_path(form.get("return_to", [""])[0], f"/lists/{list_id}" if list_id is not None else "/lists")
+        direction = form.get("direction", [""])[0]
+        if direction not in self.MOVES:
+            return self._reply(as_json, target, False, "That isn't a valid move", 400, silent=True)
+        if list_id is None:
+            return self._reply(as_json, target, False, "That list doesn't exist", 400)
+        media_type, tmdb_id = _item_from(form)
+        if media_type is None:
+            return self._bad_title(as_json, target)
+        if _is_sample():
+            return self._sample_refusal(as_json, target)
+        if db.get_list(list_id) is None:
+            return self._reply(as_json, target, False, "That list doesn't exist", 400)
+        moved = db.move_in_list(list_id, media_type, tmdb_id, direction)
+        return self._reply(as_json, target, True, "Moved" if moved else "Already at the end", payload={"moved": moved})
+
+    LIST_ROUTES = {"create": _post_list_create, "update": _post_list_update, "delete": _post_list_delete,
+                   "add": _post_list_add, "remove": _post_list_remove, "set": _post_list_set,
+                   "move": _post_list_move}
 
     POSTER_TYPES = ("image/jpeg", "image/png", "image/webp")
 
@@ -902,8 +1594,9 @@ class Handler(BaseHTTPRequestHandler):
         with _status_lock:
             snapshot = (_state["result"] or {}).get("watched") or []
         known = next((w for w in snapshot if (w["media_type"], w["tmdb_id"]) == (media_type, tmdb_id)), None)
-        if known:
-            title = known["title"]
+        stub = title_stub(media_type, tmdb_id, fetch=False)
+        if stub:
+            title = stub["title"]
             message = f'Rated "{title}" {stars}/5' if stars else f'Cleared your rating for "{title}"'
         else:
             message = f"Rated {stars}/5" if stars else "Rating cleared"

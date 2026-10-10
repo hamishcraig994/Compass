@@ -1,5 +1,7 @@
 """TMDB (themoviedb.org) client. Every title we look up is cached in SQLite, so a title costs one request
 per month and re-running is fast and gentle on TMDB's servers."""
+import re
+
 import db
 from http_util import get_json
 
@@ -9,6 +11,11 @@ GENRES_MAX_AGE = 30 * 24 * 3600
 SEARCH_MAX_AGE = 24 * 3600     # free-text search results (the title search page)
 SEARCH_MAX_RESULTS = 20        # TMDB's first page
 SEARCH_TIMEOUT = 8             # seconds: a page-view search shouldn't hang like a build can
+TITLE_MAX_AGE = 3 * 24 * 3600  # the title detail page's extras (cast, seasons, similar...)
+CAST_MAX = 12
+CREW_MAX = 6
+SIMILAR_MAX = 20
+NAMES_MAX = 3                  # networks / studios shown
 CERT_COUNTRIES = ("GB", "US")  # age-rating countries to try, in order
 
 # TMDB uses different genre names for TV. Fold them into the movie names so "sci-fi" is one taste, not two.
@@ -114,6 +121,123 @@ def normalize_search(raw, media_type):
     }
 
 
+_MOVIE_CREW_JOBS = ("Director", "Screenplay", "Writer", "Story", "Novel")  # in priority order
+_YOUTUBE_KEY = re.compile(r"^[A-Za-z0-9_-]{6,32}$")
+_IMDB_ID = re.compile(r"^tt\d{1,10}$")
+
+
+def _image(path, size):
+    ok = isinstance(path, str) and path.startswith("/") and path.isascii() and all("!" <= c <= "~" for c in path)
+    return f"https://image.tmdb.org/t/p/{size}{path}" if ok else None
+
+
+def _dicts(value):
+    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
+
+
+def _name(value):
+    return _text(value).strip()
+
+
+def _trailer(raw):
+    tiers = ([], [], [])  # official Trailer, Trailer, Teaser - TMDB order within each
+    for v in _dicts((raw.get("videos") or {}).get("results") if isinstance(raw.get("videos"), dict) else None):
+        key = v.get("key")
+        if v.get("site") != "YouTube" or not isinstance(key, str) or not _YOUTUBE_KEY.match(key):
+            continue
+        kind = v.get("type")
+        if kind == "Trailer":
+            tiers[0 if v.get("official") is True else 1].append(v)
+        elif kind == "Teaser":
+            tiers[2].append(v)
+    for tier in tiers:
+        if tier:
+            v = tier[0]
+            return {"name": _name(v.get("name")) or "Trailer", "url": f"https://www.youtube.com/watch?v={v['key']}"}
+    return None
+
+
+def _crew(raw, media_type):
+    if media_type != "movie":
+        out, seen = [], set()
+        for c in _dicts(raw.get("created_by")):
+            name = _name(c.get("name"))
+            if name and name not in seen:
+                seen.add(name)
+                out.append({"name": name, "job": "Creator"})
+        return out[:CREW_MAX]
+    crew = _dicts((raw.get("credits") or {}).get("crew") if isinstance(raw.get("credits"), dict) else None)
+    out, seen = [], set()
+    for job in _MOVIE_CREW_JOBS:
+        for c in crew:
+            name = _name(c.get("name"))
+            if c.get("job") == job and name and name not in seen:
+                seen.add(name)
+                out.append({"name": name, "job": job})
+    return out[:CREW_MAX]
+
+
+def _similar(raw, media_type, own_id):
+    out, seen = [], {own_id}
+    for key in ("recommendations", "similar"):
+        block = raw.get(key)
+        for r in _dicts(block.get("results") if isinstance(block, dict) else None):
+            try:
+                item = normalize_search(r, media_type)
+            except Exception:
+                continue
+            if item["tmdb_id"] in seen:
+                continue
+            seen.add(item["tmdb_id"])
+            out.append(item)
+            if len(out) >= SIMILAR_MAX:
+                return out
+    return out
+
+
+def normalize_title(raw, media_type):
+    """TMDB's raw JSON (with the title page's appended blocks) -> "TitleExtras": what the detail page
+    needs beyond normalize(). Third-party strings are validated like normalize_search: wrong types
+    degrade to defaults, URLs are only built from validated pieces."""
+    tmdb_id = raw["id"]
+    credits = raw.get("credits") if isinstance(raw.get("credits"), dict) else {}
+    cast = []
+    for c in _dicts(credits.get("cast")):
+        name = _name(c.get("name"))
+        if name:
+            cast.append({"name": name, "character": _name(c.get("character")),
+                         "profile_url": _image(c.get("profile_path"), "w185")})
+        if len(cast) >= CAST_MAX:
+            break
+    seasons = []
+    if media_type == "tv":
+        for s in _dicts(raw.get("seasons")):
+            number = s.get("season_number")
+            if not isinstance(number, int) or isinstance(number, bool) or number < 0:
+                continue
+            air = s.get("air_date")
+            episodes = s.get("episode_count")
+            seasons.append({"number": number, "name": _name(s.get("name")) or f"Season {number}",
+                            "episodes": episodes if isinstance(episodes, int) and not isinstance(episodes, bool)
+                            and episodes > 0 else 0,
+                            "air_date": air if isinstance(air, str) and air.isascii() and 0 < len(air) <= 10 else None,
+                            "poster_url": _image(s.get("poster_path"), "w342")})
+        seasons.sort(key=lambda s: s["number"])
+    ext = raw.get("external_ids") if isinstance(raw.get("external_ids"), dict) else {}
+    imdb = ext.get("imdb_id")
+    return {
+        "media_type": media_type, "tmdb_id": tmdb_id,
+        "tagline": _name(raw.get("tagline")), "status": _name(raw.get("status")),
+        "cast": cast, "crew": _crew(raw, media_type), "trailer": _trailer(raw), "seasons": seasons,
+        "networks": [n for n in (_name(x.get("name")) for x in _dicts(raw.get("networks"))) if n][:NAMES_MAX]
+        if media_type == "tv" else [],
+        "studios": [n for n in (_name(x.get("name")) for x in _dicts(raw.get("production_companies"))) if n][:NAMES_MAX],
+        "tvdb_id": _positive_int(ext.get("tvdb_id")),
+        "imdb_id": imdb if isinstance(imdb, str) and _IMDB_ID.match(imdb) else None,
+        "similar": _similar(raw, media_type, tmdb_id),
+    }
+
+
 def _search_key(query, kind):
     return f"tmdbsearch:v1:{kind}:{' '.join(str(query).split()).casefold()}"
 
@@ -159,6 +283,24 @@ class TmdbClient:
         result = normalize(raw, media_type)
         db.cache_put(key, result)
         return result
+
+    def cached_title(self, media_type, tmdb_id):
+        """The title page's extras from the local cache only - never makes a request. None if not cached."""
+        return db.cache_get(f"title:v1:{media_type}:{tmdb_id}", TITLE_MAX_AGE)
+
+    def title(self, media_type, tmdb_id):
+        """(details, extras) for the detail page from ONE request (page-view timeout, one retry). Also
+        refreshes the details:v2 and external_ids caches. Raises on a network/HTTP error."""
+        extra = "release_dates" if media_type == "movie" else "content_ratings"
+        raw = self._get(f"/{media_type}/{tmdb_id}",
+                        {"append_to_response": f"keywords,credits,recommendations,similar,videos,external_ids,{extra}"},
+                        timeout=SEARCH_TIMEOUT, retries=1)
+        details, extras = normalize(raw, media_type), normalize_title(raw, media_type)
+        db.cache_put(f"details:v2:{media_type}:{tmdb_id}", details)
+        db.cache_put(f"title:v1:{media_type}:{tmdb_id}", extras)
+        if isinstance(raw.get("external_ids"), dict):
+            db.cache_put(f"external_ids:{media_type}:{tmdb_id}", {"tvdb_id": raw["external_ids"].get("tvdb_id")})
+        return details, extras
 
     def _genre_id(self, media_type, name):
         key = f"genres:{media_type}"

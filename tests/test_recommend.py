@@ -468,5 +468,42 @@ class TestBecause(unittest.TestCase):
             self.assertIn(item["because"][0], item["reason"])
 
 
+class TestRatedOnlyHistory(unittest.TestCase):
+    def history(self, **rating):
+        import profile as prof
+        watched, library = sample.load()
+        rows = [{"media_type": "movie", "tmdb_id": 1005, "stars": 5, "rated_at": "2026-09-01T00:00:00+00:00"},
+                {"media_type": "movie", "tmdb_id": 1008, "stars": 4, "rated_at": "2026-09-01T00:00:00+00:00"}]
+        return watched, library, watched + prof.rated_entries(watched, rows)
+
+    def test_a_rated_only_title_is_excluded_from_the_items(self):
+        watched, library, history = self.history()
+        before = {i["tmdb_id"] for i in recommend.recommend(watched, library - {("movie", 1005)}, sample.SampleTmdb())["items"]}
+        self.assertIn(1008, before)
+        after = {i["tmdb_id"] for i in recommend.recommend(history, library - {("movie", 1005)}, sample.SampleTmdb())["items"]}
+        self.assertNotIn(1008, after)
+        self.assertNotIn(1005, after)
+
+    def test_title_none_falls_back_to_the_details_title_in_because(self):
+        watched, library = sample.load()
+        rated = [{"media_type": "movie", "tmdb_id": 1008, "title": None, "year": None, "last_viewed": None,
+                  "user_rating": 10, "view_count": 1, "progress": None, "rated_only": True}]
+        result = recommend.recommend(watched + rated, library, sample.SampleTmdb())
+        becauses = {name for i in result["items"] for name in i["because"]}
+        self.assertIn("Edge of Tomorrow", becauses)
+        self.assertNotIn(None, becauses)
+        self.assertTrue(all(isinstance(i["reason"], str) for i in result["items"]))
+
+    def test_the_ai_gets_the_fallback_title_too(self):
+        watched, library = sample.load()
+        rated = [{"media_type": "movie", "tmdb_id": 1008, "title": None, "year": None, "last_viewed": None,
+                  "user_rating": 10, "view_count": 1, "progress": None, "rated_only": True}]
+        fake_ai = mock.Mock()
+        fake_ai.suggest.return_value = []
+        recommend.recommend(watched + rated, library, sample.SampleTmdb(), ai=fake_ai)
+        self.assertIn("Edge of Tomorrow", fake_ai.suggest.call_args.args[1])
+        self.assertNotIn(None, fake_ai.suggest.call_args.args[1])
+
+
 if __name__ == "__main__":
     unittest.main()

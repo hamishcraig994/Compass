@@ -137,7 +137,7 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
                 key = (item["media_type"], rec_id)
                 if key not in exclude:
                     c = candidate(key, "linked")
-                    c["sources"].append((w, item["title"]))
+                    c["sources"].append((w, item.get("title") or details.get("title") or "?"))
                     c["collab"] += w
         linked = sorted(candidates, key=lambda k: -candidates[k]["collab"])[:max_candidates]
 
@@ -171,7 +171,7 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
     # look it up on TMDB ourselves (matching by year) before treating it as real.
     if ai is not None:
         try:
-            watched_titles = [item["title"] for item, _ in pairs]
+            watched_titles = [item.get("title") or details.get("title") or "?" for item, details in pairs]
             for raw in ai.suggest(profile.summary(features), watched_titles, count=MAX_AI_REQUESTED):
                 media_type = raw.get("media_type")
                 if media_type not in ("movie", "tv"):

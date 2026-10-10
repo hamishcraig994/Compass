@@ -153,7 +153,8 @@ def run(sample_mode, limit=200):
         watched, library_keys, notes, library, arr = _load_live()
         client = tmdb.TmdbClient(config.TMDB_TOKEN)
         ratings = db.ratings()
-        result = recommend.recommend(profile.apply_ratings(watched, ratings), library_keys, client,
+        history = profile.apply_ratings(watched, ratings) + profile.rated_entries(watched, db.rating_rows())
+        result = recommend.recommend(history, library_keys, client,
                                      dismissed=db.dismissed(), limit=limit,
                                      disliked={k: s for k, s in ratings.items() if s <= profile.DISLIKE_MAX_STARS})
         _fill_hero_details(result["items"], client)
@@ -177,7 +178,8 @@ def generate_ai_recommendations(limit=50):
                 "Settings -> AI first."], "sample": False, "watched_count": 0}
     watched, library_keys, notes, _, _ = _load_live()
     ratings = db.ratings()
-    result = recommend.recommend(profile.apply_ratings(watched, ratings), library_keys, tmdb.TmdbClient(config.TMDB_TOKEN),
+    history = profile.apply_ratings(watched, ratings) + profile.rated_entries(watched, db.rating_rows())
+    result = recommend.recommend(history, library_keys, tmdb.TmdbClient(config.TMDB_TOKEN),
                                  dismissed=db.dismissed(), limit=limit, ai=ai_client(), ai_only=True,
                                  disliked={k: s for k, s in ratings.items() if s <= profile.DISLIKE_MAX_STARS})
     result["notes"] = notes + result["notes"]
@@ -196,27 +198,31 @@ def sonarr_client():
                                config.SONARR_ROOT_FOLDER) if config.sonarr_configured() else None
 
 
-def add_to_library(media_type, tmdb_id, search=True, quality_profile_id=None):
-    """Adds one recommended title to Radarr or Sonarr. Returns (success, message).
+def add_to_library(media_type, tmdb_id, search=True, quality_profile_id=None, seasons=None):
+    """Adds one recommended title to Radarr or Sonarr. Returns (success, message, arr_item): arr_item is
+    the client's normalized response on success (client.last_item), else None.
     quality_profile_id, if given (e.g. chosen in the "Add to library" dialog), overrides the
-    configured default for just this one add."""
+    configured default for just this one add. seasons (tv only; None, "all" or [int]) picks seasons;
+    movies ignore it."""
     if media_type == "movie":
         if not config.radarr_configured():
-            return False, "Radarr isn't configured"
+            return False, "Radarr isn't configured", None
         client = radarr.RadarrClient(config.RADARR_URL, config.RADARR_API_KEY,
                                      quality_profile_id if quality_profile_id is not None else config.RADARR_QUALITY_PROFILE_ID,
                                      config.RADARR_ROOT_FOLDER)
-        return client.add(tmdb_id, search=search)
+        ok, message = client.add(tmdb_id, search=search)
+        return ok, message, (client.last_item if ok else None)
 
     if not config.sonarr_configured():
-        return False, "Sonarr isn't configured"
+        return False, "Sonarr isn't configured", None
     try:
         tvdb_id = tmdb.TmdbClient(config.TMDB_TOKEN).external_ids("tv", tmdb_id).get("tvdb_id")
     except Exception as e:
-        return False, f"Couldn't resolve this show for Sonarr: {e}"
+        return False, f"Couldn't resolve this show for Sonarr: {e}", None
     if not tvdb_id:
-        return False, "TMDB has no TVDB id for this show, so Sonarr can't look it up"
+        return False, "TMDB has no TVDB id for this show, so Sonarr can't look it up", None
     client = sonarr.SonarrClient(config.SONARR_URL, config.SONARR_API_KEY,
                                  quality_profile_id if quality_profile_id is not None else config.SONARR_QUALITY_PROFILE_ID,
                                  config.SONARR_ROOT_FOLDER)
-    return client.add(tvdb_id, search=search)
+    ok, message = client.add(tvdb_id, search=search, seasons=seasons)
+    return ok, message, (client.last_item if ok else None)

@@ -3,6 +3,7 @@
 Frontend-owned (see .claude/ownership.json); web.py owns state, the HTTP handler and validation.
 Reads state only through the web module (web.get_result_nowait(), web._ai_state, ...), never by
 importing names from it, so tests that patch web.<name> affect rendering too."""
+import re
 import time
 import zlib
 from html import escape
@@ -65,9 +66,84 @@ def _card_key(item):
     return f'{escape(item["media_type"], quote=True)}-{int(item["tmdb_id"])}'
 
 
+def _kind_of(item):
+    return item.get("media_type") if item.get("media_type") in ("movie", "tv") else None
+
+
+def _has_id(item):
+    """Whether this item can have a detail page, lists and a rating: a movie/tv type and a positive tmdb_id."""
+    try:
+        return _kind_of(item) is not None and int(item.get("tmdb_id")) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _title_url(item):
+    """"/title/{movie|tv}/{id}" - the detail page of any card with a tmdb_id."""
+    return f"/title/{_kind_of(item)}/{int(item['tmdb_id'])}"
+
+
+def _poster_linked(item):
+    """The poster (or placeholder) wrapped in a link to the title page; unlinked without a tmdb_id."""
+    inner = _poster_html(item)
+    if not _has_id(item):
+        return inner
+    label = escape(f"More info: {_title_text(item)}", quote=True)
+    return f'<a class="poster-link" href="{escape(_title_url(item), quote=True)}" aria-label="{label}">{inner}</a>'
+
+
+def _title_link(item, text):
+    """Card title text (already escaped), linked to the title page when the item has a tmdb_id."""
+    if not _has_id(item):
+        return text
+    return f'<a href="{escape(_title_url(item), quote=True)}">{text}</a>'
+
+
+_ICON_ATTRS = ('class="list-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+               'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"')
+_BOOKMARK_SVG = f'<svg {_ICON_ATTRS}><path d="M6 4h12a1 1 0 0 1 1 1v16l-7-4-7 4V5a1 1 0 0 1 1-1z"/></svg>'
+_LIST_SVG = f'<svg {_ICON_ATTRS}><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>'
+
+
+def _list_toggle(item, return_to):
+    """The Watchlist toggle: a form posting /lists/add or /lists/remove (app.js flips it in place)."""
+    on = bool(item.get("on_watchlist"))
+    return (f'<form class="inline list-toggle-form" method="post" action="/lists/{"remove" if on else "add"}" '
+            f'data-enhance="list">{_hidden_fields(item, return_to)}<input type="hidden" name="list" value="watchlist">'
+            f'<button type="submit" class="list-toggle{" on" if on else ""}" aria-pressed="{"true" if on else "false"}">'
+            f'{_BOOKMARK_SVG}<span class="list-toggle-text">{"On Watchlist" if on else "Watchlist"}</span></button></form>')
+
+
+def _list_dialog_url(item, return_to):
+    return "/list-dialog?" + urlencode({"type": item["media_type"], "id": int(item["tmdb_id"]), "return_to": return_to})
+
+
+def _list_link(item, return_to, detail=False):
+    """A link to the list dialog page (a modal with JS). On the detail page the label is visible."""
+    text = ('<span class="list-link-text">Add to list</span>' if detail
+            else '<span class="visually-hidden">Lists</span>')
+    name = escape(_title_text(item), quote=True)
+    label = f"Add to list: {name}" if detail else f"Add {name} to a list"   # the visible words come first (WCAG 2.5.3)
+    return (f'<a class="list-link" href="{escape(_list_dialog_url(item, return_to), quote=True)}" data-list-dialog '
+            f'aria-label="{label}">{_LIST_SVG}{text}</a>')
+
+
+def _card_tools(item, return_to, stars=True, lists=True, extra_class="", link=True):
+    """Compact stars, the Watchlist toggle and the list link on one line ("" when the item has no tmdb_id).
+    lists=False drops the toggle and the link; link=False drops only the link (the hero)."""
+    if not _has_id(item) or not (stars or lists):
+        return ""
+    parts = ""
+    if stars:
+        parts += _rate_form(item, return_to, compact=True)
+    if lists:
+        parts += _list_toggle(item, return_to) + (_list_link(item, return_to) if link else "")
+    return f'<div class="card-tools{" " + extra_class if extra_class else ""}">{parts}</div>'
+
+
 def _card(item, return_to, can_dismiss):
     """Poster-first card. The reason, chips and full overview sit in a <details> (works without
-    JS); app.js opens the same content in a modal instead."""
+    JS); the poster links to the title page."""
     link = _web_url(item.get("url"))
     title = escape(_title_text(item))
     kind = "Movie" if item["media_type"] == "movie" else "TV"
@@ -100,10 +176,11 @@ def _card(item, return_to, can_dismiss):
                    f'<form class="inline" method="post" action="/dismiss" data-enhance="dismiss">'
                    f'{_hidden_fields(item, return_to)}<button type="submit">Not interested</button></form></div>')
     return (f'<article class="card" data-card="{_card_key(item)}">'
-            f'<div class="card-poster" data-open-detail>{_poster_html(item)}'
+            f'<div class="card-poster">{_poster_linked(item)}'
             f'<div class="poster-top"><span class="match">{int(item["match"])}% match</span>'
             f'<span class="badges">{badges}</span></div><span class="kind">{kind}</span></div>'
-            f'<div class="card-info"><h3 class="title">{title}</h3>{details}{actions}</div></article>')
+            f'<div class="card-info"><h3 class="title">{title}</h3>{details}{actions}'
+            f'{_card_tools(item, return_to)}</div></article>')
 
 
 _SOURCE_LABELS = {"plex": "Plex", "radarr": "Radarr", "sonarr": "Sonarr"}
@@ -120,12 +197,32 @@ def _arr_label(state, episodes=None):
     return _ARR_STATE_LABELS.get(state, "")
 
 
-def _library_card(item, show_added=False):
-    """A Plex library (or "Added here") card: poster, title, year. No actions."""
-    link = _web_url(item.get("url"))
-    title = escape(_title_text(item) if show_added else str(item["title"]))
-    if link:
-        title = f'<a href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">{title}</a>'
+_REQ_LABELS = {"requested": "Requested", "processing": "Searching", "upcoming": "Upcoming",
+               "partial": "Partly available", "available": "Available", "unmonitored": "Not monitored"}
+
+
+def _req_label(state, episodes=None):
+    if state == "partial" and isinstance(episodes, dict):
+        have, total = episodes.get("have"), episodes.get("total")
+        if isinstance(have, int) and isinstance(total, int) and total > 0:
+            return f"{have}/{total} episodes"
+    return _REQ_LABELS.get(state, "")
+
+
+def _seasons_text(seasons):
+    """"All seasons" / "Seasons 1, 3" for a TV request; "" for movies and requests with no season record."""
+    if seasons == "all":
+        return "All seasons"
+    if isinstance(seasons, list):
+        numbers = [n for n in seasons if isinstance(n, int) and not isinstance(n, bool)]
+        if numbers:
+            return ("Season " if len(numbers) == 1 else "Seasons ") + ", ".join(str(n) for n in numbers)
+    return ""
+
+
+def _library_card(item, show_added=False, return_to="/library"):
+    """A Plex library (or Requests) card: poster link, title, year, and the stars / Watchlist / list tools."""
+    title = _title_link(item, escape(_title_text(item) if show_added else str(item["title"])))
     kind = "Movie" if item["media_type"] == "movie" else "TV"
     badge = ""
     progress = item.get("progress")
@@ -138,6 +235,10 @@ def _library_card(item, show_added=False):
     state_label = _arr_label(state, item.get("episodes"))
     if state_label and not (state == "downloaded" and "plex" in sources_):
         badge += (f'<span class="badge arr-state state-{escape(str(state), quote=True)}">{escape(state_label)}</span>')
+    req_state = item.get("request_state") if show_added else None
+    req_label = _req_label(req_state, item.get("episodes"))
+    if req_label:
+        badge += f'<span class="badge req-state req-{escape(str(req_state), quote=True)}">{escape(req_label)}</span>'
     top = f'<div class="poster-top"><span class="badges">{badge}</span></div>' if badge else ""
     src_line = ""
     if sources_:
@@ -147,10 +248,12 @@ def _library_card(item, show_added=False):
         sub = f'Added {escape((item.get("added_at") or "")[:10] or "unknown date")}'
     else:
         sub = escape(str(item["year"])) if item.get("year") else ""
-    return (f'<article class="card" data-preview><div class="card-poster">{_poster_html(item)}{top}'
+    seasons = _seasons_text(item.get("seasons")) if show_added and item.get("media_type") == "tv" else ""
+    seasons_line = f'<p class="card-sub req-seasons">{escape(seasons)}</p>' if seasons else ""
+    return (f'<article class="card" data-preview><div class="card-poster">{_poster_linked(item)}{top}'
             f'<span class="kind">{kind}</span></div>'
             f'<div class="card-info"><h3 class="title">{title}</h3>'
-            f'<p class="card-sub">{sub}</p>{src_line}</div></article>')
+            f'<p class="card-sub">{sub}</p>{seasons_line}{src_line}{_card_tools(item, return_to)}</div></article>')
 
 
 def _rate_parts(mine, plex):
@@ -184,9 +287,7 @@ def _watched_card(item, return_to):
     """A watch-history card with 1-5 star buttons (a plain form, so it works without JS)."""
     title_text = _title_text(item)
     title = escape(title_text)
-    link = _web_url(item.get("url"))
-    title_html = (f'<a href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">{title}</a>'
-                  if link else title)
+    title_html = _title_link(item, title)
     kind = "Movie" if item["media_type"] == "movie" else "TV"
     sub = f'Watched {escape((item.get("last_viewed") or "")[:10])}' if item.get("last_viewed") else "Watched"
     if (item.get("view_count") or 0) > 1:
@@ -196,9 +297,10 @@ def _watched_card(item, return_to):
     form = (f'<form class="rate" method="post" action="/rate" data-enhance="rate">{_hidden_fields(item, return_to)}'
             f'<div class="stars" role="group" aria-label="Your rating for {escape(title_text, quote=True)}">{stars}</div>'
             f'<p class="rating-text">{text}</p>{clear}</form>')
-    return (f'<article class="card" data-card="{_card_key(item)}" data-preview><div class="card-poster">{_poster_html(item)}'
+    return (f'<article class="card" data-card="{_card_key(item)}" data-preview><div class="card-poster">{_poster_linked(item)}'
             f'<span class="kind">{kind}</span></div>'
-            f'<div class="card-info"><h3 class="title">{title_html}</h3><p class="card-sub">{sub}</p>{form}</div></article>')
+            f'<div class="card-info"><h3 class="title">{title_html}</h3><p class="card-sub">{sub}</p>{form}'
+            f'{_card_tools(item, return_to, stars=False)}</div></article>')
 
 
 def _configured_profiles(client_factory):
@@ -295,18 +397,87 @@ def _status():
         return {"state": "ready", "has_result": False, "error": None, "ai": {"state": "idle", "error": None}}
 
 
+_SECTION_PREFIXES = (("/ai", "ai"), ("/movies", "movies"), ("/tv", "tv"), ("/library", "library"),
+                     ("/lists", "library"), ("/watchlist", "library"), ("/search", "search"),
+                     ("/title/movie", "movies"), ("/title/tv", "tv"))
+
+
+def _section_for(return_to):
+    """Which nav item a dialog page highlights: where it was opened from."""
+    for prefix, name in _SECTION_PREFIXES:
+        if return_to.startswith(prefix):
+            return name
+    return "home"
+
+
+_SEASON_STATE_LABELS = {"available": "Available", "missing": "Wanted", "upcoming": "Upcoming",
+                        "unmonitored": "Not requested"}
+
+
+def _season_state_badge(row):
+    state = row.get("state")
+    if state == "partial":
+        have, total = row.get("have"), row.get("total")
+        label = (f"{have}/{total} episodes" if isinstance(have, int) and isinstance(total, int) and total > 0
+                 else "Partly available")
+    else:
+        label = _SEASON_STATE_LABELS.get(state)
+    if not label:
+        return ""
+    return f'<span class="badge arr-state season-state state-{escape(str(state), quote=True)}">{escape(label)}</span>'
+
+
+def _season_eps_text(row):
+    """"8 episodes - 2021" for a season row ("" when neither is known)."""
+    parts = []
+    episodes = row.get("episodes")
+    if isinstance(episodes, int) and not isinstance(episodes, bool) and episodes >= 0:
+        parts.append(f"{episodes} episode{'s' if episodes != 1 else ''}")
+    year = str(row.get("air_date") or "")[:4]
+    if len(year) == 4 and year.isdigit():
+        parts.append(year)
+    return " &middot; ".join(parts)
+
+
+def _season_picker(choices, form_id):
+    """The add dialog's season fieldset: All seasons (or "All remaining" for a tracked series), Choose seasons with
+    a checkbox per season (requested ones checked and disabled), or only "all" plus a note when TMDB/Sonarr has no list."""
+    rows = list(choices.get("seasons") or []) if choices.get("known") else []
+    tracked = bool(choices.get("tracked"))
+    fid = escape(str(form_id), quote=True)
+    out = [f'<fieldset class="season-picker" id="{fid}-seasons"><legend>Seasons</legend>',
+           f'<label class="season-mode"><input type="radio" name="seasons" value="all" checked> '
+           f'{"All remaining seasons" if tracked else "All seasons"}</label>']
+    if rows:
+        items = []
+        for row in rows:
+            number = int(row["number"])
+            requested = bool(row.get("requested")) or row.get("selectable") is False
+            eps = _season_eps_text(row)
+            items.append(
+                f'<li class="season-row"><label class="checkbox-label"><input type="checkbox" class="season-check" '
+                f'name="season" value="{number}"{" checked disabled" if requested else ""}> '
+                f'{escape(str(row.get("name") or f"Season {number}"))}'
+                + (f' <span class="season-eps">{eps}</span>' if eps else "")
+                + (' <span class="muted">Requested</span>' if requested else "")
+                + f'{_season_state_badge(row)}</label></li>')
+        out.append('<label class="season-mode"><input type="radio" name="seasons" value="pick"> Choose seasons</label>'
+                   f'<ul class="season-list">{"".join(items)}</ul>')
+    else:
+        out.append('<p class="muted">Season list unavailable right now - you can still add all seasons.</p>')
+    out.append('</fieldset>')
+    return "".join(out)
+
+
 def render_add_dialog(media_type, tmdb_id, return_to, partial=False):
     """A dedicated page (or, with partial=True, just the dialog's inner HTML for app.js's modal):
     quality profiles are fetched here and only here, so viewing the Recommended or AI list never
     pays for a Radarr/Sonarr round-trip you might not need. web.lookup_item checks both recommendation
-    caches, then (live mode) TMDB details, so any search result can be added too; it never forces a recompute."""
+    caches, then (live mode) TMDB details, so any search result can be added too; it never forces a recompute.
+    TV adds the season picker (web.season_choices); a series Sonarr already tracks says "Request more seasons"
+    and has no profile select, since the profile can't be changed here."""
     return_to = web._safe_path(return_to)
-    section = "home"
-    for prefix, name in (("/ai", "ai"), ("/movies", "movies"), ("/tv", "tv"), ("/library", "library"),
-                         ("/search", "search")):
-        if return_to.startswith(prefix):
-            section = name
-            break
+    section = _section_for(return_to)
     item = web.lookup_item(media_type, tmdb_id) if not web._is_sample() else None
     if item is None:
         inner = (f'<div class="dialog-box"><div class="dialog-head"><div>'
@@ -315,25 +486,39 @@ def render_add_dialog(media_type, tmdb_id, return_to, partial=False):
                  f'<div class="card-actions"><a class="btn-ghost" href="{escape(return_to)}" data-close>Back</a></div></div>')
         return inner if partial else _shell(f'<div class="dialog-page">{inner}</div>', section)
 
-    client_factory = sources.radarr_client if media_type == "movie" else sources.sonarr_client
-    profiles = _configured_profiles(client_factory)
-    options = '<option value="">Default (from Settings)</option>' + "".join(
-        f'<option value="{escape(str(p_id))}">{escape(str(p_name))}</option>' for p_id, p_name in (profiles or []))
+    choices = None
+    if media_type == "tv":
+        try:
+            choices = web.season_choices(int(tmdb_id))
+        except Exception:
+            choices = {"seasons": [], "tracked": False, "known": False}
+    tracked = bool(choices and choices.get("tracked"))
+    profile_select = ""
+    if not tracked:
+        client_factory = sources.radarr_client if media_type == "movie" else sources.sonarr_client
+        profiles = _configured_profiles(client_factory)
+        options = '<option value="">Default (from Settings)</option>' + "".join(
+            f'<option value="{escape(str(p_id))}">{escape(str(p_name))}</option>' for p_id, p_name in (profiles or []))
+        profile_select = f'<label>Quality profile<select name="quality_profile_id">{options}</select></label>'
     service = "Radarr" if media_type == "movie" else "Sonarr"
     poster_url = _web_url(item.get("poster_url"))
     thumb = (f'<div class="thumb"><img src="{escape(poster_url, quote=True)}" alt=""></div>' if poster_url else "")
+    heading = (f'Request more seasons of &quot;{escape(item["title"])}&quot;' if tracked
+               else f'Add &quot;{escape(item["title"])}&quot; to library')
+    picker = _season_picker(choices, "add") if choices is not None else ""
     inner = (f'<div class="dialog-box"><div class="dialog-head">{thumb}<div>'
-             f'<h3 id="add-dialog-title">Add &quot;{escape(item["title"])}&quot; to library</h3>'
+             f'<h3 id="add-dialog-title">{heading}</h3>'
              f'<p class="muted">Sends it to {service}</p></div></div>'
              f'<form method="post" action="/add" data-enhance="add">{_hidden_fields(item, return_to)}'
+             f'{picker}'
              f'<fieldset><legend class="visually-hidden">Options</legend>'
-             f'<label>Quality profile<select name="quality_profile_id">{options}</select></label>'
+             f'{profile_select}'
              f'<label class="checkbox-label"><input type="checkbox" name="search" value="1" checked> '
              f'Search and download immediately</label>'
              f'<p class="muted">Unchecked, it\'s added but left unmonitored - Radarr/Sonarr won\'t '
              f'grab it on their own either, until you turn monitoring on there yourself.</p></fieldset>'
              f'<div class="card-actions"><a href="{escape(return_to)}" class="btn-ghost" data-close>Cancel</a>'
-             f'<button type="submit" class="btn-add">Add</button></div></form></div>')
+             f'<button type="submit" class="btn-add">{"Request" if tracked else "Add"}</button></div></form></div>')
     if partial:
         return inner
     return _shell(f'<div class="dialog-page">{inner}</div>', section, f"Adding to {service}")
@@ -345,10 +530,13 @@ def _can_add(item, can_act):
                              or (item["media_type"] == "tv" and config.sonarr_configured())))
 
 
+def _add_dialog_url(item, return_to):
+    return "/add-dialog?" + urlencode({"type": item["media_type"], "id": item["tmdb_id"], "return_to": return_to})
+
+
 def _add_link(item, return_to):
     # A real page nav, not an inline dialog (see _card); app.js opens it in a modal instead.
-    dialog_url = "/add-dialog?" + urlencode({"type": item["media_type"], "id": item["tmdb_id"], "return_to": return_to})
-    return f'<a class="btn-add" href="{escape(dialog_url, quote=True)}" data-add-dialog>Add to library</a>'
+    return f'<a class="btn-add" href="{escape(_add_dialog_url(item, return_to), quote=True)}" data-add-dialog>Add to library</a>'
 
 
 def _int_or_none(value):
@@ -372,12 +560,13 @@ def _runtime_text(item):
 
 
 def _meta_html(item):
-    """Inner spans of a .card-meta line: match, year, certification, runtime / seasons."""
-    try:
-        match = int(item.get("match") or 0)
-    except (TypeError, ValueError):
-        match = 0
-    parts = [f'<span class="match">{match}% match</span>']
+    """Inner spans of a .card-meta line: match (only when the item has one), year, certification, runtime / seasons."""
+    parts = []
+    if item.get("match") is not None:
+        try:
+            parts.append(f'<span class="match">{int(item["match"])}% match</span>')
+        except (TypeError, ValueError):
+            pass
     if item.get("year"):
         parts.append(f'<span>{escape(str(item["year"]))}</span>')
     if item.get("certification"):
@@ -395,67 +584,84 @@ def _detail_body(item):
     chips = "".join(f'<span class="chip">{escape(m)}</span>' for m in item.get("matches") or [])
     ext = (f'<a class="ext-link" href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">'
            f'More on TMDB<span class="visually-hidden"> (opens in a new tab)</span> &#8599;</a>' if link else "")
+    meta = _meta_html(item)
     return ('<div class="detail-body">'
-            f'<p class="card-meta">{_meta_html(item)}</p>'
+            + (f'<p class="card-meta">{meta}</p>' if meta else "")
             + (f'<p class="reason">{reason}</p>' if reason else "")
             + (f'<div class="chips">{chips}</div>' if chips else "")
             + f'<p class="overview">{escape(item.get("overview") or "No overview available.")}</p>{ext}</div>')
 
 
-def _rate_form(item, return_to):
+def _rate_form(item, return_to, compact=False):
     """1-5 stars posting to /rate (the same form the Library uses), showing your saved rating (item["stars"]).
     Rating a recommendation never hides it. Shown even in sample mode: the server answers
-    "Sample data - not saved" and app.js toasts it."""
+    "Sample data - not saved" and app.js toasts it. compact: the one-line card variant (text is visually hidden)."""
     title = escape(_title_text(item), quote=True)
     stars, text, clear = _rate_parts(_star_value(item.get("stars")), _star_value(item.get("plex_stars")))
-    return (f'<form class="rate" method="post" action="/rate" data-enhance="rate">{_hidden_fields(item, return_to)}'
+    return (f'<form class="rate{" rate-compact" if compact else ""}" method="post" action="/rate" data-enhance="rate">'
+            f'{_hidden_fields(item, return_to)}'
             f'<div class="stars" role="group" aria-label="Your rating for {title}">{stars}</div>'
-            f'<p class="rating-text">{text}</p>{clear}</form>')
+            f'<p class="rating-text{" visually-hidden" if compact else ""}">{text}</p>{clear}</form>')
 
 
 def _card_actions(item, return_to, can_act):
-    add = _add_link(item, return_to) if _can_add(item, can_act) else ""
+    """Add / Not interested / full stars, plus the Watchlist toggle and list link (the hover preview clones them)."""
+    add = (_add_link(item, return_to) if _can_add(item, can_act) and (item.get("status") or "none") == "none" else "")
     dismiss = (f'<form class="inline" method="post" action="/dismiss" data-enhance="dismiss">'
                f'{_hidden_fields(item, return_to)}<button type="submit">Not interested</button></form>'
                if can_act else "")
-    return f'<div class="card-actions">{add}{dismiss}{_rate_form(item, return_to)}</div>'
+    return (f'<div class="card-actions">{add}{dismiss}{_rate_form(item, return_to)}'
+            f'{_card_tools(item, return_to, stars=False)}</div>')
+
+
+def _row_tag(item):
+    if item.get("in_library"):
+        return '<span class="lib-tag">In library</span>'
+    status = item.get("status")
+    if status in _STATUS_LABELS:
+        return f'<span class="lib-tag status-tag status-{escape(status, quote=True)}">{_STATUS_LABELS[status]}</span>'
+    return ""
 
 
 def _row_card(item, return_to, can_act, rank=None):
-    """A poster card in a row. Reason, overview and actions sit in a <details> (no JS); with JS the
-    poster becomes a button that opens the same content in the detail modal."""
+    """A poster card in a row. Reason, overview and actions sit in a <details> (no JS; with JS the hover
+    preview shows them); the poster links to the title page."""
     title = escape(_title_text(item))
     rank_html = f'<span class="rank" aria-hidden="true">{int(rank)}</span>' if rank is not None else ""
-    lib = '<span class="lib-tag">In library</span>' if item.get("in_library") else ""
+    match = _meta_match(item)
     return (f'<article class="card row-card" data-card="{_card_key(item)}">'
-            f'<div class="card-poster" data-open-detail>{rank_html}{_poster_html(item)}'
-            f'<div class="poster-top"><span class="match">{int(item.get("match") or 0)}% match</span>{lib}</div></div>'
+            f'<div class="card-poster">{rank_html}{_poster_linked(item)}'
+            f'<div class="poster-top">{match}{_row_tag(item)}</div></div>'
             f'<div class="card-info"><h4 class="title">{title}</h4>'
             f'<details class="card-details"><summary>Details<span class="visually-hidden">: {title}</span></summary>'
             f'{_detail_body(item)}{_card_actions(item, return_to, can_act)}</details></div></article>')
 
 
-def _library_row_card(item):
-    """A "New in your library" card: poster, tag, title (linked to TMDB when known). No actions."""
-    link = _web_url(item.get("url"))
-    title = escape(_title_text(item))
-    if link:
-        title = f'<a href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">{title}</a>'
-    return (f'<article class="card row-card lib-card"><div class="card-poster">{_poster_html(item)}</div>'
+def _meta_match(item, tag="span", cls="match"):
+    try:
+        return f'<{tag} class="{cls}">{int(item["match"])}% match</{tag}>' if item.get("match") is not None else ""
+    except (TypeError, ValueError):
+        return ""
+
+
+def _library_row_card(item, return_to="/"):
+    """A "New in your library" card: poster link, tag, title, and the tools (hover preview; visible without JS)."""
+    title = _title_link(item, escape(_title_text(item)))
+    return (f'<article class="card row-card lib-card" data-preview><div class="card-poster">{_poster_linked(item)}</div>'
             f'<span class="lib-tag">In library</span>'
-            f'<div class="card-info"><h4 class="title">{title}</h4></div></article>')
+            f'<div class="card-info"><h4 class="title">{title}</h4>{_card_tools(item, return_to)}</div></article>')
 
 
-def _row_html(row, return_to, can_act):
+def _row_html(row, return_to, can_act, extra_class=""):
     rid = escape(str(row["id"]), quote=True)
     if row.get("source") == "library":
-        cards = "".join(_library_row_card(i) for i in row["items"])
+        cards = "".join(_library_row_card(i, return_to) for i in row["items"])
     else:
         numbered = row.get("numbered")
         cards = "".join(_row_card(i, return_to, can_act, n if numbered else None)
                         for n, i in enumerate(row["items"], 1))
     sub = f'<p class="row-sub">{escape(row["subtitle"])}</p>' if row.get("subtitle") else ""
-    return (f'<section class="row" data-row="{rid}" aria-labelledby="row-{rid}">'
+    return (f'<section class="row{" " + extra_class if extra_class else ""}" data-row="{rid}" aria-labelledby="row-{rid}">'
             f'<div class="row-head"><h3 id="row-{rid}">{escape(row["title"])}</h3>{sub}</div>'
             f'<div class="track-wrap"><div class="track{" track-numbered" if row.get("numbered") else ""}" data-track>'
             f'{cards}</div></div></section>')
@@ -482,19 +688,19 @@ def _hero_slide(item, n, total, return_to, can_act):
         primary = '<span class="lib-tag">In library</span>'
     else:
         primary = _add_link(item, return_to) if _can_add(item, can_act) else ""
+    more = (f'<a class="btn-ghost hero-more" href="{escape(_title_url(item), quote=True)}">More info'
+            f'<span class="visually-hidden">: {title}</span></a>' if _has_id(item) else "")
     return (f'<article class="hero-slide{" on" if n == 1 else ""}" data-slide data-card="{_card_key(item)}" '
             f'aria-label="{n} of {total}: {escape(str(item["title"]), quote=True)}"{"" if n == 1 else " hidden"}>'
             f'{_hero_art(item)}'
-            f'<div class="card-poster" hidden>{_poster_html(item)}</div>'
             f'<div class="hero-copy"><p class="kicker">Top pick for you</p>'
             f'<h3 class="title hero-title">{title}</h3>'
             f'<p class="hero-meta card-meta">{_meta_html(item)}'
             + (f'<span class="hero-genres">{genres}</span>' if genres else "")
             + '</p>'
             + (f'<p class="reason">{reason}</p>' if reason else "")
-            + f'<div class="hero-actions">{primary}'
-            f'<details class="card-details hero-details"><summary>More info<span class="visually-hidden">: {title}</span></summary>'
-            f'{_detail_body(item)}{_card_actions(item, return_to, can_act)}</details></div></div></article>')
+            + f'<div class="hero-actions">{primary}{more}'
+            f'{_card_tools(item, return_to, stars=False, extra_class="hero-tools", link=False)}</div></div></article>')
 
 
 def _hero_html(items, return_to, can_act):
@@ -560,11 +766,11 @@ def render_home(msg="", undo=None):
 
 
 LIBRARY_TABS = (("all", "All"), ("movie", "Movies"), ("tv", "TV shows"), ("watched", "Watched"),
-                ("added", "Added here"))
+                ("added", "Requests"))
 _SORT_LABELS = {"added": "Recently added", "title": "Title A-Z", "year": "Newest year", "recent": "Recently watched",
                 "rating": "Highest rated"}
 _SHOW_LABELS = {"all": "Everything", "unwatched": "Unwatched", "watched": "Watched", "rated": "Rated by you",
-                "unrated": "Not rated by you"}
+                "unrated": "Not rated by you", "open": "Not available yet", "available": "Available"}
 
 
 def _library_url(tab, q="", sort=None, show=None, page=1, source=None):
@@ -583,6 +789,7 @@ def _library_url(tab, q="", sort=None, show=None, page=1, source=None):
 
 
 def _library_subtabs(active, q):
+    """The Library's tabs plus "Lists" (/lists and /lists/<id> render under Library with it on)."""
     links = []
     for key, label in LIBRARY_TABS:
         params = {"type": key}
@@ -590,6 +797,7 @@ def _library_subtabs(active, q):
             params["q"] = q
         links.append(f'<a class="subtab{" on" if key == active else ""}" '
                      f'href="/library?{escape(urlencode(params))}">{escape(label)}</a>')
+    links.append(f'<a class="subtab{" on" if active == "lists" else ""}" href="/lists">Lists</a>')
     return f'<nav class="subtabs" aria-label="Library">{"".join(links)}</nav>'
 
 
@@ -613,16 +821,20 @@ def _library_toolbar(tab, q, sort, show, sorts, shows, source="all", sources_=("
             f'<button type="submit" class="btn-ghost">Apply</button></form>')
 
 
-def _library_pager(tab, q, sort, show, page, pages, source="all"):
+def _pager(href_for, page, pages):
+    """Previous / Page n of m / Next; href_for(page_number) -> an unescaped URL."""
     if pages <= 1:
         return ""
     def link(target, label, rel):
-        href = escape(_library_url(tab, q, sort, show, target, source), quote=True)
-        return f'<a href="{href}" rel="{rel}">{label}</a>'
+        return f'<a href="{escape(href_for(target), quote=True)}" rel="{rel}">{label}</a>'
     prev = link(page - 1, "&#8249; Previous", "prev") if page > 1 else '<span class="muted">&#8249; Previous</span>'
     nxt = link(page + 1, "Next &#8250;", "next") if page < pages else '<span class="muted">Next &#8250;</span>'
     return (f'<nav class="pager" aria-label="Pages">{prev}<span class="pager-status">Page {page} of {pages}</span>'
             f'{nxt}</nav>')
+
+
+def _library_pager(tab, q, sort, show, page, pages, source="all"):
+    return _pager(lambda target: _library_url(tab, q, sort, show, target, source), page, pages)
 
 
 def _library_empty(tab, filtered, q=""):
@@ -634,8 +846,8 @@ def _library_empty(tab, filtered, q=""):
         return ('<div class="empty"><h3>Nothing matches</h3><p>No titles match your search or filters.</p>'
                 f'<a class="btn-ghost" href="{escape(_library_url(tab), quote=True)}">Clear filters</a>{search}</div>')
     if tab == "added":
-        return ('<div class="empty"><h3>Your added list is empty</h3>'
-                '<p>Nothing added yet - approve a recommendation from the Recommended page and it\'ll show up here.</p>'
+        return ('<div class="empty"><h3>No requests yet</h3>'
+                '<p>Nothing added yet - add a recommendation to your library and it\'ll show up under Requests.</p>'
                 '<a class="btn-add" href="/recommended">Browse recommendations</a></div>')
     if tab == "watched":
         return ('<div class="empty"><h3>Nothing watched yet</h3>'
@@ -646,7 +858,7 @@ def _library_empty(tab, filtered, q=""):
 
 def render_library(tab="all", q="", sort=None, show="all", page=1, msg="", source="all"):
     """Library: All / Movies / TV shows (the Plex library), Watched (history, with ratings) and
-    Added here (the log of what was sent to Radarr/Sonarr). Data comes from the last build's
+    Requests (the log of what was sent to Radarr/Sonarr, with its status). Data comes from the last build's
     snapshot - this never calls Plex."""
     tab = tab if tab in dict(LIBRARY_TABS) else "all"
     sorts, shows = web.LIST_OPTIONS[tab]
@@ -708,10 +920,16 @@ def render_library(tab="all", q="", sort=None, show="all", page=1, msg="", sourc
     toolbar = _library_toolbar(tab, q, sort, show, sorts, shows, source,
                                source_options if arr_on and len(source_options) > 1 else ("all",))
     if view["items"]:
+        page_items = view["items"]
+        if tab == "watched":   # keep the stars (and Plex's) the watched list already carries; add the list state
+            page_items = [{**own, "lists": mine["lists"], "on_watchlist": mine["on_watchlist"]}
+                          for own, mine in zip(page_items, web.with_user_state(page_items))]
+        elif tab != "added":
+            page_items = web.with_user_state(page_items)
         if tab == "watched":
-            cards = "".join(_watched_card(i, return_to) for i in view["items"])
+            cards = "".join(_watched_card(i, return_to) for i in page_items)
         else:
-            cards = "".join(_library_card(i, tab == "added") for i in view["items"])
+            cards = "".join(_library_card(i, tab == "added", return_to) for i in page_items)
         grid = f'<div class="grid" data-grid>{cards}</div>'
     else:
         grid = _library_empty(tab, True, q)
@@ -750,7 +968,7 @@ def render_ai_page(msg="", undo=None):
                 f'request to your configured provider.</p>{generate_form}</div>')
         return _shell(body, "ai", show_refresh=False)
 
-    items = result["items"][:SHOW]
+    items = web.with_user_state(result["items"][:SHOW])
     notes = "".join(f'<p class="note">{escape(n)}</p>' for n in result["notes"])
     cards = "".join(_card(i, "/ai", True) for i in items)
     if items:
@@ -761,6 +979,389 @@ def render_ai_page(msg="", undo=None):
             f'<span class="muted">Each click is a real request to your AI provider.</span></div>{notes}{grid}')
     subtitle = f"Generated {_age_text(time.time() - web._ai_state['time'])}"
     return _shell(body, "ai", subtitle, show_refresh=False)
+
+
+# --- Title detail page (GET /title/<movie|tv>/<id>) ---
+_IMDB_ID = re.compile(r"tt\d{1,10}\Z")
+_KIND_LABELS = {"movie": "Movie", "tv": "TV series"}
+
+
+def _ext_link(url, label):
+    return (f'<a class="ext-link" href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">'
+            f'{escape(label)}<span class="visually-hidden"> (opens in a new tab)</span> &#8599;</a>')
+
+
+def _title_status_badges(status):
+    badges = ""
+    kind = status.get("status") or "none"
+    if kind in _STATUS_LABELS:
+        badges += f'<span class="lib-tag status-tag status-{escape(kind, quote=True)}">{_STATUS_LABELS[kind]}</span>'
+    arr_text = _arr_label(status.get("arr_state"), status.get("episodes"))
+    if arr_text:
+        badges += (f'<span class="badge arr-state state-{escape(str(status.get("arr_state")), quote=True)}">'
+                   f'{escape(arr_text)}</span>')
+    if status.get("watched"):
+        badges += '<span class="badge">Watched</span>'
+    if status.get("dismissed"):
+        badges += '<span class="badge">Not interested</span>'
+    return badges
+
+
+def _title_facts(view, item, extras):
+    movie = view["media_type"] == "movie"
+    rows = []
+
+    def fact(label, value):
+        if value:
+            rows.append(f"<dt>{escape(label)}</dt><dd>{value}</dd>")
+
+    if extras.get("status"):
+        fact("Status", escape(str(extras["status"])))
+    when = item.get("release_date") or item.get("year")
+    fact("Release" if movie else "First aired", escape(str(when)) if when else "")
+    runtime = _runtime_text(item)
+    fact("Runtime" if movie else "Seasons", escape(runtime) if movie else escape(runtime.split(" ")[0] if runtime else ""))
+    names = [str(n) for n in (extras.get("studios") if movie else extras.get("networks")) or []]
+    fact(("Studio" if movie else "Network") + ("s" if len(names) > 1 else ""), escape(", ".join(names)))
+    crew = extras.get("crew") or []
+    if movie:
+        people = [str(d) for d in item.get("directors") or []] or [str(c.get("name")) for c in crew if c.get("job") == "Director"]
+        fact("Director" + ("s" if len(people) > 1 else ""), escape(", ".join(people)))
+    else:
+        people = [str(c.get("name")) for c in crew if c.get("job") == "Creator"]
+        fact("Creator" + ("s" if len(people) > 1 else ""), escape(", ".join(people)))
+    try:
+        vote = float(item.get("vote_average") or 0)
+    except (TypeError, ValueError):
+        vote = 0.0
+    if vote and item.get("vote_count"):
+        fact("TMDB", f"{vote:.1f} / 10")
+    return f'<dl class="title-facts">{"".join(rows)}</dl>' if rows else ""
+
+
+def _season_section(view, ref, return_to, can_pick):
+    rows = view.get("seasons") or []
+    if not rows:
+        return ""
+    items = []
+    selectable = False
+    for row in rows:
+        number = int(row["number"])
+        pick = can_pick and bool(row.get("selectable")) and not row.get("requested")
+        selectable = selectable or pick
+        name = escape(str(row.get("name") or f"Season {number}"))
+        eps = _season_eps_text(row)
+        head = (f'<input type="checkbox" class="season-check" name="season" value="{number}" id="s-{number}">'
+                f'<label for="s-{number}" class="season-name">{name}</label>' if pick
+                else f'<span class="season-name">{name}</span>')
+        items.append(f'<li class="season-row">{head}'
+                     + (f'<span class="season-eps">{eps}</span>' if eps else "")
+                     + f'{_season_state_badge(row)}</li>')
+    actions = ""
+    if selectable:
+        dialog = "/add-dialog?" + urlencode({"type": "tv", "id": ref["tmdb_id"], "return_to": return_to})
+        actions = ('<div class="season-actions"><label class="checkbox-label">'
+                   '<input type="checkbox" name="search" value="1" checked> Search now</label>'
+                   '<button type="submit" name="seasons" value="pick" class="btn-add">Request selected seasons</button>'
+                   '<button type="submit" name="seasons" value="all" class="btn-ghost">Request all seasons</button>'
+                   f'<a class="link-btn" href="{escape(dialog, quote=True)}" data-add-dialog>More options</a></div>')
+    return (f'<section class="title-section seasons"><h2>Seasons</h2>'
+            f'<form class="season-form" method="post" action="/add" data-enhance="add" data-after="reload">'
+            f'{_hidden_fields(ref, return_to)}<ul class="season-list">{"".join(items)}</ul>{actions}</form></section>')
+
+
+def _cast_section(extras, item):
+    cast = [c for c in extras.get("cast") or [] if isinstance(c, dict) and c.get("name")]
+    if not cast:
+        cast = [{"name": n, "character": "", "profile_url": None} for n in item.get("cast") or [] if n]
+    if not cast:
+        return ""
+    cards = []
+    for person in cast:
+        name = str(person["name"])
+        photo = _web_url(person.get("profile_url"))
+        art = (f'<img src="{escape(photo, quote=True)}" alt="" loading="lazy">' if photo
+               else escape(name[:1].upper()))
+        hue = (zlib.crc32(name.encode("utf-8")) * 47) % 360
+        role = f'<span class="cast-role">{escape(str(person["character"]))}</span>' if person.get("character") else ""
+        cards.append(f'<li class="cast-card"><span class="cast-photo" style="--h:{hue}">{art}</span>'
+                     f'<span class="cast-name">{escape(name)}</span>{role}</li>')
+    return f'<section class="title-section cast"><h2>Cast</h2><ul class="cast-list">{"".join(cards)}</ul></section>'
+
+
+def render_title(view, msg="", undo=None):
+    """The title detail page for web.title_view(...). Every poster click and "More info" lands here. Works without
+    JS: the add, rate, Watchlist and season controls are plain forms and links (app.js only enhances them)."""
+    media_type = "tv" if view.get("media_type") == "tv" else "movie"
+    tmdb_id = int(view["tmdb_id"])
+    section = "tv" if media_type == "tv" else "movies"
+    return_to = f"/title/{media_type}/{tmdb_id}"
+    notes = _message_notes(msg, undo, return_to)
+    state = view.get("state")
+    item = view.get("item")
+    if state in ("unavailable", "not_found") or not item:
+        word = "Title not found" if state == "not_found" else "Title unavailable"
+        message = escape(view.get("message") or "Couldn't load this title.")
+        empty = (f'<div class="empty"><h3>{message}</h3>'
+                 f'<a class="btn-ghost" href="/search">Search instead</a></div>')
+        return _shell(f'<article class="title-page">{notes}{empty}</article>', section, cinematic=True, heading=word)
+
+    extras = view.get("extras") or {}
+    status = view.get("status") or {}
+    can_act = not view.get("sample")
+    title_plain = str(item.get("title") or "?")
+    ref = {"media_type": media_type, "tmdb_id": tmdb_id, "title": title_plain, "year": item.get("year"),
+           "stars": view.get("stars"), "on_watchlist": view.get("on_watchlist")}
+    rec = view.get("rec")
+
+    backdrop = _web_url(item.get("backdrop_url"))
+    backdrop_html = (f'<img class="title-backdrop" src="{escape(backdrop, quote=True)}" alt="">' if backdrop else "")
+    poster = _poster_html({**ref, "poster_url": _web_url(item.get("poster_large_url")) or item.get("poster_url"),
+                           "poster_key": None})
+    meta = ""
+    if rec and rec.get("match") is not None:
+        meta += _meta_match({"match": rec["match"]})
+    meta += _meta_html({k: item.get(k) for k in ("year", "certification", "runtime", "seasons")})
+    genres = " &middot; ".join(escape(str(g)) for g in (item.get("genres") or [])[:5])
+    if genres:
+        meta += f'<span class="title-genres">{genres}</span>'
+    tagline = f'<p class="title-tagline">{escape(str(extras["tagline"]))}</p>' if extras.get("tagline") else ""
+    badges = _title_status_badges(status)
+    if view.get("on_watchlist"):
+        badges += '<span class="badge">On Watchlist</span>'
+
+    actions = ""
+    selectable = any(r.get("selectable") and not r.get("requested") for r in view.get("seasons") or [])
+    if view.get("can_add") and _can_add(ref, can_act) and (status.get("status") or "none") == "none":
+        actions += _add_link(ref, return_to)
+    elif media_type == "tv" and can_act and view.get("arr") and selectable and config.sonarr_configured():
+        actions += (f'<a class="btn-add" href="{escape(_add_dialog_url(ref, return_to), quote=True)}" data-add-dialog>'
+                    f'Request more seasons</a>')
+    elif (status.get("status") or "none") != "none":
+        actions += '<span class="lib-tag">In library</span>'
+    trailer = extras.get("trailer") if isinstance(extras.get("trailer"), dict) else None
+    trailer_url = _web_url(trailer.get("url")) if trailer else None
+    if trailer_url:
+        actions += (f'<a class="btn-ghost trailer-link" href="{escape(trailer_url, quote=True)}" target="_blank" '
+                    f'rel="noopener noreferrer">Watch trailer<span class="visually-hidden"> (opens YouTube in a new tab)</span></a>')
+    if can_act:
+        if status.get("dismissed"):
+            actions += (f'<form class="inline" method="post" action="/undismiss">{_hidden_fields(ref, return_to)}'
+                        f'<button type="submit" class="btn-ghost">Show in recommendations again</button></form>')
+        else:
+            actions += (f'<form class="inline" method="post" action="/dismiss">{_hidden_fields(ref, return_to)}'
+                        f'<button type="submit" class="btn-ghost">Not interested</button></form>')
+    actions += _rate_form(ref, return_to) + _list_toggle(ref, return_to) + _list_link(ref, return_to, detail=True)
+
+    in_lists = ""
+    names = [e for e in view.get("list_names") or [] if isinstance(e, dict) and isinstance(e.get("id"), int)]
+    if names:
+        links = ", ".join(f'<a href="/lists/{e["id"]}">{escape(str(e.get("name") or ""))}</a>' for e in names)
+        in_lists = f'<p class="in-lists">On your lists: {links}</p>'
+
+    hero = (f'<section class="title-hero" style="--h:{_hue(ref)}">{backdrop_html}<div class="title-hero-inner">'
+            f'<div class="title-poster">{poster}</div><div class="title-head">'
+            f'<p class="kicker">{_KIND_LABELS[media_type]}</p><h1 class="title title-name">{escape(title_plain)}</h1>'
+            f'{tagline}<p class="card-meta title-meta">{meta}</p>'
+            + (f'<p class="title-status badges">{badges}</p>' if badges else "")
+            + f'<div class="title-actions">{actions}</div>{in_lists}</div></div></section>')
+
+    part = f'<p class="note">{escape(view["message"])}</p>' if state == "partial" and view.get("message") else ""
+    overview = escape(item.get("overview") or "No overview available.")
+    ext = ""
+    tmdb_link = _web_url(item.get("url"))
+    if tmdb_link:
+        ext += _ext_link(tmdb_link, "More on TMDB")
+    imdb = str(extras.get("imdb_id") or "")
+    if _IMDB_ID.match(imdb):
+        ext += _ext_link(f"https://www.imdb.com/title/{imdb}/", "IMDb")
+    body = (f'{hero}{notes}{part}<section class="title-section title-overview"><h2>Overview</h2>'
+            f'<p class="overview">{overview}</p>{_title_facts(view, item, extras)}{ext}</section>')
+    if rec:
+        chips = "".join(f'<span class="chip">{escape(str(m))}</span>' for m in rec.get("matches") or [])
+        because = [str(b) for b in rec.get("because") or []]
+        body += ('<section class="title-section why"><h2>Why Compass picked this</h2>'
+                 + _meta_match({"match": rec.get("match")}, "p", "why-match match")
+                 + (f'<p class="reason">{escape(str(rec["reason"]))}</p>' if rec.get("reason") else "")
+                 + (f'<div class="chips">{chips}</div>' if chips else "")
+                 + (f'<p class="muted">Because you watched {escape(", ".join(because))}</p>' if because else "")
+                 + '</section>')
+    elif view.get("fit") and (view["fit"].get("matches")):
+        chips = "".join(f'<span class="chip">{escape(str(m))}</span>' for m in view["fit"]["matches"])
+        body += f'<section class="title-section why fit"><h2>How it fits your taste</h2><div class="chips">{chips}</div></section>'
+    if media_type == "tv":
+        body += _season_section(view, ref, return_to, can_act and config.sonarr_configured())
+    body += _cast_section(extras, item)
+    similar = [i for i in view.get("similar") or [] if isinstance(i, dict) and _has_id(i)]
+    if similar:
+        body += _row_html({"id": "similar", "title": "More like this", "items": similar}, return_to, can_act,
+                          "title-similar")
+    full = f"{title_plain} ({item['year']})" if item.get("year") else title_plain
+    return _shell(f'<article class="title-page" data-card="{_card_key(ref)}" data-keep-on-add>{body}</article>',
+                  section, cinematic=True, heading=full)
+
+
+# --- Lists (a Library sub-area: /lists, /lists/<id>, and the add-to-list dialog) ---
+_LIST_SORT_LABELS = {"manual": "Your order", "added": "Recently added", "title": "Title A-Z", "year": "Newest year",
+                     "rating": "Your rating", "match": "Match %"}
+
+
+def _list_dialog_shell(inner, partial, section):
+    return inner if partial else _shell(f'<div class="dialog-page">{inner}</div>', section, "Lists")
+
+
+def render_list_dialog(media_type, tmdb_id, return_to, partial=False):
+    """Tick the lists a title should be on (POST /lists/set). A page without JS, just the inner HTML (partial=True)
+    for app.js's modal - the same pattern as render_add_dialog. Sample mode shows a note and no form."""
+    return_to = web._safe_path(return_to)
+    section = _section_for(return_to)
+    try:
+        stub = web.title_stub(media_type, int(tmdb_id), fetch=True)
+    except Exception:
+        stub = None
+    if stub is None:
+        inner = ('<div class="dialog-box list-dialog"><div class="dialog-head"><div>'
+                 '<h3 id="list-dialog-title">Can&#39;t add this one</h3></div></div>'
+                 '<p class="note">That title isn\'t available to add to a list right now.</p>'
+                 f'<div class="card-actions"><a class="btn-ghost" href="{escape(return_to, quote=True)}" data-close>Back</a></div></div>')
+        return _list_dialog_shell(inner, partial, section)
+    title = escape(str(stub.get("title") or "?"))
+    head = (f'<div class="dialog-head"><div><h3 id="list-dialog-title">Add &quot;{title}&quot; to lists</h3></div></div>')
+    if web._is_sample():
+        inner = (f'<div class="dialog-box list-dialog">{head}<p class="note">Sample data - lists aren\'t saved.</p>'
+                 f'<div class="card-actions"><a class="btn-ghost" href="{escape(return_to, quote=True)}" data-close>Back</a></div></div>')
+        return _list_dialog_shell(inner, partial, section)
+    ref = {"media_type": media_type, "tmdb_id": int(tmdb_id), "title": stub.get("title"), "year": stub.get("year")}
+    view = web.lists_view()
+    mine = set(web.with_user_state([ref])[0].get("lists") or [])
+    choices = "".join(
+        f'<label class="checkbox-label list-choice"><input type="checkbox" name="list_id" value="{int(entry["id"])}"'
+        f'{" checked" if entry["id"] in mine else ""}> {escape(str(entry["name"]))} '
+        f'<span class="muted">{int(entry["count"])}</span></label>'
+        for entry in view["lists"] if entry.get("id") is not None)
+    new = ('<label class="list-new">New list'
+           f'<input type="text" name="new_list" maxlength="{int(web.LIST_NAME_MAX)}" placeholder="Name"></label>'
+           if view.get("can_create") else "")
+    inner = (f'<div class="dialog-box list-dialog">{head}'
+             f'<form method="post" action="/lists/set" data-enhance="lists">{_hidden_fields(ref, return_to)}'
+             f'<fieldset class="list-choices"><legend class="visually-hidden">Lists</legend>{choices}</fieldset>{new}'
+             f'<div class="card-actions"><a class="btn-ghost" href="{escape(return_to, quote=True)}" data-close>Cancel</a>'
+             f'<button type="submit" class="btn-add">Save</button></div></form></div>')
+    return _list_dialog_shell(inner, partial, section)
+
+
+def _list_tile(entry):
+    posters = [u for u in (_web_url(p) for p in entry.get("posters") or []) if u][:4]
+    cells = "".join(f'<img src="{escape(u, quote=True)}" alt="" loading="lazy">' for u in posters)
+    cells += '<span aria-hidden="true"></span>' * (4 - len(posters))
+    count = int(entry.get("count") or 0)
+    desc = f'<span class="list-tile-desc">{escape(str(entry["description"]))}</span>' if entry.get("description") else ""
+    inner = (f'<span class="list-tile-posters">{cells}</span><span class="list-tile-name">{escape(str(entry["name"]))}</span>'
+             f'<span class="list-tile-meta">{count} title{"s" if count != 1 else ""}</span>{desc}')
+    if entry.get("url"):
+        return f'<a class="list-tile" href="{escape(str(entry["url"]), quote=True)}">{inner}</a>'
+    return f'<div class="list-tile">{inner}</div>'
+
+
+def render_lists(msg=""):
+    """The Lists page: a tile per list (Watchlist first) and a create form. A Library sub-area."""
+    view = web.lists_view()
+    notes = _message_notes(msg, None, "/lists")
+    if view.get("sample"):
+        notes += '<p class="note">Sample data - lists aren\'t saved.</p>'
+    tiles = "".join(_list_tile(e) for e in view["lists"])
+    create = ""
+    if view.get("can_create"):
+        create = ('<form class="list-create" method="post" action="/lists/create">'
+                  f'<label>Name<input name="name" maxlength="{int(web.LIST_NAME_MAX)}" required></label>'
+                  f'<label>Description<input name="description" maxlength="{int(web.LIST_DESC_MAX)}"></label>'
+                  '<button type="submit" class="btn-add">Create list</button></form>')
+    body = (f'{_library_subtabs("lists", "")}<div class="lists-page">{notes}'
+            f'<div class="lists-grid">{tiles}</div>{create}</div>')
+    count = len(view["lists"])
+    return _shell(body, "library", f"{count} list{'s' if count != 1 else ''}", return_to="/lists")
+
+
+def _list_url(view, sort=None, page=None):
+    """/lists/<id> keeping the sort (omitted for the default) and page (omitted for 1)."""
+    sort = view["sort"] if sort is None else sort
+    page = view["page"] if page is None else page
+    params = ([("sort", sort)] if sort and sort != "manual" else []) + ([("page", page)] if page and page > 1 else [])
+    return f"/lists/{int(view['list']['id'])}" + (("?" + urlencode(params)) if params else "")
+
+
+def _list_card(item, view, return_to):
+    title_text = _title_text(item)
+    title = escape(title_text)
+    kind = "Movie" if item["media_type"] == "movie" else "TV"
+    status = item.get("status") or "none"
+    badges = ""
+    if status in _STATUS_LABELS:
+        badges += f'<span class="lib-tag status-tag status-{escape(status, quote=True)}">{_STATUS_LABELS[status]}</span>'
+    if item.get("watched"):
+        badges += '<span class="badge">Watched</span>'
+    if item.get("dismissed"):
+        badges += '<span class="badge">Not interested</span>'
+    arr_text = _arr_label(item.get("arr_state"), item.get("episodes"))
+    arr_line = f'<p class="card-sub arr-line">{escape(arr_text)}</p>' if arr_text else ""
+    ids = _hidden_fields(item, return_to) + f'<input type="hidden" name="list_id" value="{int(view["list"]["id"])}">'
+    move = ""
+    if view.get("can_move"):
+        buttons = "".join(
+            f'<form class="inline" method="post" action="/lists/move" data-enhance="list-move">{ids}'
+            f'<input type="hidden" name="direction" value="{direction}">'
+            f'<button type="submit" aria-label="Move {escape(title_text, quote=True)} {label.lower()}">{label}</button></form>'
+            for direction, label in (("up", "Up"), ("down", "Down"), ("top", "Top")))
+        move = f'<div class="list-move" role="group" aria-label="Reorder {escape(title_text, quote=True)}">{buttons}</div>'
+    remove = (f'<form class="inline list-remove" method="post" action="/lists/remove" data-enhance="list" data-remove-card>'
+              f'{ids}<button type="submit" aria-label="Remove {escape(title_text, quote=True)} from this list">Remove</button></form>')
+    return (f'<article class="card search-card list-card" data-card="{_card_key(item)}">'
+            f'<div class="card-poster">{_poster_linked(item)}<div class="poster-top">{_meta_match(item)}'
+            f'<span class="badges">{badges}</span></div><span class="kind">{kind}</span></div>'
+            f'<div class="card-info"><h3 class="title">{title}</h3>{arr_line}{_card_tools(item, return_to)}'
+            f'{move}{remove}</div></article>')
+
+
+def render_list(view, msg=""):
+    """One list: header (edit / delete for custom lists), a sort toolbar, the cards, the pager."""
+    entry = view["list"]
+    list_id = int(entry["id"])
+    url = _list_url(view)
+    notes = _message_notes(msg, None, url)
+    head = f'<h3>{escape(str(entry["name"]))}</h3>'
+    if entry.get("description"):
+        head += f'<p class="muted">{escape(str(entry["description"]))}</p>'
+    if entry.get("kind") == "custom":
+        name = escape(str(entry["name"]), quote=True)
+        head += (f'<details class="list-edit"><summary>Edit</summary>'
+                 f'<form method="post" action="/lists/update"><input type="hidden" name="list_id" value="{list_id}">'
+                 f'<input type="hidden" name="return_to" value="{escape(url, quote=True)}">'
+                 f'<label>Name<input name="name" maxlength="{int(web.LIST_NAME_MAX)}" required value="{name}"></label>'
+                 f'<label>Description<input name="description" maxlength="{int(web.LIST_DESC_MAX)}" '
+                 f'value="{escape(str(entry.get("description") or ""), quote=True)}"></label>'
+                 f'<button type="submit" class="btn-add">Save</button></form></details>'
+                 f'<details class="list-delete"><summary>Delete list</summary>'
+                 f'<p>Delete &quot;{escape(str(entry["name"]))}&quot;? This can\'t be undone.</p>'
+                 f'<form method="post" action="/lists/delete"><input type="hidden" name="list_id" value="{list_id}">'
+                 f'<input type="hidden" name="return_to" value="/lists">'
+                 f'<button type="submit" class="btn-ghost danger">Delete</button></form></details>')
+    options = "".join(f'<option value="{escape(s, quote=True)}"{" selected" if s == view["sort"] else ""}>'
+                      f'{escape(_LIST_SORT_LABELS.get(s, s))}</option>' for s in view.get("sorts") or ())
+    toolbar = (f'<form class="toolbar" method="get" action="/lists/{list_id}">'
+               f'<label>Sort by<select name="sort">{options}</select></label>'
+               f'<button type="submit" class="btn-ghost">Apply</button></form>')
+    if view.get("items"):
+        cards = "".join(_list_card(i, view, url) for i in view["items"])
+        grid = f'<div class="grid" data-grid>{cards}</div>'
+    else:
+        grid = ('<div class="empty"><h3>Nothing on this list yet</h3>'
+                '<p>Use the bookmark or list button on any title to add it here.</p>'
+                '<a class="btn-add" href="/">Browse recommendations</a></div>')
+    pager = _pager(lambda target: _list_url(view, page=target), view["page"], view["pages"])
+    total = int(view.get("total") or 0)
+    body = (f'{_library_subtabs("lists", "")}{notes}<header class="list-head">{head}</header>'
+            f'{toolbar}{grid}{pager}')
+    return _shell(body, "library", f"{total} title{'s' if total != 1 else ''}", return_to=url)
 
 
 # --- Search (GET /search; the page, and the fragment that live search swaps in) ---
@@ -828,10 +1429,11 @@ def _search_card(item, return_to, can_act):
     if actions:
         actions = f'<div class="card-actions">{actions}</div>'
     return (f'<article class="card search-card" data-card="{_card_key(item)}" data-keep-on-add>'
-            f'<div class="card-poster" data-open-detail>{_poster_html(item)}'
+            f'<div class="card-poster">{_poster_linked(item)}'
             f'<div class="poster-top"><span class="badges">{badges}</span></div>'
             f'<span class="kind">{kind}</span></div>'
-            f'<div class="card-info"><h3 class="title">{title}</h3>{arr_line}{details}{actions}</div></article>')
+            f'<div class="card-info"><h3 class="title">{title}</h3>{arr_line}{details}{actions}'
+            f'{_card_tools(item, return_to)}</div></article>')
 
 
 def _search_fragment(view, return_to):
@@ -1007,11 +1609,13 @@ def _topbar_search(section):
 
 
 def _shell(body, section, subtitle="", show_refresh=False, return_to="/", status_html="", auto_refresh=False,
-           cinematic=False):
+           cinematic=False, heading=None):
     """status_html: trusted markup (e.g. UPDATING_HTML) appended to the subtitle. auto_refresh: the
     no-JS fallback for the building screens - app.js polls /api/status instead. cinematic: a ready
-    browse page - the hero sits under the transparent top bar and the title strip moves below the rows."""
-    heading = "Search" if section == "search" else dict((key, label) for key, label, _ in NAV_SECTIONS).get(section, "Compass")
+    browse page - the hero sits under the transparent top bar and the title strip moves below the rows.
+    heading: the page's own name (the title page passes its title); default is the section's label."""
+    if heading is None:
+        heading = "Search" if section == "search" else dict((key, label) for key, label, _ in NAV_SECTIONS).get(section, "Compass")
     nav_html = _nav_html(section)
     refresh = _refresh_form(return_to) if show_refresh else ""
     meta_refresh = '<noscript><meta http-equiv="refresh" content="5"></noscript>' if auto_refresh else ""

@@ -179,6 +179,9 @@ def _details(tmdb_id, now):
     }
 
 
+_SEASONS = {2003: [(1, 3), (2, 3), (3, 4)], 2040: [(1, 5), (2, 5)], 2041: [(1, 8)]}  # (number, episodes)
+
+
 class SampleTmdb:
     """Same methods as tmdb.TmdbClient, backed by the catalogue above."""
 
@@ -227,6 +230,40 @@ class SampleTmdb:
                                               "poster_url", "url", "vote_average", "vote_count")})
             results[-1]["url"] = f"https://www.themoviedb.org/{d['media_type']}/{i}"
         return {"results": results, "capped": len(found) > 20}
+
+    def title(self, media_type, tmdb_id):
+        """(details, extras) like tmdb.TmdbClient.title(), from the catalogue. KeyError if unknown."""
+        details = self.details(media_type, tmdb_id)
+        entry = _CATALOGUE[tmdb_id]
+        directors = entry[5]
+        if media_type == "movie":
+            crew = [{"name": n, "job": "Director"} for n in directors][:6]
+        else:
+            crew = [{"name": n, "job": "Creator"} for n in directors][:6]
+        seasons = []
+        if media_type == "tv":
+            for number, episodes in _SEASONS.get(tmdb_id, [(1, 8), (2, 8)]):
+                # one season a year from the show's first year, so every sample season has already aired
+                seasons.append({"number": number, "name": f"Season {number}", "episodes": episodes,
+                                "air_date": f"{entry[2] + number - 1}-01-15", "poster_url": None})
+        similar = []
+        for rec in entry[9]:
+            if rec in _CATALOGUE and _CATALOGUE[rec][0] == media_type and rec != tmdb_id:
+                d = _details(rec, self.now)
+                similar.append({k: d[k] for k in ("media_type", "tmdb_id", "title", "year", "release_date", "overview",
+                                                  "poster_url", "url", "vote_average", "vote_count")})
+                similar[-1]["url"] = f"https://www.themoviedb.org/{media_type}/{rec}"
+        extras = {"media_type": media_type, "tmdb_id": tmdb_id, "tagline": "", "status": "",
+                  "cast": [{"name": n, "character": "", "profile_url": None} for n in entry[6][:12]],
+                  "crew": crew, "trailer": None, "seasons": seasons, "networks": [], "studios": [],
+                  "tvdb_id": None, "imdb_id": None, "similar": similar}
+        return details, extras
+
+    def cached_title(self, media_type, tmdb_id):
+        try:
+            return self.title(media_type, tmdb_id)[1]
+        except KeyError:
+            return None
 
     def cached_search(self, query, kind="all"):
         return self._search_entries(query, kind)
@@ -279,11 +316,21 @@ _ARR = [
 ]
 
 
+# Sample Sonarr seasons that aren't simply "all downloaded": {tmdb id: {season: files on disk}}
+_ARR_HAVE = {2040: {1: 5, 2: 0}, 2041: {1: 0}}
+
+
+def _arr_seasons(entry_id):
+    have = _ARR_HAVE.get(entry_id, {})
+    return [{"number": n, "monitored": True, "have": have.get(n, eps), "total": eps}
+            for n, eps in _SEASONS[entry_id]]
+
+
 def arr_library(now=None):
     """A sample result["arr"]: what Radarr and Sonarr "track" (all fixtures, no requests)."""
     now = now or datetime.now(timezone.utc)
     items = []
-    for service, tmdb_id, media_type, state, days_ago, eps in _ARR:
+    for n, (service, tmdb_id, media_type, state, days_ago, eps) in enumerate(_ARR):
         entry_id = tmdb_id if tmdb_id is not None else 2041
         title, year = _CATALOGUE[entry_id][1:3]
         items.append({
@@ -291,6 +338,7 @@ def arr_library(now=None):
             "year": year, "added_at": (now - timedelta(days=days_ago)).isoformat(),
             "monitored": state != "unmonitored", "arr_state": state,
             "episodes": {"have": eps[0], "total": eps[1]} if eps else None, "poster_url": None,
+            "arr_id": 501 + n, "seasons": _arr_seasons(entry_id) if media_type == "tv" else None,
             "url": f"https://www.themoviedb.org/{media_type}/{tmdb_id}" if tmdb_id else None})
     counts = {s: sum(1 for i in items if i["service"] == s) for s in ("radarr", "sonarr")}
     return {"items": items, "radarr": {"state": "ok", "count": counts["radarr"]},
