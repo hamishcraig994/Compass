@@ -6,7 +6,7 @@ importing names from it, so tests that patch web.<name> affect rendering too."""
 import time
 import zlib
 from html import escape
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import config
 import profile
@@ -900,6 +900,31 @@ def render_search(q="", kind="all", msg=""):
     return _shell(body, "search")
 
 
+# The Compass mark (assets/logo-compass.svg): a compass whose north needle is a play triangle.
+# Coloured per theme from the registry - fixed strings, no user data.
+def _logo_svg(theme, attrs=""):
+    fg, bg = theme["logo"], theme["bg"]
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"{attrs}>'
+            f'<rect width="512" height="512" rx="112" fill="{bg}"/>'
+            f'<circle cx="256" cy="256" r="158" fill="none" stroke="{fg}" stroke-width="22"/>'
+            f'<g fill="{fg}"><rect x="248" y="118" width="16" height="30" rx="8"/>'
+            f'<rect x="248" y="364" width="16" height="30" rx="8"/><rect x="118" y="248" width="30" height="16" rx="8"/>'
+            f'<rect x="364" y="248" width="30" height="16" rx="8"/></g>'
+            f'<g transform="rotate(30 256 256)" fill="{fg}" stroke="{fg}" stroke-linejoin="round" stroke-width="14">'
+            f'<path d="M228 262 L256 372 L284 262 Z" opacity=".35"/><path d="M200 262 L256 140 L312 262 Z"/>'
+            f'<circle cx="256" cy="256" r="13" fill="{bg}" stroke="none"/></g></svg>')
+
+
+def _brand_mark(theme):
+    """The 32px header mark. data-fg/data-bg tell app.js which colours to swap on a theme preview."""
+    return _logo_svg(theme, f' class="brand-mark" width="32" height="32" aria-hidden="true" focusable="false"'
+                            f' data-fg="{theme["logo"]}" data-bg="{theme["bg"]}"')
+
+
+def _favicon_href(theme):
+    return "data:image/svg+xml," + quote(_logo_svg(theme))
+
+
 # Inline SVG nav icons (fixed strings, no user data).
 _NAV_ICONS = {
     "home": '<path d="M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
@@ -937,7 +962,8 @@ def render_appearance(msg=""):
         pill = '<span class="theme-current">Current</span>' if is_current else ""
         options.append(
             f'<label class="theme-option" data-theme="{escape(t["key"])}" data-meta-dark="{escape(t["bg"])}" '
-            f'data-meta-light="{escape(t["bg_light"])}">'
+            f'data-meta-light="{escape(t["bg_light"])}" data-logo="{escape(t["logo"])}" '
+            f'data-favicon="{escape(_favicon_href(t))}">'
             f'<input class="theme-radio" type="radio" name="theme" value="{escape(t["key"])}"{" checked" if is_current else ""}>'
             '<span class="theme-swatch" aria-hidden="true"><span class="swatch-top"></span>'
             '<span class="swatch-hero"><span class="swatch-line"></span><span class="swatch-line short"></span>'
@@ -1003,10 +1029,12 @@ def _shell(body, section, subtitle="", show_refresh=False, return_to="/", status
             f'<meta name="color-scheme" content="dark light">'
             f'<meta name="theme-color" media="(prefers-color-scheme: dark)" content="{escape(theme["bg"])}">'
             f'<meta name="theme-color" media="(prefers-color-scheme: light)" content="{escape(theme["bg_light"])}">'
+            f'<link rel="icon" type="image/svg+xml" href="{escape(_favicon_href(theme))}">'
             f'<link rel="stylesheet" href="/static/app.css"><script src="/static/app.js" defer></script>'
             f'{meta_refresh}</head><body{body_class}>'
             f'<a class="skip-link" href="#main">Skip to content</a>'
             f'<header class="topbar"><a class="brand" href="/">'
+            f'{_brand_mark(theme)}'
             f'<h1 class="brand-name">Compass</h1></a>'
             f'<nav class="topnav" aria-label="Main">{nav_html}</nav>'
             f'<div class="topbar-actions">{_topbar_search(section)}{_nav_html(section, ("settings",))}</div></header>'

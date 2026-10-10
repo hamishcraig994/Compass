@@ -1,7 +1,7 @@
-"""Colour theme registry: keys, labels, browser-chrome colours and the compass_theme cookie.
+"""Colour theme registry: keys, labels, browser-chrome and logo colours, and the compass_theme cookie.
 Pure - no I/O, no imports from web/pages/db. The swatch/preview colours live in static/app.css."""
 
-DEFAULT = "amber"
+DEFAULT = "crimson"
 COOKIE = "compass_theme"
 COOKIE_MAX_AGE = 34560000  # 400 days, the browser cap
 TOKENS = ("--bg", "--bg-2", "--surface", "--surface-2", "--line", "--text", "--muted",
@@ -9,17 +9,17 @@ TOKENS = ("--bg", "--bg-2", "--surface", "--surface-2", "--line", "--text", "--m
           "--accent-soft", "--accent-glow", "--match-text")
 THEMES = (
     {"key": "amber", "label": "Amber", "description": "Warm gold on midnight - the original",
-     "bg": "#0a0c11", "bg_light": "#f3f4f7"},
+     "bg": "#0a0c11", "bg_light": "#f3f4f7", "logo": "#ffb224"},
     {"key": "crimson", "label": "Crimson", "description": "Bold red on near-black",
-     "bg": "#141414", "bg_light": "#f4f4f4"},
+     "bg": "#141414", "bg_light": "#f4f4f4", "logo": "#e50914"},
     {"key": "lime", "label": "Lime", "description": "Neon green on charcoal",
-     "bg": "#0b0c0f", "bg_light": "#f2f5f3"},
+     "bg": "#0b0c0f", "bg_light": "#f2f5f3", "logo": "#1ce783"},
     {"key": "ocean", "label": "Ocean", "description": "Bright blue on deep navy",
-     "bg": "#0c1224", "bg_light": "#eef2f9"},
+     "bg": "#0c1224", "bg_light": "#eef2f9", "logo": "#2f8cff"},
     {"key": "teal", "label": "Teal Night", "description": "Cyan on blue-black",
-     "bg": "#0f171e", "bg_light": "#eef3f6"},
+     "bg": "#0f171e", "bg_light": "#eef3f6", "logo": "#00a8e1"},
     {"key": "mono", "label": "Mono", "description": "Black and white, almost no colour - great on OLED",
-     "bg": "#000000", "bg_light": "#f5f5f7"},
+     "bg": "#000000", "bg_light": "#f5f5f7", "logo": "#f5f5f7"},
 )
 BY_KEY = {t["key"]: t for t in THEMES}
 

@@ -57,8 +57,8 @@ Everything TMDB tells us is cached for 30 days in SQLite (`data/`), so it's gent
   recommendation saves your rating (it feeds your taste profile like any other) and keeps the title
   listed. Hero banners use TMDB backdrops; a live build fetches up to 15 missing ones, otherwise a
   tinted fallback is shown. `/recommended` still works and redirects here.
-- **Themes.** Settings -> Appearance (`/appearance`) lets you pick a colour theme: Amber (the default),
-  Crimson, Lime, Ocean, Teal Night or Mono (pure black, good for OLED screens). Each swatch previews its
+- **Themes.** Settings -> Appearance (`/appearance`) lets you pick a colour theme: Crimson (the default),
+  Amber, Lime, Ocean, Teal Night or Mono (pure black, good for OLED screens). Each swatch previews its
   own colours and, with JavaScript, applies instantly. The choice is remembered per device in a cookie
   (`compass_theme`), so your phone and TV can differ; there's no flash on load and it works without JS.
   Every theme still follows your device's light/dark setting. Nothing is stored in the database.

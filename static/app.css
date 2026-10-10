@@ -320,8 +320,9 @@ form.inline { display: inline; margin: 0; }
   display: flex; align-items: center; gap: 10px; flex: none; min-width: 0; border-radius: 10px;
   color: var(--accent-text); text-decoration: none;
 }
+.brand-mark { flex: none; display: block; }
 .brand-name { margin: 0; font-size: 1.3rem; font-weight: 850; line-height: 1; letter-spacing: .01em; white-space: nowrap; }
-.brand { min-height: 44px; padding: 0 4px; }   /* text-only brand: keep a 44px tap target */
+.brand { min-height: 44px; padding: 0 4px; }   /* logo + name: keep a 44px tap target */
 @media (max-width: 420px) { .brand-name { font-size: 1.2rem; } }
 .topnav { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }

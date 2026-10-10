@@ -12,7 +12,7 @@ BRANDS = re.compile(r"(?i)netflix|hulu|disney|amazon|prime video|apple ?tv|hbo")
 class TestRegistry(unittest.TestCase):
     def test_keys_and_default(self):
         self.assertEqual([t["key"] for t in themes.THEMES], ["amber", "crimson", "lime", "ocean", "teal", "mono"])
-        self.assertEqual(themes.DEFAULT, "amber")
+        self.assertEqual(themes.DEFAULT, "crimson")
         self.assertEqual(themes.COOKIE, "compass_theme")
 
     def test_fields(self):
@@ -23,6 +23,7 @@ class TestRegistry(unittest.TestCase):
                 self.assertIsNone(BRANDS.search(t[f]), t)
             self.assertRegex(t["bg"], r"^#[0-9a-f]{6}$")
             self.assertRegex(t["bg_light"], r"^#[0-9a-f]{6}$")
+            self.assertRegex(t["logo"], r"^#[0-9a-f]{6}$")
 
     def test_tokens(self):
         self.assertEqual(len(themes.TOKENS), 15)
@@ -34,8 +35,8 @@ class TestRegistry(unittest.TestCase):
         for bad in ("Ocean", "", "evil", None, 3, ["ocean"]):
             self.assertFalse(themes.is_valid(bad))
         self.assertEqual(themes.get("ocean")["label"], "Ocean")
-        self.assertEqual(themes.get("nope")["key"], "amber")
-        self.assertEqual(themes.get(None)["key"], "amber")
+        self.assertEqual(themes.get("nope")["key"], "crimson")
+        self.assertEqual(themes.get(None)["key"], "crimson")
 
     def test_set_cookie_value(self):
         self.assertEqual(themes.set_cookie_value("crimson"),
@@ -47,18 +48,18 @@ class TestRegistry(unittest.TestCase):
 
 class TestFromCookie(unittest.TestCase):
     def test_cases(self):
-        cases = [(None, "amber"), ("", "amber"), ("compass_theme=lime", "lime"), ("a=1; compass_theme=ocean", "ocean"),
-                 ('junk="a,b; c"; compass_theme=mono', "mono"), ("compass_theme=Crimson", "amber"),
-                 ("compass_theme=evil", "amber"), ("compass_theme=<script>", "amber"), ("theme=crimson", "amber"),
-                 ("compass_theme=", "amber"), ("compass_theme=evil; compass_theme=teal", "teal"),
+        cases = [(None, "crimson"), ("", "crimson"), ("compass_theme=lime", "lime"), ("a=1; compass_theme=ocean", "ocean"),
+                 ('junk="a,b; c"; compass_theme=mono', "mono"), ("compass_theme=Lime", "crimson"),
+                 ("compass_theme=evil", "crimson"), ("compass_theme=<script>", "crimson"), ("theme=lime", "crimson"),
+                 ("compass_theme=", "crimson"), ("compass_theme=evil; compass_theme=teal", "teal"),
                  ("compass_theme=lime; compass_theme=teal", "lime"), ("  compass_theme=mono  ", "mono"),
-                 (";;=;compass_theme", "amber")]
+                 (";;=;compass_theme", "crimson")]
         for header, want in cases:
             self.assertEqual(themes.from_cookie(header), want, header)
 
     def test_never_raises(self):
         for header in (123, b"compass_theme=lime", object()):
-            self.assertEqual(themes.from_cookie(header), "amber")
+            self.assertEqual(themes.from_cookie(header), "crimson")
 
 
 if __name__ == "__main__":

@@ -68,14 +68,14 @@ class TestWeb(unittest.TestCase):
         with urllib.request.urlopen(req) as r:
             return r.status, r.read().decode()
 
-    def test_appearance_page_defaults_to_amber(self):
+    def test_appearance_page_defaults_to_crimson(self):
         status, html = self.get("/appearance")
         self.assertEqual(status, 200)
         self.assertEqual(html.count('type="radio"'), 6)
         self.assertEqual(html.count('name="theme"'), 6)
         self.assertEqual(html.count(" checked"), 1)
-        self.assertIn('value="amber" checked', html)
-        self.assertRegex(html, r'<html[^>]*data-theme="amber"')
+        self.assertIn('value="crimson" checked', html)
+        self.assertRegex(html, r'<html[^>]*data-theme="crimson"')
 
     def test_appearance_follows_cookie_and_all_pages_carry_it(self):
         for path in ("/", "/movies", "/library", "/settings", "/appearance"):
@@ -87,9 +87,9 @@ class TestWeb(unittest.TestCase):
         self.assertIn('value="ocean" checked', html)
         self.assertEqual(html.count(" checked"), 1)
 
-    def test_bad_cookie_falls_back_to_amber(self):
+    def test_bad_cookie_falls_back_to_crimson(self):
         _, html = self.get_cookie("/appearance", "compass_theme=nope")
-        self.assertRegex(html, r'<html[^>]*data-theme="amber"')
+        self.assertRegex(html, r'<html[^>]*data-theme="crimson"')
 
     def test_appearance_tab_row_marks_current(self):
         _, html = self.get("/appearance")

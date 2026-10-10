@@ -550,13 +550,34 @@
     if (meta && color) meta.setAttribute("content", color);
   }
 
-  /* Preview a theme at once: <html data-theme> plus the browser-chrome colour metas. No save. */
+  /* Recolour the header logo (its colours are baked in server-side) and swap the favicon. */
+  function setLogo(option) {
+    var fg = option.getAttribute("data-logo"), bg = option.getAttribute("data-meta-dark");
+    var mark = doc.querySelector(".brand-mark");
+    if (mark && fg && bg) {
+      var oldFg = mark.getAttribute("data-fg"), oldBg = mark.getAttribute("data-bg");
+      Array.prototype.forEach.call(mark.querySelectorAll("[fill], [stroke]"), function (node) {
+        ["fill", "stroke"].forEach(function (attr) {
+          var value = node.getAttribute(attr);
+          if (value === oldFg) node.setAttribute(attr, fg);
+          else if (value === oldBg) node.setAttribute(attr, bg);
+        });
+      });
+      mark.setAttribute("data-fg", fg);
+      mark.setAttribute("data-bg", bg);
+    }
+    var icon = doc.querySelector("link[rel=icon]"), href = option.getAttribute("data-favicon");
+    if (icon && href) icon.setAttribute("href", href);
+  }
+
+  /* Preview a theme at once: <html data-theme>, the browser-chrome colour metas and the logo. No save. */
   function applyTheme(option) {
     var radio = option.querySelector(".theme-radio");
     if (!radio) return;
     root.setAttribute("data-theme", radio.value);
     setMeta("(prefers-color-scheme: dark)", option.getAttribute("data-meta-dark"));
     setMeta("(prefers-color-scheme: light)", option.getAttribute("data-meta-light"));
+    setLogo(option);
   }
 
   /* Check the radio for `key`, apply it and put the "Current" pill on it. */

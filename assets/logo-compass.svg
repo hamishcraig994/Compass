@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Compass">
+  <title>Compass</title>
+  <rect width="512" height="512" rx="112" fill="#07080D"/>
+  <!-- Bezel -->
+  <circle cx="256" cy="256" r="158" fill="none" stroke="#FFB224" stroke-width="22"/>
+  <!-- Cardinal ticks -->
+  <g fill="#FFB224">
+    <rect x="248" y="118" width="16" height="30" rx="8"/>
+    <rect x="248" y="364" width="16" height="30" rx="8"/>
+    <rect x="118" y="248" width="30" height="16" rx="8"/>
+    <rect x="364" y="248" width="30" height="16" rx="8"/>
+  </g>
+  <!-- Needle, tilted north-east: the north half is a play triangle, the south half is muted -->
+  <g transform="rotate(30 256 256)" stroke-linejoin="round" stroke-width="14">
+    <path d="M228 262 L256 372 L284 262 Z" fill="#FFB224" stroke="#FFB224" opacity=".35"/>
+    <path d="M200 262 L256 140 L312 262 Z" fill="#FFB224" stroke="#FFB224"/>
+    <circle cx="256" cy="256" r="13" fill="#07080D"/>
+  </g>
+</svg>

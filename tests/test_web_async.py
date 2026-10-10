@@ -1357,12 +1357,12 @@ class TestTheme(AsyncCase):
         self.assertFalse(web._actions)
 
     def test_current_theme_outside_request(self):
-        self.assertEqual(web.current_theme(), "amber")
+        self.assertEqual(web.current_theme(), "crimson")
 
     def test_current_theme_per_request(self):
         with mock.patch.object(web, "render_home", lambda **kw: web.current_theme()):
-            for cookie, want in (("compass_theme=crimson", "crimson"), (None, "amber"), ("compass_theme=bad", "amber"),
-                                 ("a=1; compass_theme=lime", "lime"), (None, "amber")):
+            for cookie, want in (("compass_theme=amber", "amber"), (None, "crimson"), ("compass_theme=bad", "crimson"),
+                                 ("a=1; compass_theme=lime", "lime"), (None, "crimson")):
                 headers = {"Cookie": cookie} if cookie else {}
                 status, _, body = self.request("GET", "/", extra_headers=headers)
                 self.assertEqual((status, body), (200, want), cookie)

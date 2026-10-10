@@ -493,7 +493,7 @@ class TestBrowseShell(PatchedState):
         self.assertIn('<a class="brand" href="/">', html)
         self.assertIn('<nav class="topnav" aria-label="Main">', html)
         self.assertIn('<div class="topbar-actions">', html)
-        self.assertNotIn("brand-mark", html)
+        self.assertEqual(html.count('class="brand-mark"'), 1)
         self.assertIn('<h1 class="brand-name">Compass</h1>', html)
         self.assertIn("<title>Movies - Compass</title>", html)
         self.assertNotIn("What", html)
@@ -958,9 +958,39 @@ class TestThemeShell(unittest.TestCase):
         self.assertEqual(html.count('name="theme-color"'), 2)
         self.assertNotIn('name="theme-color" content=', html)
 
-    def test_unknown_and_unpatched_render_amber(self):
-        self.assertIn('data-theme="amber"', self.render("<script>"))
-        self.assertIn('data-theme="amber"', pages.render_appearance())
+    def test_unknown_and_unpatched_render_crimson(self):
+        self.assertIn('data-theme="crimson"', self.render("<script>"))
+        self.assertIn('data-theme="crimson"', pages.render_appearance())
+
+    def test_logo_follows_theme(self):
+        from urllib.parse import unquote
+        html = self.render("ocean")
+        mark = re.search(r'<a class="brand" href="/"><svg [^>]*class="brand-mark"[^>]*>.*?</svg>', html, re.S)
+        self.assertIsNotNone(mark)
+        self.assertIn('aria-hidden="true"', mark.group(0))
+        self.assertIn('stroke="#2f8cff"', mark.group(0))
+        self.assertIn('fill="#0c1224"', mark.group(0))
+        icons = re.findall(r'<link rel="icon" type="image/svg\+xml" href="data:image/svg\+xml,([^"]+)">', html)
+        self.assertEqual(len(icons), 1)
+        self.assertNotIn("<", icons[0])
+        self.assertIn('stroke="#2f8cff"', unquote(icons[0]))
+        self.assertIn('stroke="#e50914"', self.render("crimson"))
+
+    def test_logo_every_theme(self):
+        import themes
+        for t in themes.THEMES:
+            html = self.render(t["key"])
+            mark = re.search(r'<svg [^>]*class="brand-mark"[^>]*>', html).group(0)
+            self.assertIn(f'data-fg="{t["logo"]}" data-bg="{t["bg"]}"', mark, t["key"])
+            self.assertIn(f'stroke="{t["logo"]}"', html, t["key"])
+
+    def test_theme_options_carry_logo_and_favicon(self):
+        import themes
+        html = self.render("crimson")
+        for t in themes.THEMES:
+            option = re.search(r'<label class="theme-option" data-theme="%s"[^>]*>' % t["key"], html).group(0)
+            self.assertIn(f'data-logo="{t["logo"]}"', option)
+            self.assertIn(f'data-favicon="{pages._favicon_href(t)}"', option)
 
 
 class TestAppearancePage(unittest.TestCase):
@@ -1066,7 +1096,8 @@ class TestThemeCss(unittest.TestCase):
 class TestThemeJs(unittest.TestCase):
     def test_hooks(self):
         js = read_static("app.js")
-        for needle in ("data-enhance=theme", "pageshow", "compass_theme", "theme-color"):
+        for needle in ("data-enhance=theme", "pageshow", "compass_theme", "theme-color",
+                       "data-logo", "data-favicon", "data-fg", "link[rel=icon]"):
             self.assertIn(needle, js)
         self.assertEqual(js.count("innerHTML"), 1)
         self.assertNotRegex(js, r"https?://")
