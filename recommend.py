@@ -172,7 +172,9 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
     if ai is not None:
         try:
             watched_titles = [item.get("title") or details.get("title") or "?" for item, details in pairs]
-            for raw in ai.suggest(profile.summary(features), watched_titles, count=MAX_AI_REQUESTED):
+            suggestions = ai.suggest(profile.summary(features), watched_titles, count=MAX_AI_REQUESTED)
+            unmatched = already = 0
+            for raw in suggestions:
                 media_type = raw.get("media_type")
                 if media_type not in ("movie", "tv"):
                     continue
@@ -181,15 +183,29 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
                 except Exception:
                     tmdb_id = None
                 if not tmdb_id:
+                    unmatched += 1
                     continue
                 key = (media_type, tmdb_id)
                 if key in exclude:
+                    already += 1
                     continue
                 c = candidate(key, "ai")
                 if raw.get("reason") and not c.get("ai_reason"):
                     c["ai_reason"] = raw["reason"]
                 if key not in by_origin["ai"]:
                     by_origin["ai"].append(key)
+            if not suggestions:
+                why = getattr(ai, "last_error", None)
+                notes.append(f"The AI didn't return any suggestions: {why}." if isinstance(why, str) and why
+                             else "The AI didn't return any suggestions.")
+            elif not by_origin["ai"]:
+                parts = []
+                if already:
+                    parts.append(f"{already} you already have or have watched")
+                if unmatched:
+                    parts.append(f"{unmatched} not found on TMDB")
+                notes.append(f"The AI suggested {len(suggestions)} titles, but none could be used ("
+                             f"{', '.join(parts)}).")
         except Exception:
             notes.append("Couldn't get AI suggestions.")
 
@@ -254,4 +270,7 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
     # "Match" is relative to the best suggestion in this batch (like a rank, not a probability).
     best = scored[0][0] if scored else 1
     items = [{**d, "match": max(1, math.floor(99 * final / best))} for final, d in scored[:limit]]
+    if ai_only and by_origin["ai"] and not items:
+        notes.append(f"The AI's {len(by_origin['ai'])} suggestions were all left out: not released yet, "
+                     "or too little rating data on TMDB to judge them.")
     return {"items": items, "profile": features, "notes": notes}

@@ -226,6 +226,30 @@ class TestAiIntegration(unittest.TestCase):
         items = {i["title"]: i for i in result["items"]}
         self.assertEqual(items["AI Movie"]["reason"], "AI pick based on your taste profile")
 
+    def test_empty_ai_result_says_why(self):
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = []
+        ai_client.last_error = "gpt-5 ran out of tokens before answering"
+        result = recommend.recommend(WATCHED, set(), FakeTmdb(self._catalogue()), ai=ai_client, ai_only=True)
+        self.assertEqual(result["items"], [])
+        self.assertIn("The AI didn't return any suggestions: gpt-5 ran out of tokens before answering.", result["notes"])
+
+    def test_empty_ai_result_without_a_reason_still_gets_a_note(self):
+        ai_client = mock.Mock()   # a Mock's last_error is a Mock, not a reason
+        ai_client.suggest.return_value = []
+        result = recommend.recommend(WATCHED, set(), FakeTmdb(self._catalogue()), ai=ai_client, ai_only=True)
+        self.assertIn("The AI didn't return any suggestions.", result["notes"])
+
+    def test_suggestions_that_cant_be_used_are_counted(self):
+        tmdb = FakeTmdb(self._catalogue(), {("movie", "Watched Movie", 2001): 1})
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = [{"title": "Watched Movie", "year": 2001, "media_type": "movie"},
+                                          {"title": "Nonexistent", "year": 2020, "media_type": "movie"}]
+        result = recommend.recommend(WATCHED, set(), tmdb, ai=ai_client, ai_only=True)
+        self.assertEqual(result["items"], [])
+        self.assertIn("The AI suggested 2 titles, but none could be used (1 you already have or have watched, "
+                      "1 not found on TMDB).", result["notes"])
+
     def test_unresolvable_title_is_skipped_not_a_crash(self):
         tmdb = FakeTmdb(self._catalogue(), search_results={})  # search() returns None for anything
         ai_client = mock.Mock()
