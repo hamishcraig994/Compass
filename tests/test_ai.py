@@ -79,7 +79,7 @@ class TestModelTuning(unittest.TestCase):
     def body_for(self, client, side_effect=None):
         sent = []
 
-        def fake_post(url, headers=None, body=None):
+        def fake_post(url, headers=None, body=None, timeout=None):
             sent.append(dict(body))
             if side_effect:
                 side_effect(body)
@@ -130,6 +130,23 @@ class TestModelTuning(unittest.TestCase):
         self.assertNotIn("response_format", sent[2])
         self.assertIn("max_completion_tokens", sent[2])
         self.assertEqual(len(result), 1)
+
+    def test_suggestions_get_a_long_timeout_and_the_connection_test_a_short_one(self):
+        client = AiClient("k", model="gpt-6-luna")
+        with mock.patch.object(ai, "post_json", return_value=chat_response("[]")) as post:
+            client.suggest(TASTE)
+        self.assertEqual(post.call_args.kwargs["timeout"], ai.SUGGEST_TIMEOUT)
+        self.assertGreaterEqual(ai.SUGGEST_TIMEOUT, 120)
+        with mock.patch.object(ai, "post_json", return_value=chat_response("OK")) as post:
+            client.test_connection()
+        self.assertEqual(post.call_args.kwargs["timeout"], ai.TEST_TIMEOUT)
+
+    def test_a_timeout_is_explained_and_not_retried(self):
+        client = AiClient("k", model="gpt-6-luna")
+        with mock.patch.object(ai, "post_json", side_effect=RuntimeError("The read operation timed out")) as post:
+            self.assertEqual(client.suggest(TASTE), [])
+        self.assertEqual(post.call_count, 1)
+        self.assertIn(f"didn't answer within {ai.SUGGEST_TIMEOUT} seconds", client.last_error)
 
     def test_unrelated_errors_are_not_retried(self):
         client = AiClient("k", model="gpt-6-luna")

@@ -72,6 +72,9 @@ def is_reasoning_model(model):
     return model.lower().startswith(REASONING_PREFIXES)
 
 
+SUGGEST_TIMEOUT = 180      # seconds: a reasoning model writing 25 grounded picks can take a minute or more;
+                           # it runs in the background, so waiting is fine (never retried, so never billed twice)
+TEST_TIMEOUT = 30          # Settings -> Test connection is a tiny request
 SUGGEST_MAX_TOKENS = 8000   # a cap, not a cost: reasoning models spend part of it thinking before they answer
 
 
@@ -125,15 +128,15 @@ class AiClient:
         self.token, self.base_url, self.model = token, base_url.rstrip("/"), model
         self.last_error = None   # why the last suggest() came back empty, in words for the AI page
 
-    def _post(self, body):
+    def _post(self, body, timeout):
         return post_json(f"{self.base_url}/chat/completions", headers={"Authorization": f"Bearer {self.token}"},
-                         body=body)
+                         body=body, timeout=timeout)
 
     @property
     def _is_openai(self):
         return self.base_url.startswith("https://api.openai.com/")
 
-    def _chat(self, messages, max_tokens, schema=None):
+    def _chat(self, messages, max_tokens, schema=None, timeout=TEST_TIMEOUT):
         """Sends what suits the model, then backs off if the API rejects a parameter by name:
         - reasoning models get max_completion_tokens (they reject max_tokens) and low reasoning_effort;
           everything else gets max_tokens, which most OpenAI-compatible providers still expect;
@@ -149,7 +152,7 @@ class AiClient:
             body["response_format"] = {"type": "json_schema", "json_schema": schema}
         for _ in range(4):
             try:
-                return self._post(body)
+                return self._post(body, timeout)
             except Exception as e:
                 message = str(e).lower()
                 if "max_tokens" in message and "max_completion_tokens" in message:
@@ -162,7 +165,7 @@ class AiClient:
                     del body["response_format"]
                 else:
                     raise
-        return self._post(body)
+        return self._post(body, timeout)
 
     def test_connection(self):
         """Returns (ok, message) - never raises, so the Settings page can show it either way."""
@@ -184,9 +187,13 @@ class AiClient:
         try:
             response = self._chat(
                 [{"role": "system", "content": SYSTEM_PROMPT + JSON_FORMAT}, {"role": "user", "content": user_prompt}],
-                max_tokens=SUGGEST_MAX_TOKENS, schema=SUGGESTIONS_SCHEMA)
+                max_tokens=SUGGEST_MAX_TOKENS, schema=SUGGESTIONS_SCHEMA, timeout=SUGGEST_TIMEOUT)
         except Exception as e:
-            self.last_error = f"the request to {self.model} failed: {e}"
+            if "timed out" in str(e).lower():
+                self.last_error = (f"{self.model} didn't answer within {SUGGEST_TIMEOUT} seconds - OpenAI may be busy, "
+                                   "so try again in a minute")
+            else:
+                self.last_error = f"the request to {self.model} failed: {e}"
             return []
         try:
             choice = response["choices"][0]
