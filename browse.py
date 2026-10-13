@@ -82,7 +82,7 @@ def view(result, kind, owned=frozenset()):
 
     rows = {}
     if ki:
-        rows["recommended"] = _row("recommended", "Recommended for You", "Based on your watch history",
+        rows["recommended"] = _row("recommended", "Recommended for you", "Based on your watch history",
                                    mark((ki[HERO_MAX:] or ki)[:ROW_MAX]))
     seed, count = _because_seed(ki)
     if seed is not None and count >= ROW_MIN:
@@ -96,7 +96,7 @@ def view(result, kind, owned=frozenset()):
         rows["trending"] = trending
     gems = _gems(ki)
     if len(gems) >= ROW_MIN:
-        rows["gems"] = _row("gems", "Hidden Gems", "High match, less well known", mark(gems[:ROW_MAX]))
+        rows["gems"] = _row("gems", "Hidden gems", "High match, less well known", mark(gems[:ROW_MAX]))
     library = result.get("library")
     if library is not None:
         lib_row = _library_row(library, kind)

@@ -554,7 +554,8 @@ class TestBrowseHero(PatchedState):
         self.assertIn('aria-label="1 of 5: Film 1"', slides[0])
         self.assertIn('data-card="movie-101"', slides[0])
         self.assertIn("data-hero-slides", hero)
-        self.assertIn("Top pick for you", hero)
+        self.assertNotIn("Top pick for you", hero)       # the kicker is gone
+        self.assertNotIn("kicker", hero)
 
     def test_hero_image_fallbacks(self):
         both = hero_html(self.render([rec(1, backdrop_url="https://i/b.jpg", poster_large_url="https://i/p.jpg")]))
@@ -565,7 +566,7 @@ class TestBrowseHero(PatchedState):
         self.assertNotIn("hero-backdrop", poster_only)
         self.assertIn('<img class="hero-poster" src="https://i/small.jpg"', poster_only)
         neither = hero_html(self.render([rec(1)]))
-        self.assertIn('<span class="hero-glyph">F</span>', neither)
+        self.assertNotIn("hero-glyph", neither)               # an image-less slide is just the tinted field
         self.assertNotIn('<img class="hero-', neither)
         self.assertIn('style="--h:', neither)
 
@@ -573,7 +574,7 @@ class TestBrowseHero(PatchedState):
         hero = hero_html(self.render([rec(1, backdrop_url="javascript:alert(1)", poster_large_url="javascript:alert(2)",
                                           poster_url="javascript:alert(3)", url="javascript:alert(4)")]))
         self.assertNotIn("javascript:", hero)
-        self.assertIn("hero-glyph", hero)
+        self.assertNotIn("hero-glyph", hero)
         self.assertNotIn("ext-link", hero)
 
     def test_hostile_values_are_escaped_everywhere(self):
@@ -589,18 +590,18 @@ class TestBrowseHero(PatchedState):
     def test_meta_text(self):
         def meta(**kw):
             return re.search(r'<p class="hero-meta card-meta">(.*?)</p>', hero_html(self.render([rec(1, **kw)])), re.S).group(1)
-        self.assertIn("<span>2h 46m</span>", meta(runtime=166))
-        self.assertIn("<span>46m</span>", meta(runtime=46))
-        self.assertIn("<span>2h</span>", meta(runtime=120))
-        self.assertIn("<span>3 seasons</span>", meta(media_type="tv", seasons=3))
-        self.assertIn("<span>1 season</span>", meta(media_type="tv", seasons=1))
+        self.assertIn('<span class="runtime">2h 46m</span>', meta(runtime=166))
+        self.assertIn('<span class="runtime">46m</span>', meta(runtime=46))
+        self.assertIn('<span class="runtime">2h</span>', meta(runtime=120))
+        self.assertIn('<span class="runtime">3 seasons</span>', meta(media_type="tv", seasons=3))
+        self.assertIn('<span class="runtime">1 season</span>', meta(media_type="tv", seasons=1))
         full = meta(certification="12A", runtime=90)
         self.assertIn('<span class="match">98% match</span>', full)
         self.assertIn('<span class="badge cert">12A</span>', full)
-        self.assertIn('<span class="hero-genres">Drama &middot; Sci-Fi</span>', full)
+        self.assertIn('<span class="hero-genres">Drama, Sci-Fi</span>', full)
         bare = meta()
         self.assertNotIn("cert", bare)
-        self.assertNotRegex(bare, r"\d+m</span>")
+        self.assertNotIn("runtime", bare)
 
     def test_in_library_replaces_add_in_the_hero(self):
         set_config(self, RADARR_URL="x", RADARR_API_KEY="x")
@@ -651,7 +652,7 @@ class TestBrowseRows(PatchedState):
             {"media_type": "movie", "tmdb_id": 900, "title": "Owned", "year": 2020, "added_at": "2024-01-01T00:00:00Z", "url": None}])
         self.assertIn('<div class="rows">', html)
         titles = re.findall(r'<h3 id="row-[^"]*">([^<]*)</h3>', html)
-        self.assertEqual(titles, ["Recommended for You", "Because you watched Arrival", "Top 10 picks for you",
+        self.assertEqual(titles, ["Recommended for you", "Because you watched Arrival", "Top 10 picks for you",
                                   "New in your library"])
         self.assertIn('<section class="row" data-row="recommended" aria-labelledby="row-recommended">', html)
         self.assertIn('<p class="row-sub">Based on your watch history</p>', html)
@@ -672,7 +673,8 @@ class TestBrowseRows(PatchedState):
         self.assertIn('<div class="card-poster"><a class="poster-link" href="/title/movie/106" aria-label="More info: Film 6 (2006)">', card)
         self.assertNotIn("data-open-detail", card)
         self.assertIn("93% match", card)
-        self.assertIn('<h4 class="title">Film 6 (2006)</h4>', card)
+        self.assertIn('<h4 class="title">Film 6</h4>', card)          # the year moved to .card-facts
+        self.assertIn('<span>2006</span>', card)
         details = re.search(r'<details class="card-details">.*</details>', card, re.S).group(0)
         for needle in ("card-actions", "data-add-dialog", 'data-enhance="dismiss"', "Reason 6", "Overview 6.", "card-meta"):
             self.assertIn(needle, details)
@@ -700,7 +702,7 @@ class TestBrowseRows(PatchedState):
         self.assertNotIn("javascript:", row)
         self.assertNotIn("themoviedb.org", row)                       # titles go to our page, not TMDB
         self.assertIn("&lt;b&gt;Owned&lt;/b&gt;", row)
-        self.assertEqual(row.count('<span class="lib-tag">In library</span>'), 2)
+        self.assertNotIn("lib-tag", row)                           # the row heading already says "In library"
         owned, bare = re.findall(r'<article class="card row-card lib-card" data-preview>.*?</article>', row, re.S)
         self.assertIn('<a class="poster-link" href="/title/movie/900"', owned)
         self.assertIn('<h4 class="title"><a href="/title/movie/900">', owned)
@@ -709,10 +711,8 @@ class TestBrowseRows(PatchedState):
         self.assertIn('class="list-link"', owned)
         for gone in ("poster-link", "card-tools", "<a ", "<form"):     # no tmdb_id: nothing to link or rate
             self.assertNotIn(gone, bare)
-        for card in (owned, bare):
-            poster = re.search(r'<div class="card-poster">.*?</div>', card, re.S).group(0)
-            self.assertNotIn("lib-tag", poster)                      # a direct child of the article instead
-            self.assertIn('</div><span class="lib-tag">In library</span><div class="card-info">', card)
+        self.assertIn('<p class="card-facts"><span>2020</span></p>', owned)
+        self.assertNotIn("card-facts", bare)                         # no year: no facts line
 
     def test_movies_and_tv_pages_filter_and_return_to_their_own_path(self):
         items = [rec(n) for n in range(1, 6)] + [rec(n, media_type="tv", title=f"Show {n}") for n in range(6, 11)]
@@ -815,7 +815,7 @@ class TestBrowseRate(PatchedState):
             self.assertIn(path, section)
         for glyph in ("\\uFF0B", "\\u2715", "\\u2304", "\uFF0B", "\u2715", "\u2304"):
             self.assertNotIn(glyph, section)
-        for needle in ("is-moving", "--from-scale", "--origin-x", "--origin-y", "preview-icon", "createDocumentFragment"):
+        for needle in ("preview-icon", "createDocumentFragment"):
             self.assertIn(needle, section)
         for const in ("PREVIEW_OPEN_MS = 350", "PREVIEW_OPEN_MAX_MS = 700", "PREVIEW_MOVE_PX = 5",
                       "PREVIEW_SWITCH_MS = 120", "PREVIEW_CLOSE_MS = 150"):
@@ -943,15 +943,16 @@ def _strip_css(text):
     return re.sub(r"/\*.*?\*/", "", text, flags=re.S)
 
 
-def _blocks(css, depth_in_media=False):
-    """Yield (selector, body, in_light_media) for every rule, with braces matched."""
+def _blocks(css):
+    """Every rule as (selector, body, media): braces matched, at-rule bodies flattened, media = the
+    enclosing @media prelude ("" at top level). @font-face and @keyframes come through as ordinary rules."""
     out = []
     i = 0
     while i < len(css):
         j = css.find("{", i)
         if j < 0:
             break
-        selector = css[i:j].strip()
+        selector = " ".join(css[i:j].split())
         depth, k = 1, j + 1
         while k < len(css) and depth:
             depth += {"{": 1, "}": -1}.get(css[k], 0)
@@ -959,9 +960,9 @@ def _blocks(css, depth_in_media=False):
         body = css[j + 1:k - 1]
         if selector.startswith("@media"):
             for sel, b, _ in _blocks(body):
-                out.append((sel, b, "prefers-color-scheme: light" in selector))
+                out.append((sel, b, selector))
         else:
-            out.append((selector, body, False))
+            out.append((selector, body, ""))
         i = k
     return out
 
@@ -974,10 +975,10 @@ class TestThemeShell(unittest.TestCase):
     def test_data_theme_and_metas(self):
         html = self.render("ocean")
         self.assertIn('<html lang="en" data-theme="ocean">', html)
-        self.assertIn('<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0c1224">', html)
-        self.assertIn('<meta name="theme-color" media="(prefers-color-scheme: light)" content="#eef2f9">', html)
-        self.assertEqual(html.count('name="theme-color"'), 2)
-        self.assertNotIn('name="theme-color" content=', html)
+        self.assertIn('<meta name="theme-color" content="#0d1220">', html)
+        self.assertEqual(html.count('name="theme-color"'), 1)
+        self.assertNotIn("prefers-color-scheme", html)
+        self.assertIn('<meta name="color-scheme" content="dark">', html)
 
     def test_unknown_and_unpatched_render_crimson(self):
         self.assertIn('data-theme="crimson"', self.render("<script>"))
@@ -990,7 +991,7 @@ class TestThemeShell(unittest.TestCase):
         self.assertIsNotNone(mark)
         self.assertIn('aria-hidden="true"', mark.group(0))
         self.assertIn('stroke="#2f8cff"', mark.group(0))
-        self.assertIn('fill="#0c1224"', mark.group(0))
+        self.assertIn('fill="#0d1220"', mark.group(0))
         icons = re.findall(r'<link rel="icon" type="image/svg\+xml" href="data:image/svg\+xml,([^"]+)">', html)
         self.assertEqual(len(icons), 1)
         self.assertNotIn("<", icons[0])
@@ -1022,9 +1023,11 @@ class TestAppearancePage(unittest.TestCase):
     def test_options_in_registry_order(self):
         import themes
         html = self.render()
-        keys = re.findall(r'<label class="theme-option" data-theme="(\w+)" data-meta-dark="(#\w+)" data-meta-light="(#\w+)"', html)
+        keys = re.findall(r'<label class="theme-option" data-theme="(\w+)" data-theme-color="(#\w+)"', html)
         self.assertEqual([k[0] for k in keys], [t["key"] for t in themes.THEMES])
-        self.assertEqual([(k[1], k[2]) for k in keys], [(t["bg"], t["bg_light"]) for t in themes.THEMES])
+        self.assertEqual([k[1] for k in keys], [t["bg"] for t in themes.THEMES])
+        self.assertNotIn("data-meta-", html)
+        self.assertNotIn("light", re.search(r'<p class="muted theme-help">(.*?)</p>', html).group(1).lower())
 
     def test_checked_and_current_only_on_current_theme(self):
         html = self.render("lime")
@@ -1058,57 +1061,61 @@ class TestAppearancePage(unittest.TestCase):
 
 
 class TestThemeCss(unittest.TestCase):
+    """Dark only: one block per theme, declaring exactly themes.TOKENS (12 colours, #rrggbb)."""
+
     @classmethod
     def setUpClass(cls):
         import themes
         cls.themes = themes
         cls.raw = read_static("app.css")
         cls.css = _strip_css(cls.raw)
-        cls.blocks = [(i, sel, body, light) for i, (sel, body, light) in enumerate(_blocks(cls.css))]
+        cls.blocks = _blocks(cls.css)
 
     def decls(self, body):
         return dict(re.findall(r"(--[a-z0-9-]+)\s*:\s*([^;]+);", body))
 
-    def find(self, key, light):
-        sel = ':root, [data-theme="amber"]' if key == "amber" else f'[data-theme="{key}"]'
-        return [b for b in self.blocks if b[1] == sel and b[3] == light]
+    def find(self, key):
+        sel = ':root, [data-theme="crimson"]' if key == "crimson" else f'[data-theme="{key}"]'
+        return [b for b in self.blocks if b[0] == sel]
 
-    def test_one_dark_and_one_light_block_per_theme_with_exact_tokens(self):
+    def test_default_is_crimson(self):
+        self.assertEqual(self.themes.DEFAULT, "crimson")
+
+    def test_one_block_per_theme_with_exact_tokens(self):
+        self.assertEqual(len(self.themes.TOKENS), 12)
         for t in self.themes.THEMES:
-            for light in (False, True):
-                found = self.find(t["key"], light)
-                self.assertEqual(len(found), 1, (t["key"], light))
-                self.assertEqual(sorted(self.decls(found[0][2])), sorted(self.themes.TOKENS), (t["key"], light))
+            found = self.find(t["key"])
+            self.assertEqual(len(found), 1, t["key"])
+            self.assertEqual(found[0][2], "", t["key"])                       # not inside a media query
+            d = self.decls(found[0][1])
+            self.assertEqual(sorted(d), sorted(self.themes.TOKENS), t["key"])
+            for token, value in d.items():
+                self.assertRegex(value.strip(), r"^#[0-9a-fA-F]{6}$", (t["key"], token))
 
-    def test_no_unknocompass_theme_keys(self):
+    def test_no_other_theme_blocks_or_keys(self):
         keys = set(re.findall(r'data-theme="([^"]*)"', self.css))
         self.assertLessEqual(keys, set(self.themes.BY_KEY))
+        theme_blocks = [b for b in self.blocks if re.fullmatch(r'(:root, )?\[data-theme="[a-z]+"\]', b[0])]
+        self.assertEqual(len(theme_blocks), len(self.themes.THEMES))
 
     def test_bg_matches_registry(self):
         for t in self.themes.THEMES:
-            self.assertEqual(self.decls(self.find(t["key"], False)[0][2])["--bg"], t["bg"], t["key"])
-            self.assertEqual(self.decls(self.find(t["key"], True)[0][2])["--bg"], t["bg_light"], t["key"])
+            self.assertEqual(self.decls(self.find(t["key"])[0][1])["--bg"].strip(), t["bg"], t["key"])
 
-    def test_block_order(self):
-        amber = [self.find("amber", False)[0][0], self.find("amber", True)[0][0]]
-        for t in self.themes.THEMES[1:]:
-            dark, light = self.find(t["key"], False)[0][0], self.find(t["key"], True)[0][0]
-            self.assertGreater(dark, max(amber), t["key"])
-            self.assertGreater(light, dark, t["key"])
+    def test_dark_only(self):
+        self.assertNotIn("prefers-color-scheme", self.css)
+        self.assertRegex(self.css, r"color-scheme\s*:\s*dark\s*;")
+        self.assertNotRegex(self.css, r"color-scheme\s*:\s*dark\s+light")
+        self.assertNotRegex(self.css, r"color-scheme\s*:\s*light")
 
-    def test_amber_unchanged(self):
-        d = self.decls(self.find("amber", False)[0][2])
-        self.assertEqual(d["--accent"], "#ffb224")
-        self.assertEqual(d["--bg"], "#0a0c11")
-
-    def test_amber_literals_only_in_custom_properties(self):
+    def test_theme_accent_hexes_only_in_custom_properties(self):
+        hexes = set()
+        for t in self.themes.THEMES:
+            d = self.decls(self.find(t["key"])[0][1])
+            hexes |= {d["--accent"].strip().lower(), d["--accent-hover"].strip().lower()}
         for line in self.css.splitlines():
-            if re.search(r"#ffb224|#ffc557|255, 178, 36", line, re.I):
+            if any(h in line.lower() for h in hexes):
                 self.assertRegex(line, r"^\s*--[a-z0-9-]+:", line)
-
-    def test_new_tokens_used(self):
-        rules = {sel: body for sel, body, _ in _blocks(self.css)}
-        self.assertIn("var(--match-text)", rules[".match"])
 
     def test_no_brand_names(self):
         self.assertIsNone(BRANDS.search(self.raw))
@@ -1552,13 +1559,13 @@ class TestTitlePage(TitleBase):
         self.assertIn("<title>Heat (1995) - Compass</title>", html)
         self.assertEqual(html.count("<h1 "), 2)                       # the brand and the title
         self.assertIn('<h1 class="title title-name">Heat</h1>', html)
-        self.assertIn('<p class="kicker">Movie</p>', html)
+        self.assertNotIn("kicker", html)
         self.assertIn('<p class="title-tagline">A los angeles crime saga</p>', html)
         self.assertIn('<img class="title-backdrop" src="https://i/b.jpg" alt="">', html)
         self.assertIn('<img class="poster" src="https://i/big.jpg"', html)                  # the large poster wins
-        self.assertIn('<span class="title-genres">Crime &middot; Drama</span>', html)
+        self.assertIn('<span class="title-genres">Crime, Drama</span>', html)
         self.assertIn('<span class="badge cert">R</span>', html)
-        self.assertIn("<span>2h 50m</span>", html)
+        self.assertIn('<span class="runtime">2h 50m</span>', html)
         self.assertNotIn("% match", html)                           # no match for a non-recommendation
         self.assertIn('<h2>Overview</h2><p class="overview">A heist.</p>', html)
         for fact in ("<dt>Status</dt><dd>Released</dd>", "<dt>Release</dt><dd>1995-12-15</dd>", "<dt>Runtime</dt><dd>2h 50m</dd>",
@@ -1698,8 +1705,8 @@ class TestTitlePage(TitleBase):
         for fact in ("<dt>First aired</dt>", "<dt>Seasons</dt><dd>2</dd>", "<dt>Networks</dt><dd>HBO, Max</dd>",
                      "<dt>Creator</dt><dd>Vince</dd>", "<dt>Status</dt><dd>Returning Series</dd>"):
             self.assertIn(fact, html)
-        self.assertIn('<p class="kicker">TV series</p>', html)
-        self.assertIn("<span>2 seasons</span>", html)
+        self.assertNotIn("kicker", html)
+        self.assertIn('<span class="runtime">2 seasons</span>', html)
         self.assertIn('data-card="tv-9"', html)
         self.assertIn('<body class="cinematic">', html)
         self.assertRegex(html, r'<a class="nav-item active" href="/tv" aria-current="page">')
@@ -1772,7 +1779,7 @@ class TestTitleSeasons(TitleBase):
                       '<input type="hidden" name="return_to" value="/title/tv/9">', form)
         self.assertEqual(re.findall(r'<input type="checkbox" class="season-check" name="season" value="(\d+)" id="s-\d+">', form), ["1", "2"])
         self.assertIn('<label for="s-1" class="season-name">Season 1</label>', form)
-        self.assertIn('<span class="season-eps">8 episodes &middot; 2020</span>', form)
+        self.assertIn('<span class="season-eps">8 episodes</span> <span class="season-year">2020</span>', form)
         self.assertIn('<input type="checkbox" name="search" value="1" checked> Search now', form)
         self.assertIn('<button type="submit" name="seasons" value="pick" class="btn-add">Request selected seasons</button>', form)
         self.assertIn('<button type="submit" name="seasons" value="all" class="btn-ghost">Request all seasons</button>', form)
@@ -1956,7 +1963,7 @@ class TestAddDialogSeasons(TitleBase):
         self.assertEqual(re.findall(r'class="season-check"\s+name="season" value="(\d+)">', picker), ["1", "2"])
         self.assertNotIn("disabled", picker)
         self.assertIn("Season &lt;i&gt;2&lt;/i&gt;", picker)
-        self.assertIn('<span class="season-eps">8 episodes &middot; 2020</span>', picker)
+        self.assertIn('<span class="season-eps">8 episodes</span> <span class="season-year">2020</span>', picker)
         self.assertIn('<select name="quality_profile_id">', html)
         self.assertIn('<h3 id="add-dialog-title">Add &quot;Show &lt;b&gt;&quot; to library</h3>', html)
         self.assertIn('name="search" value="1" checked', html)
@@ -2225,7 +2232,8 @@ class TestRequestsTab(PatchedState):
         for state, episodes, label in cases:
             html = self.render([self.lib(request_state=state, episodes=episodes)])
             self.assertIn(f'<span class="badge req-state req-{state}">{label}</span>', html, state)
-            self.assertIn('<div class="poster-top"><span class="badges">', html)
+            self.assertIn('<p class="card-badges">', html)
+            self.assertNotIn("poster-top", html)
         none = self.render([self.lib(request_state=None)])
         self.assertNotIn("req-state", none)
 
@@ -2323,3 +2331,585 @@ class TestSubmitterFallbackAndMoveTop(unittest.TestCase):
         move = js[js.index('"list-move": function'):js.index("    refresh: function")]
         self.assertIn('direction === "top" && before && onFirstPage()', move)
         self.assertNotIn('direction === "bottom"', move)
+
+
+# ---------------------------------------------------------------------------
+# Streaming redesign ("projection room"): specs/streaming-redesign.md
+# ---------------------------------------------------------------------------
+def _channel(value):
+    value = value / 255
+    return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+
+
+def _luminance(color):
+    color = color.strip().lstrip("#")
+    r, g, b = (int(color[i:i + 2], 16) for i in (0, 2, 4))
+    return 0.2126 * _channel(r) + 0.7152 * _channel(g) + 0.0722 * _channel(b)
+
+
+def _contrast(a, b):
+    la, lb = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def _dim(body, props):
+    """The first px (or rem, as 16px) value any of `props` declares in a rule body, else None."""
+    for prop in props:
+        m = re.search(r"(?<![\w-])%s\s*:\s*([\d.]+)(px|rem)\b" % prop, body)
+        if m:
+            return float(m.group(1)) * (16 if m.group(2) == "rem" else 1)
+    return None
+
+
+def _decls(body):
+    return {k: v.strip() for k, v in re.findall(r"(--[a-z0-9-]+)\s*:\s*([^;]+);", body)}
+
+
+class TestRedesignCss(unittest.TestCase):
+    """Design rules read straight from static/app.css (specs/streaming-redesign.md, frontend acceptance criteria)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import themes
+        cls.themes = themes
+        cls.css = _strip_css(read_static("app.css"))
+        cls.rules = _blocks(cls.css)
+        cls.js = read_static("app.js")
+        texts = []
+        for name in ("pages.py", "settings_page.py"):
+            with open(os.path.join(ROOT, name), encoding="utf-8") as f:
+                texts.append(f.read())
+        cls.pages_py, cls.settings_py = texts
+
+    def theme_decls(self, key):
+        sel = ':root, [data-theme="crimson"]' if key == "crimson" else f'[data-theme="{key}"]'
+        found = [b for b in self.rules if b[0] == sel]
+        self.assertEqual(len(found), 1, key)
+        return _decls(found[0][1])
+
+    def root_decls(self):
+        found = [b for b in self.rules if b[0] == ":root"]
+        self.assertEqual(len(found), 1, "one plain :root block for the non-theme tokens")
+        return _decls(found[0][1])
+
+    def rules_for(self, part):
+        """Rules with a selector (comma part) equal to `part` or ending in " part"."""
+        return [(sel, body, media) for sel, body, media in self.rules
+                if any(p == part or p.endswith(" " + part) for p in (x.strip() for x in sel.split(",")))]
+
+    # -- contrast --------------------------------------------------------------------------------
+    def test_contrast_table_per_theme(self):
+        pairs = (("--text", "--bg", 4.5), ("--text-2", "--surface-2", 4.5), ("--muted", "--bg", 4.5),
+                 ("--muted", "--surface", 4.5), ("--muted", "--surface-2", 4.5), ("--accent-ink", "--accent", 4.5),
+                 ("--accent-ink", "--accent-hover", 4.5), ("--focus", "--bg", 3.0), ("--focus", "--surface", 3.0))
+        root = self.root_decls()
+        for t in self.themes.THEMES:
+            d = self.theme_decls(t["key"])
+            for fg, bg, need in pairs:
+                self.assertGreaterEqual(_contrast(d[fg], d[bg]), need, (t["key"], fg, bg))
+            for name, need in (("--star-off", 3.0), ("--danger", 4.5), ("--ok", 4.5)):
+                self.assertRegex(root.get(name, ""), r"^#[0-9a-fA-F]{6}$", name)
+                self.assertGreaterEqual(_contrast(root[name], d["--surface-2"]), need, (t["key"], name))
+
+    # -- fonts -----------------------------------------------------------------------------------
+    def test_three_font_faces_served_by_the_whitelist(self):
+        faces = [body for sel, body, _ in self.rules if sel == "@font-face"]
+        self.assertEqual(len(faces), 3)
+        served = {k for k, v in web.Handler.STATIC_FILES.items() if v == "font/woff2"}
+        used = set()
+        for body in faces:
+            self.assertRegex(body, r"font-display\s*:\s*swap")
+            m = re.search(r'src\s*:\s*url\("/static/(fonts/[a-z0-9-]+\.woff2)"\)\s*format\("woff2"\)', body)
+            self.assertIsNotNone(m, body)
+            used.add(m.group(1))
+        self.assertEqual(used, served)
+        for name in served:
+            with open(os.path.join(ROOT, "static", *name.split("/")), "rb") as f:
+                self.assertEqual(f.read(4), b"wOF2", name)
+
+    def test_font_tokens_and_no_synthesis_or_italic(self):
+        text = self.css
+        for token in ("--font", "--font-display", "--font-note"):
+            self.assertRegex(text, r"(?<![\w-])%s\s*:" % token)
+        self.assertNotRegex(text, r"font-style\s*:\s*italic")
+        self.assertRegex(text, r"font-synthesis\s*:\s*none")
+
+    # -- accent discipline and tokens ------------------------------------------------------------
+    def test_accent_only_on_primary_rules(self):
+        allowed = ("btn-add", "primary", "why", "swatch", "checkbox", "radio", "season-check")
+        for sel, body, _ in self.rules:
+            if re.search(r"var\(--accent(-hover)?\)", body):
+                self.assertTrue(any(a in sel for a in allowed), sel)
+
+    def test_removed_tokens_are_gone_and_every_var_is_declared(self):
+        self.assertNotRegex(self.css, r"var\(--(accent-text|accent-soft|accent-glow|match-text)\)")
+        declared = set(re.findall(r"(--[a-z0-9-]+)\s*:", self.css))
+        set_by_js = {"--h", "--from-scale", "--origin-x", "--origin-y", "--hero-ms"}
+        for name in set(re.findall(r"var\(\s*(--[a-z0-9-]+)", self.css)):
+            self.assertTrue(name in declared or name in set_by_js, name)
+
+    # -- no template slop ------------------------------------------------------------------------
+    def test_no_uppercase_smallcaps_radial_gradients_or_pills(self):
+        for needle in ("uppercase", "small-caps", "radial-gradient", "999px"):
+            self.assertNotIn(needle, self.css)
+
+    def test_gradients_only_where_the_spec_allows(self):
+        for sel, body, _ in self.rules:
+            if "linear-gradient" in body:
+                self.assertTrue(any(k in sel for k in ("hero-art", "title-hero", "topbar", "track-arrow")), sel)
+
+    def test_hover_never_moves_things(self):
+        for sel, body, _ in self.rules:
+            if ":hover" in sel:
+                self.assertNotRegex(body, r"(?<![\w-])transform\s*:", sel)
+
+    # -- focus -----------------------------------------------------------------------------------
+    def test_global_focus_ring(self):
+        rules = [b for sel, b, _ in self.rules if sel in (":focus-visible", "*:focus-visible", ":where(:focus-visible)")]
+        self.assertTrue(rules, "a global :focus-visible rule")
+        body = rules[0]
+        m = re.search(r"outline\s*:\s*(\d+)px\s+solid\s+var\(--focus\)", body)
+        self.assertIsNotNone(m)
+        self.assertGreaterEqual(int(m.group(1)), 2)
+        offset = re.search(r"outline-offset\s*:\s*(\d+)px", body)
+        self.assertTrue(offset and int(offset.group(1)) > 0)
+
+    def test_outline_removed_only_where_focus_is_drawn_elsewhere(self):
+        for sel, body, _ in self.rules:
+            if re.search(r"(?<![\w-])outline\s*:\s*(none|0)\s*(;|$)", body.strip()):
+                self.assertTrue(".theme-radio" in sel or ".search-type input" in sel, sel)
+
+    def test_poster_link_focus_ring_sits_on_the_poster_box(self):
+        self.assertTrue(any(".card-poster:has(> .poster-link:focus-visible)" in sel for sel, _, _ in self.rules))
+
+    # -- touch targets ---------------------------------------------------------------------------
+    def test_targets_are_44px(self):
+        for target in ("button", ".btn-add", ".btn-ghost", ".nav-item", ".subtab", ".pager a", ".list-toggle",
+                       ".list-link", ".hero-dot", ".modal-close"):
+            sizes = [_dim(body, ("min-height", "height")) for _, body, _ in self.rules_for(target)]
+            self.assertTrue(any(s is not None and s >= 44 for s in sizes), target)
+        text_inputs = [_dim(body, ("min-height", "height")) for sel, body, _ in self.rules
+                       if "select" in sel or 'input[type="text"]' in sel or 'input[type="search"]' in sel]
+        self.assertTrue(any(s is not None and s >= 44 for s in text_inputs), "text inputs and selects")
+
+    def test_stars_and_preview_buttons(self):
+        stars = [body for _, body, _ in self.rules_for(".star")]
+        widths = [_dim(b, ("min-width", "width")) for b in stars]
+        heights = [_dim(b, ("min-height", "height")) for b in stars]
+        self.assertTrue(any(w is not None and w >= 28 for w in widths))
+        self.assertTrue(any(h is not None and h >= 32 for h in heights))
+        for w in widths:
+            self.assertTrue(w is None or w >= 28)
+        for h in heights:
+            self.assertTrue(h is None or h >= 32)
+        buttons = [_dim(b, ("min-height", "height")) for _, b, _ in self.rules_for(".preview-btn")]
+        self.assertIn(36, buttons)                                 # the documented exception
+
+    # -- motion and breakpoints ------------------------------------------------------------------
+    def test_reduced_motion_covers_hero_and_preview(self):
+        sel = " ".join(s for s, _, media in self.rules if "prefers-reduced-motion: reduce" in media)
+        self.assertIn(".hero-slide", sel)
+        self.assertIn(".preview", sel)
+        self.assertIn("max-width: 820px", self.css)
+
+    # -- dead CSS --------------------------------------------------------------------------------
+    @staticmethod
+    def _class_tokens(text):
+        """Class names the sources can put on an element: class="..." values in pages.py / settings_page.py
+        (literal parts, plus quoted literals inside {...}; a trailing "-" is a dynamic prefix) and the
+        className / classList arguments in app.js."""
+        tokens = set()
+        for value in re.findall(r'class="((?:[^"{]|\{[^}]*\})*)"', text):
+            outside = re.sub(r"\{[^}]*\}", " ", value)
+            tokens.update(outside.split())
+            for expr in re.findall(r"\{([^}]*)\}", value):
+                for lit in re.findall(r"""["']([^"']*)["']""", expr):
+                    tokens.update(lit.split())
+        for value in re.findall(r"""class(?:Name)?\s*[:=]\s*["']([^"']*)["']""", text):
+            tokens.update(value.split())
+        for value in re.findall(r"""setAttribute\("class",\s*"([^"]*)"\)""", text):
+            tokens.update(value.split())
+        for line in text.splitlines():
+            if "className" in line:                    # "track-arrow " + dir, "modal" + (x ? " narrow" : "")
+                for lit in re.findall(r"""["']([^"']*)["']""", line):
+                    tokens.update(lit.split())
+        for args in re.findall(r"classList\.(?:add|remove|toggle|replace|contains)\(([^)]*)\)", text):
+            for lit in re.findall(r"""["']([^"']*)["']""", args):
+                tokens.update(lit.split())
+        return tokens
+
+    def test_every_css_class_is_rendered_somewhere(self):
+        tokens = self._class_tokens(self.pages_py + "\n" + self.settings_py + "\n" + self.js)
+        prefixes = [t for t in tokens if t.endswith("-")]
+        # Built from a variable (dir = prev|next) or passed to a helper as a literal argument.
+        tokens |= {"prev", "next"} & set(re.findall(r'"(prev|next)"', self.js))
+        tokens |= {c for c in ("title-similar", "why-match") if f'"{c}' in self.pages_py}
+        dead = set()
+        for sel, _, _ in self.rules:
+            if sel.startswith("@"):
+                continue
+            for cls in re.findall(r"\.(-?[_a-zA-Z][\w-]*)", sel):
+                if cls in tokens or any(cls.startswith(p) for p in prefixes):
+                    continue
+                dead.add(cls)
+        self.assertEqual(sorted(dead), [])
+
+    def test_every_new_class_has_a_rule(self):
+        selectors = " ".join(sel for sel, _, _ in self.rules)
+        for cls in ("card-facts", "card-badges", "runtime", "hero-reason", "hero-overview", "title-body", "title-main",
+                    "title-side", "title-details", "title-links", "season-year", "why-because", "ext-icon", "preview-title"):
+            self.assertRegex(selectors, r"\.%s(?![\w-])" % cls, cls)
+
+
+class TestRedesignShell(unittest.TestCase):
+    def head(self):
+        with mock.patch.object(web, "current_theme", return_value="crimson"):
+            html = web._shell("", "home")
+        return html[:html.index("</head>")]
+
+    def test_dark_only_metas(self):
+        head = self.head()
+        self.assertEqual(re.findall(r'<meta name="theme-color"[^>]*>', head), ['<meta name="theme-color" content="#101114">'])
+        self.assertIn('<meta name="color-scheme" content="dark">', head)
+        self.assertNotIn("prefers-color-scheme", head)
+
+    def test_two_font_preloads_that_the_server_serves(self):
+        links = re.findall(r'<link rel="preload"[^>]*>', self.head())
+        self.assertEqual(len(links), 2)
+        for link in links:
+            self.assertIn('as="font" type="font/woff2" crossorigin', link)
+            href = re.search(r'href="([^"]+)"', link).group(1)
+            self.assertTrue(href.startswith("/static/"))
+            self.assertEqual(web.Handler.STATIC_FILES.get(href[len("/static/"):]), "font/woff2", href)
+
+    def test_stylesheet_and_script_strings_unchanged_and_nothing_external(self):
+        head = self.head()
+        self.assertIn('<link rel="stylesheet" href="/static/app.css"><script src="/static/app.js" defer></script>', head)
+        for tag in re.findall(r"<(?:link|script)[^>]*>", head):
+            self.assertNotRegex(tag, r"https?://")
+
+    def test_appearance_options_carry_theme_color_only(self):
+        import themes
+        with mock.patch.object(web, "current_theme", return_value="crimson"):
+            html = pages.render_appearance()
+        options = re.findall(r'<label class="theme-option"[^>]*>', html)
+        self.assertEqual(len(options), 6)
+        for t, option in zip(themes.THEMES, options):
+            self.assertIn(f'data-theme-color="{t["bg"]}"', option)
+        self.assertNotIn("data-meta-", html)
+        self.assertNotIn("light", re.search(r'theme-help">(.*?)</p>', html).group(1).lower())
+
+    def test_pages_py_no_longer_reads_bg_light(self):
+        with open(os.path.join(ROOT, "pages.py"), encoding="utf-8") as f:
+            self.assertNotIn("bg_light", f.read())
+
+
+class TestRedesignJs(unittest.TestCase):
+    def test_hooks(self):
+        js = read_static("app.js")
+        for needle in ("data-theme-color", "card-badges", "preview-title"):
+            self.assertIn(needle, js)
+        for gone in ("data-meta-light", "data-meta-dark", "prefers-color-scheme: light", "poster-top"):
+            self.assertNotIn(gone, js)
+        self.assertEqual(js.count("innerHTML"), 1)
+        self.assertNotRegex(js, r"https?://")
+
+
+class TestRedesignMarkup(PatchedState):
+    def setUp(self):
+        super().setUp()
+        self.old_cfg = (config.RADARR_URL, config.RADARR_API_KEY, config.SONARR_URL, config.SONARR_API_KEY)
+        self.addCleanup(lambda: (setattr(config, "RADARR_URL", self.old_cfg[0]), setattr(config, "RADARR_API_KEY", self.old_cfg[1]),
+                                 setattr(config, "SONARR_URL", self.old_cfg[2]), setattr(config, "SONARR_API_KEY", self.old_cfg[3])))
+        config.RADARR_URL = config.RADARR_API_KEY = config.SONARR_URL = config.SONARR_API_KEY = ""
+
+    def home(self, items, **kw):
+        self.use(browse_result(items, **kw))
+        return pages.render_browse("all")
+
+    # -- hero ------------------------------------------------------------------------------------
+    def test_reason_html(self):
+        item = {"reason": "Because you watched Arrival and Dune", "because": ["Arrival", "Dune", "Heat"]}
+        self.assertEqual(pages._reason_html(item), "Because you watched <strong>Arrival</strong> and <strong>Dune</strong>")
+        one = {"reason": "Because you watched Arrival", "because": ["Arrival", "Dune"]}
+        self.assertEqual(pages._reason_html(one), "Because you watched <strong>Arrival</strong>")
+        self.assertEqual(pages._reason_html({"reason": "Popular right now", "because": ["Arrival"]}), "Popular right now")
+        self.assertEqual(pages._reason_html({"reason": "Because you watched Arrival and Dune", "because": ["Arrival"]}),
+                         "Because you watched Arrival and Dune")
+        self.assertEqual(pages._reason_html({"reason": "", "because": ["A"]}), "")
+        self.assertEqual(pages._reason_html({}), "")
+        evil = {"reason": "Because you watched <b> and <i>", "because": ["<b>", "<i>"]}
+        self.assertEqual(pages._reason_html(evil),
+                         "Because you watched <strong>&lt;b&gt;</strong> and <strong>&lt;i&gt;</strong>")
+        self.assertEqual(pages._reason_html({"reason": "<img src=x>", "because": []}), "&lt;img src=x&gt;")
+
+    def test_hero_slide_order_and_pieces(self):
+        hero = hero_html(self.home([rec(1, reason="Because you watched Arrival", because=["Arrival"])]))
+        self.assertLess(hero.index("hero-reason"), hero.index('class="title hero-title"'))
+        self.assertIn('<p class="reason hero-reason">Because you watched <strong>Arrival</strong></p>', hero)
+        self.assertLess(hero.index("hero-meta"), hero.index('class="hero-overview"'))
+        self.assertLess(hero.index('class="hero-overview"'), hero.index('class="hero-actions"'))
+        self.assertIn('<p class="hero-overview">Overview 1.</p>', hero)
+        self.assertIn('<span class="hero-genres">Drama, Sci-Fi</span>', hero)
+        for gone in ("kicker", "hero-glyph", "&middot;"):
+            self.assertNotIn(gone, hero)
+
+    def test_hero_without_reason_or_overview_omits_them(self):
+        hero = hero_html(self.home([rec(1, reason="", overview="")]))
+        self.assertNotIn("hero-reason", hero)
+        self.assertNotIn("hero-overview", hero)
+
+    def test_hero_hostile_overview_is_escaped(self):
+        hero = hero_html(self.home([rec(1, overview="<script>x</script>")]))
+        self.assertNotIn("<script>", hero)
+        self.assertIn('<p class="hero-overview">&lt;script&gt;x&lt;/script&gt;</p>', hero)
+
+    # -- rows ------------------------------------------------------------------------------------
+    def test_row_card_markup(self):
+        html = self.home([rec(n) for n in range(1, 13)])
+        top = re.search(r'<section class="row" data-row="top10".*?</section>', html, re.S).group(0)
+        card = re.search(r'<article class="card row-card" data-card="movie-101">.*?</article>', top, re.S).group(0)
+        self.assertTrue(card.startswith('<article class="card row-card" data-card="movie-101"><span class="rank" aria-hidden="true">1</span>'
+                                        '<div class="card-poster"><a class="poster-link"'))
+        self.assertNotIn("poster-top", card)
+        self.assertNotIn("<h4 class=\"title\">Film 1 (", card)
+        self.assertIn('<h4 class="title">Film 1</h4>', card)
+        self.assertIn('<p class="card-facts"><span class="match">98%<span class="visually-hidden"> match</span></span> '
+                      '<span>2001</span></p>', card)
+        poster = re.search(r'<div class="card-poster">.*?</a></div>', card, re.S).group(0)
+        self.assertNotIn("rank", poster)
+        self.assertNotIn("match", poster)
+
+    def test_row_card_tag_moves_into_the_facts(self):
+        with mock.patch.object(web, "owned_keys", return_value={("movie", 101)}):
+            html = self.home([rec(n) for n in range(1, 9)])
+        card = re.search(r'<article class="card row-card" data-card="movie-101">.*?</article>', html, re.S).group(0)
+        self.assertRegex(card, r'<p class="card-facts">.*<span class="lib-tag">In library</span></p>')
+
+    def test_row_card_without_match_year_or_tag_has_no_facts(self):
+        html = pages._row_card(rec(1, match=None, year=None), "/", False)
+        self.assertNotIn("card-facts", html)
+
+    def test_library_row_card_has_no_tag(self):
+        lib = [{"media_type": "movie", "tmdb_id": 900, "title": "Owned", "year": 2020, "added_at": "2024-01-01T00:00:00Z", "url": None}]
+        html = self.home([rec(1)], library=lib)
+        row = re.search(r'<section class="row" data-row="library_new".*?</section>', html, re.S).group(0)
+        self.assertNotIn("lib-tag", row)
+        self.assertIn('<h4 class="title"><a href="/title/movie/900">Owned</a></h4><p class="card-facts"><span>2020</span></p>', row)
+
+    # -- grid cards ------------------------------------------------------------------------------
+    def assert_clean_poster(self, card):
+        self.assertNotIn("poster-top", card)
+        self.assertNotIn('class="kind"', card)
+        self.assertNotIn('class="badges"', card)
+        self.assertNotIn("badge alt", card)
+        poster = re.search(r'<div class="card-poster">.*?</div>', card, re.S).group(0)
+        self.assertNotIn("<span", poster)
+
+    def test_ai_card(self):
+        card = web._card(ITEM, "/ai", True)
+        self.assert_clean_poster(card)
+        self.assertIn('<h3 class="title">Heat (1995)</h3>'
+                      '<p class="card-facts"><span class="match">88% match</span> <span>Movie</span></p>'
+                      '<p class="card-badges"><span class="badge">New</span><span class="badge">Trending</span></p>'
+                      '<details class="card-details">', card)
+
+    def test_ai_card_without_flags_has_no_badge_line(self):
+        self.assertNotIn("card-badges", web._card(dict(ITEM, new=False, trending=False), "/ai", True))
+
+    def test_search_card(self):
+        card = pages._search_card(sresult(status="plex", watched=True, arr_state="missing"), "/search", False)
+        self.assert_clean_poster(card)
+        self.assertIn('<h3 class="title">Dune (2021)</h3><p class="card-facts"><span>Movie</span></p>'
+                      '<p class="card-badges"><span class="lib-tag status-tag status-plex">In library</span>'
+                      '<span class="badge">Watched</span></p><p class="card-sub arr-line">Missing</p><details', card)
+        self.assertNotIn("card-badges", pages._search_card(sresult(), "/search", False))
+
+    def test_list_card(self):
+        view = {"list": {"id": 3, "name": "L", "description": "", "kind": "custom", "count": 1}, "can_move": False}
+        item = {"media_type": "tv", "tmdb_id": 4, "title": "Show", "year": 2010, "poster_url": None, "status": "radarr",
+                "arr_state": None, "episodes": None, "watched": False, "dismissed": True, "match": 71, "stars": None,
+                "lists": [3], "on_watchlist": False}
+        card = pages._list_card(item, view, "/lists/3")
+        self.assert_clean_poster(card)
+        self.assertIn('<h3 class="title">Show (2010)</h3><p class="card-facts"><span class="match">71% match</span> <span>TV</span></p>'
+                      '<p class="card-badges"><span class="lib-tag status-tag status-radarr">In Radarr</span>'
+                      '<span class="badge">Not interested</span></p>', card)
+
+    def test_library_card(self):
+        item = {"media_type": "movie", "tmdb_id": 5, "title": "Arrival", "year": 2016, "added_at": "2024-03-01T10:00:00Z",
+                "watched": True, "progress": None, "poster_key": None, "url": None, "request_state": "requested"}
+        card = pages._library_card(item)
+        self.assert_clean_poster(card)
+        self.assertIn('<h3 class="title"><a href="/title/movie/5">Arrival</a></h3>'
+                      '<p class="card-sub"><span>Movie</span> <span>2016</span></p>'
+                      '<p class="card-badges"><span class="badge">Watched</span></p>', card)
+        added = pages._library_card(item, show_added=True)
+        self.assertIn('<p class="card-sub"><span>Movie</span> <span>Added 2024-03-01</span></p>', added)
+        self.assertIn('<span class="badge req-state req-requested">Requested</span>', added)
+        bare = pages._library_card(dict(item, year=None, watched=False))
+        self.assertIn('<p class="card-sub"><span>Movie</span></p>', bare)
+        self.assertNotIn("card-badges", bare)
+
+    def test_watched_card(self):
+        item = {"media_type": "movie", "tmdb_id": 5, "title": "Arrival", "year": 2016, "last_viewed": "2024-05-02T10:00:00Z",
+                "view_count": 3, "poster_key": None, "poster_url": None, "url": None, "stars": None, "plex_stars": None}
+        card = pages._watched_card(item, "/library?type=watched")
+        self.assert_clean_poster(card)
+        self.assertIn('<p class="card-sub"><span>Movie</span> <span>Watched 2024-05-02</span> <span>3 plays</span></p>', card)
+        once = pages._watched_card(dict(item, view_count=1), "/library?type=watched")
+        self.assertNotIn("plays", once)
+        self.assertNotIn("&middot;", card)
+
+    # -- title page ------------------------------------------------------------------------------
+    def title(self, media_type="movie", **kw):
+        return pages.render_title(title_view(media_type, 9 if media_type == "tv" else 7, **kw))
+
+    def test_title_page_layout(self):
+        rec_data = {"match": 92, "reason": "Because you watched A and B", "matches": ["Crime"], "because": ["A", "B"]}
+        html = self.title("tv", rec=rec_data, seasons=[season_row(1), season_row(2, air_date=None)])
+        self.assertNotIn("kicker", html)
+        body = re.search(r'<div class="title-body">.*</aside></div>', html, re.S).group(0)
+        main, side = body.split('<aside class="title-side" aria-label="Details and cast">')
+        self.assertTrue(main.startswith('<div class="title-body"><div class="title-main">'))
+        for needle in ('title-section title-overview', 'class="title-section why"', 'section class="title-section seasons"'):
+            self.assertIn(needle, main)
+        self.assertNotIn("title-facts", main)
+        self.assertNotIn('class="cast-list"', main)
+        self.assertIn('<section class="title-section title-details"><h2>Details</h2><dl class="title-facts">', side)
+        self.assertIn('<p class="title-links">', side)
+        self.assertIn('<section class="title-section cast"><h2>Cast</h2><ul class="cast-list">', side)
+        self.assertLess(side.index("title-details"), side.index("title-section cast"))
+        self.assertIn('<p class="why-because">Because you watched A, B</p>', main)
+        self.assertNotIn('<p class="muted">Because', html)
+        self.assertIn('<span class="season-eps">8 episodes</span> <span class="season-year">2020</span>', main)
+        self.assertEqual(main.count("season-year"), 1)                  # season 2 has no air date
+        self.assertLess(html.index("</aside></div>"), html.index("</article>"))
+
+    def test_title_similar_row_is_after_the_body(self):
+        html = self.title(similar=[{"media_type": "movie", "tmdb_id": 3, "title": "Other", "year": 2001, "poster_url": None}])
+        self.assertLess(html.index("</aside></div>"), html.index('class="row title-similar"'))
+
+    def test_title_without_facts_or_links_has_no_details_section(self):
+        view = title_view()
+        view["item"].update(url=None, release_date=None, year=None, runtime=None, vote_count=0, directors=[])
+        view["extras"].update(status="", studios=[], imdb_id="", crew=[])
+        html = pages.render_title(view)
+        self.assertNotIn("title-details", html)
+        self.assertIn('<aside class="title-side"', html)
+
+    def test_title_actions_order(self):
+        self.configure_radarr()
+        html = self.title(can_add=True)
+        actions = re.search(r'<div class="title-actions">.*?</div></div></div></section>', html, re.S).group(0)
+        order = ["data-add-dialog", "list-toggle-form", 'class="list-link"', "trailer-link", 'action="/dismiss"', '<form class="rate"']
+        positions = [actions.index(x) for x in order]
+        self.assertEqual(positions, sorted(positions))
+
+    def configure_radarr(self):
+        config.RADARR_URL = config.RADARR_API_KEY = "x"
+
+    def test_tv_genres_use_commas(self):
+        html = self.title("tv")
+        self.assertIn('<span class="title-genres">Crime, Drama</span>', html)
+        self.assertNotIn("&middot;", html)
+
+    def test_season_picker_year_span(self):
+        picker = pages._season_picker({"known": True, "tracked": False, "seasons": [season_row(1, episodes=None)]}, "add")
+        self.assertNotIn("season-eps", picker)
+        self.assertIn('<span class="season-year">2020</span>', picker)
+
+    # -- meta lines read as separate words ---------------------------------------------------------
+    @staticmethod
+    def text_of(html):
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html)).strip()
+
+    def test_meta_lines_have_literal_spaces_between_items(self):
+        hero = hero_html(self.home([rec(1, certification="12A", runtime=90)]))
+        meta = re.search(r'<p class="hero-meta card-meta">(.*?)</p>', hero, re.S).group(1)
+        self.assertEqual(self.text_of(meta), "98% match 2001 12A 1h 30m Drama, Sci-Fi")
+        rec_data = {"match": 92, "reason": "r", "matches": [], "because": []}
+        html = self.title(rec=rec_data)
+        meta = re.search(r'<p class="card-meta title-meta">(.*?)</p>', html, re.S).group(1)
+        self.assertEqual(self.text_of(meta), "92% match 1995 R 2h 50m Crime, Drama")
+        search = pages._search_card(sresult(), "/search", False)
+        meta = re.search(r'<p class="card-meta">(.*?)</p>', search, re.S).group(1)
+        self.assertEqual(self.text_of(meta), "Movie 2021 TMDB 8.0")
+        tv = self.title("tv", seasons=[season_row(1, state="available")])
+        row = re.search(r'<li class="season-row">.*?</li>', tv, re.S).group(0)
+        self.assertEqual(self.text_of(row), "Season 1 8 episodes 2020 Available")
+        picker = pages._season_picker({"known": True, "tracked": False,
+                                       "seasons": [season_row(1, state="available", requested=True)]}, "add")
+        self.assertIn("Season 1 8 episodes 2020 Requested Available", self.text_of(picker))
+
+    # -- external links --------------------------------------------------------------------------
+    def test_ext_icon_is_decorative_and_everywhere(self):
+        html = self.title()
+        self.assertGreaterEqual(html.count('class="ext-icon"'), 2)
+        self.assertEqual(html.count('<span class="ext-icon" aria-hidden="true">&#8599;</span>'), html.count("&#8599;"))
+        self.assertNotIn(" &#8599;", html)
+        self.assertIn('<span class="ext-icon" aria-hidden="true">&#8599;</span>', web._card(dict(ITEM, url="https://www.themoviedb.org/movie/7"), "/", False))
+
+
+class TestNoSlopInRenderedPages(PatchedState):
+    """No middot separators, kickers or shouting capitals in any page the redesign touches."""
+
+    def setUp(self):
+        super().setUp()
+        self.old_cfg = (config.RADARR_URL, config.RADARR_API_KEY, config.SONARR_URL, config.SONARR_API_KEY)
+        self.addCleanup(lambda: (setattr(config, "RADARR_URL", self.old_cfg[0]), setattr(config, "RADARR_API_KEY", self.old_cfg[1]),
+                                 setattr(config, "SONARR_URL", self.old_cfg[2]), setattr(config, "SONARR_API_KEY", self.old_cfg[3])))
+        config.RADARR_URL = config.RADARR_API_KEY = config.SONARR_URL = config.SONARR_API_KEY = "x"
+
+    def pages_html(self):
+        out = {}
+        items = [rec(n) for n in range(1, 13)]
+        library = [{"media_type": "movie", "tmdb_id": 900, "title": "Owned", "year": 2020, "added_at": "2024-01-01T00:00:00Z", "url": None}]
+        self.use(browse_result(items, library=library))
+        out["home"] = pages.render_browse("all")
+        out["movies"] = pages.render_browse("movie")
+        out["tv"] = pages.render_browse("tv")
+        rec_data = {"match": 92, "reason": "Because you watched A and B", "matches": ["Crime"], "because": ["A", "B"]}
+        out["title-movie"] = pages.render_title(title_view("movie", 7, rec=rec_data, can_add=True))
+        out["title-tv"] = pages.render_title(title_view("tv", 9, seasons=[season_row(1), season_row(2)], rec=rec_data))
+        lib = {"media_type": "movie", "tmdb_id": 5, "title": "Arrival", "year": 2016, "added_at": "2024-03-01T10:00:00Z",
+               "watched": True, "progress": None, "poster_key": None, "url": None, "request_state": "available",
+               "seasons": None, "episodes": None, "sources": ["plex", "radarr"], "arr_state": "downloaded", "stars": None,
+               "last_viewed": "2024-05-02T10:00:00Z", "view_count": 3, "plex_stars": None, "poster_url": None}
+        for tab in ("all", "movie", "tv", "watched", "added"):
+            with mock.patch.object(web, "library_items", return_value=[dict(lib, media_type="tv" if tab == "tv" else "movie")]):
+                out["library-" + tab] = web.render_library(tab=tab)
+        with mock.patch.object(web, "search_view", return_value=sview(results=[sresult(status="plex", watched=True)])):
+            out["search"] = pages.render_search("dune", "all")
+        with mock.patch.object(web, "lists_view", return_value=lists_view(summary(1, count=2), summary(3, "Horror", "custom", 5))):
+            out["lists"] = pages.render_lists()
+        list_view = {"list": summary(3, "Horror", "custom", 2, "d"), "sort": "manual", "sorts": web.LIST_SORTS, "page": 1,
+                     "pages": 1, "total": 1, "can_move": True, "sample": False,
+                     "items": [{"media_type": "movie", "tmdb_id": 1, "title": "Film 1", "year": 2001, "poster_url": None,
+                                "status": "plex", "arr_state": "missing", "episodes": None, "watched": True, "dismissed": False,
+                                "match": 80, "stars": None, "lists": [3], "on_watchlist": False, "position": 1}]}
+        out["list"] = pages.render_list(list_view)
+        out["ai"] = web.render_ai_page() + web._card(ITEM, "/ai", True)
+        out["appearance"] = pages.render_appearance()
+        return out
+
+    def test_no_middots_kickers_or_kind_labels(self):
+        for name, html in self.pages_html().items():
+            for bad in ("&middot;", "·", "&#183;", 'class="kicker"', 'class="kind"', "hero-glyph", "poster-top"):
+                self.assertNotIn(bad, html, (name, bad))
+
+    def test_no_shouting_text_nodes(self):
+        for name, html in self.pages_html().items():
+            html = re.sub(r"<script.*?</script>", "", html, flags=re.S)
+            html = re.sub(r'<span class="badge cert">[^<]*</span>', "", html)
+            for node in re.findall(r">([^<>]+)<", html):
+                letters = re.sub(r"[^A-Za-z]", "", node.replace("TMDB", ""))
+                if len(letters) >= 4 and letters.isupper():
+                    self.fail(f"{name}: all-uppercase text {node!r}")
+
+    def test_sources_have_no_middots_kickers_or_light_meta(self):
+        for fname in ("pages.py", os.path.join("static", "app.js")):
+            with open(os.path.join(ROOT, fname), encoding="utf-8") as f:
+                text = f.read()
+            for bad in ("&middot;", "·", "&#183;", "kicker", "hero-glyph", 'class="kind"'):
+                self.assertNotIn(bad, text, (fname, bad))

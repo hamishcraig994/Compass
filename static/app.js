@@ -418,8 +418,14 @@
       tag.textContent = "Added";
       return;
     }
-    var badges = card.querySelector(".poster-top .badges");
-    if (badges) badges.insertBefore(el("span", { className: "lib-tag status-tag status-added", text: "Added" }), badges.firstChild);
+    var badges = card.querySelector(".card-badges");
+    if (!badges) {
+      var after = card.querySelector(".card-facts") || card.querySelector(".title");
+      if (!after || !after.parentNode) return;
+      badges = el("p", { className: "card-badges" });
+      after.parentNode.insertBefore(badges, after.nextSibling);
+    }
+    badges.insertBefore(el("span", { className: "lib-tag status-tag status-added", text: "Added" }), badges.firstChild);
   }
 
   function focusCard(card) {
@@ -522,14 +528,14 @@
     return Array.prototype.slice.call(doc.querySelectorAll("form[data-enhance=theme] .theme-radio"));
   }
 
-  function setMeta(media, color) {
-    var meta = doc.querySelector('meta[name=theme-color][media="' + media + '"]');
+  function setMeta(color) {
+    var meta = doc.querySelector("meta[name=theme-color]");
     if (meta && color) meta.setAttribute("content", color);
   }
 
   /* Recolour the header logo (its colours are baked in server-side) and swap the favicon. */
   function setLogo(option) {
-    var fg = option.getAttribute("data-logo"), bg = option.getAttribute("data-meta-dark");
+    var fg = option.getAttribute("data-logo"), bg = option.getAttribute("data-theme-color");
     var mark = doc.querySelector(".brand-mark");
     if (mark && fg && bg) {
       var oldFg = mark.getAttribute("data-fg"), oldBg = mark.getAttribute("data-bg");
@@ -552,8 +558,7 @@
     var radio = option.querySelector(".theme-radio");
     if (!radio) return;
     root.setAttribute("data-theme", radio.value);
-    setMeta("(prefers-color-scheme: dark)", option.getAttribute("data-meta-dark"));
-    setMeta("(prefers-color-scheme: light)", option.getAttribute("data-meta-light"));
+    setMeta(option.getAttribute("data-theme-color"));
     setLogo(option);
   }
 
@@ -1096,12 +1101,11 @@
   var PREVIEW_MOVE_PX = 5;        // movement beyond this re-arms the open timer
   var PREVIEW_SWITCH_MS = 120;    // card to card while a preview is open
   var PREVIEW_CLOSE_MS = 150;     // leaving to empty space
-  var PREVIEW_MOVING_MS = 200;    // length of the left/top transition
   var SVG_NS = "ht" + "tp://www.w3.org/2000/svg";  // split so the no-external-URLs check stays strict
   var PREVIEW_CARD = ".row-card[data-card], [data-preview]";
   var PREVIEW_ICONS = { open: "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5", plus: "M12 5v14M5 12h14", cross: "M6 6l12 12M18 6L6 18", chevron: "M6 9l6 6 6-6" };
   var preview = null, previewCard = null, lastPreviewCard = null;
-  var openTimer = null, closeTimer = null, movingTimer = null;
+  var openTimer = null, closeTimer = null;
   var intentCard = null, intentStart = 0, intentX = 0, intentY = 0;
 
   function previewIcon(name) {
@@ -1135,9 +1139,7 @@
 
   function closePreview() {
     clearPreviewTimers();
-    clearTimeout(movingTimer);
-    movingTimer = null;
-    if (preview) preview.classList.remove("is-open", "is-moving");
+    if (preview) preview.classList.remove("is-open");
     previewCard = null;
   }
 
@@ -1195,7 +1197,6 @@
       doc.body.appendChild(preview);
     }
     clearPreviewTimers();
-    var wasOpen = preview.classList.contains("is-open") && !!previewCard;
     previewCard = lastPreviewCard = card;
 
     // Build the new content off-screen first, then swap it in one go.
@@ -1248,7 +1249,9 @@
         actions.appendChild(more);
       }
 
+      var recTitle = card.querySelector(".title");
       body = el("div", { className: "preview-body" }, [actions]);
+      if (recTitle && recTitle.textContent) body.appendChild(el("div", { className: "preview-title", text: recTitle.textContent }));
       [".card-meta", ".chips", ".reason"].forEach(function (selector) {
         var source = card.querySelector(selector);
         if (source) body.appendChild(source.cloneNode(true));
@@ -1276,9 +1279,13 @@
       }
       body = el("div", { className: "preview-body" });
       body.appendChild(el("div", { className: "preview-title", text: titleText }));
-      var subNode = card.querySelector(".card-sub");
-      if (subNode && subNode.textContent) body.appendChild(el("div", { className: "preview-sub", text: subNode.textContent }));
-      var badgeNode = card.querySelector(".badges");
+      var subNode = card.querySelector(".card-sub") || card.querySelector(".card-facts");
+      if (subNode && subNode.textContent) {
+        var subClone = subNode.cloneNode(true);
+        subClone.className = "preview-sub";
+        body.appendChild(subClone);
+      }
+      var badgeNode = card.querySelector(".card-badges");
       if (badgeNode && badgeNode.children.length) {
         var badgeClone = badgeNode.cloneNode(true);
         badgeClone.classList.add("preview-badges");
@@ -1295,10 +1302,6 @@
     frag.appendChild(body);
 
     preview.classList.toggle("is-library", isLibrary);
-    var animate = wasOpen && !reduceMotion;
-    clearTimeout(movingTimer);
-    movingTimer = null;
-    if (!animate) preview.classList.remove("is-moving");
     if (preview.replaceChildren) preview.replaceChildren(frag);
     else { preview.textContent = ""; preview.appendChild(frag); }
 
@@ -1307,14 +1310,6 @@
     var width = preview.offsetWidth || 320, height = preview.offsetHeight || 300;
     var left = Math.max(8, Math.min(window.innerWidth - width - 8, rect.left + rect.width / 2 - width / 2));
     var top = Math.max(8, Math.min(window.innerHeight - height - 8, rect.top));
-    var scale = Math.max(0.5, Math.min(1, rect.width / width));
-    preview.style.setProperty("--from-scale", String(Math.round(scale * 1000) / 1000));
-    preview.style.setProperty("--origin-x", Math.round(rect.left + rect.width / 2 - left) + "px");
-    preview.style.setProperty("--origin-y", Math.round(rect.top + rect.height / 2 - top) + "px");
-    if (animate) {
-      preview.classList.add("is-moving");
-      movingTimer = setTimeout(function () { movingTimer = null; if (preview) preview.classList.remove("is-moving"); }, PREVIEW_MOVING_MS);
-    }
     preview.style.left = left + "px";
     preview.style.top = top + "px";
     preview.classList.add("is-open");

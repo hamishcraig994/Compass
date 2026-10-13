@@ -128,6 +128,17 @@ def _list_link(item, return_to, detail=False):
             f'aria-label="{label}">{_LIST_SVG}{text}</a>')
 
 
+def _facts(match=None, *spans, short=False):
+    """The off-poster facts line: an optional "n% match" plus plain spans (already escaped); "" when empty.
+    short: "94%" with "match" visually hidden (row cards)."""
+    parts = []
+    if match is not None:
+        text = f'{int(match)}%<span class="visually-hidden"> match</span>' if short else f'{int(match)}% match'
+        parts.append(f'<span class="match">{text}</span>')
+    parts += [x for x in spans if x]
+    return f'<p class="card-facts">{" ".join(parts)}</p>' if parts else ""
+
+
 def _card_tools(item, return_to, stars=True, lists=True, extra_class="", link=True):
     """Compact stars, the Watchlist toggle and the list link on one line ("" when the item has no tmdb_id).
     lists=False drops the toggle and the link; link=False drops only the link (the hero)."""
@@ -147,13 +158,15 @@ def _card(item, return_to, can_dismiss):
     link = _web_url(item.get("url"))
     title = escape(_title_text(item))
     kind = "Movie" if item["media_type"] == "movie" else "TV"
-    badges = "".join(f'<span class="badge{" alt" if flag == "trending" else ""}">{label}</span>'
+    badges = "".join(f'<span class="badge">{label}</span>'
                      for flag, label in (("new", "New"), ("trending", "Trending")) if item.get(flag))
+    badges_p = f'<p class="card-badges">{badges}</p>' if badges else ""
+    facts = _facts(item["match"], f"<span>{kind}</span>")
     chips = "".join(f'<span class="chip">{escape(m)}</span>' for m in item.get("matches") or [])
     reason = escape(item.get("reason") or "")
     overview = escape(item.get("overview") or "No overview available.")
     ext = (f'<a class="ext-link" href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">'
-           f'More on TMDB<span class="visually-hidden"> (opens in a new tab)</span> &#8599;</a>' if link else "")
+           f'More on TMDB<span class="visually-hidden"> (opens in a new tab)</span><span class="ext-icon" aria-hidden="true">&#8599;</span></a>' if link else "")
     details = (f'<details class="card-details"><summary>Details<span class="visually-hidden">: {title}</span></summary>'
                f'<div class="detail-body">'
                + (f'<p class="reason">{reason}</p>' if reason else "")
@@ -176,10 +189,8 @@ def _card(item, return_to, can_dismiss):
                    f'<form class="inline" method="post" action="/dismiss" data-enhance="dismiss">'
                    f'{_hidden_fields(item, return_to)}<button type="submit">Not interested</button></form></div>')
     return (f'<article class="card" data-card="{_card_key(item)}">'
-            f'<div class="card-poster">{_poster_linked(item)}'
-            f'<div class="poster-top"><span class="match">{int(item["match"])}% match</span>'
-            f'<span class="badges">{badges}</span></div><span class="kind">{kind}</span></div>'
-            f'<div class="card-info"><h3 class="title">{title}</h3>{details}{actions}'
+            f'<div class="card-poster">{_poster_linked(item)}</div>'
+            f'<div class="card-info"><h3 class="title">{title}</h3>{facts}{badges_p}{details}{actions}'
             f'{_card_tools(item, return_to)}</div></article>')
 
 
@@ -239,7 +250,7 @@ def _library_card(item, show_added=False, return_to="/library"):
     req_label = _req_label(req_state, item.get("episodes"))
     if req_label:
         badge += f'<span class="badge req-state req-{escape(str(req_state), quote=True)}">{escape(req_label)}</span>'
-    top = f'<div class="poster-top"><span class="badges">{badge}</span></div>' if badge else ""
+    badges_p = f'<p class="card-badges">{badge}</p>' if badge else ""
     src_line = ""
     if sources_:
         src_line = ('<p class="card-sources"><span class="visually-hidden">In </span>'
@@ -248,12 +259,12 @@ def _library_card(item, show_added=False, return_to="/library"):
         sub = f'Added {escape((item.get("added_at") or "")[:10] or "unknown date")}'
     else:
         sub = escape(str(item["year"])) if item.get("year") else ""
+    sub_p = f'<p class="card-sub"><span>{kind}</span>' + (f' <span>{sub}</span>' if sub else "") + '</p>'
     seasons = _seasons_text(item.get("seasons")) if show_added and item.get("media_type") == "tv" else ""
     seasons_line = f'<p class="card-sub req-seasons">{escape(seasons)}</p>' if seasons else ""
-    return (f'<article class="card" data-preview><div class="card-poster">{_poster_linked(item)}{top}'
-            f'<span class="kind">{kind}</span></div>'
+    return (f'<article class="card" data-preview><div class="card-poster">{_poster_linked(item)}</div>'
             f'<div class="card-info"><h3 class="title">{title}</h3>'
-            f'<p class="card-sub">{sub}</p>{seasons_line}{src_line}{_card_tools(item, return_to)}</div></article>')
+            f'{sub_p}{badges_p}{seasons_line}{src_line}{_card_tools(item, return_to)}</div></article>')
 
 
 def _rate_parts(mine, plex):
@@ -290,16 +301,16 @@ def _watched_card(item, return_to):
     title_html = _title_link(item, title)
     kind = "Movie" if item["media_type"] == "movie" else "TV"
     sub = f'Watched {escape((item.get("last_viewed") or "")[:10])}' if item.get("last_viewed") else "Watched"
+    sub_html = f'<span>{kind}</span> <span>{sub}</span>'
     if (item.get("view_count") or 0) > 1:
-        sub += f' &middot; {int(item["view_count"])} plays'
+        sub_html += f' <span>{int(item["view_count"])} plays</span>'
     mine, plex = item.get("stars"), item.get("plex_stars")
     stars, text, clear = _rate_parts(mine, plex)
     form = (f'<form class="rate" method="post" action="/rate" data-enhance="rate">{_hidden_fields(item, return_to)}'
             f'<div class="stars" role="group" aria-label="Your rating for {escape(title_text, quote=True)}">{stars}</div>'
             f'<p class="rating-text">{text}</p>{clear}</form>')
-    return (f'<article class="card" data-card="{_card_key(item)}" data-preview><div class="card-poster">{_poster_linked(item)}'
-            f'<span class="kind">{kind}</span></div>'
-            f'<div class="card-info"><h3 class="title">{title_html}</h3><p class="card-sub">{sub}</p>{form}'
+    return (f'<article class="card" data-card="{_card_key(item)}" data-preview><div class="card-poster">{_poster_linked(item)}</div>'
+            f'<div class="card-info"><h3 class="title">{title_html}</h3><p class="card-sub">{sub_html}</p>{form}'
             f'{_card_tools(item, return_to, stars=False)}</div></article>')
 
 
@@ -428,15 +439,15 @@ def _season_state_badge(row):
 
 
 def _season_eps_text(row):
-    """"8 episodes - 2021" for a season row ("" when neither is known)."""
+    """Two sibling spans, "8 episodes" then the year, for a season row ("" when neither is known)."""
     parts = []
     episodes = row.get("episodes")
     if isinstance(episodes, int) and not isinstance(episodes, bool) and episodes >= 0:
-        parts.append(f"{episodes} episode{'s' if episodes != 1 else ''}")
+        parts.append(f'<span class="season-eps">{episodes} episode{"s" if episodes != 1 else ""}</span>')
     year = str(row.get("air_date") or "")[:4]
     if len(year) == 4 and year.isdigit():
-        parts.append(year)
-    return " &middot; ".join(parts)
+        parts.append(f'<span class="season-year">{year}</span>')
+    return " ".join(parts)
 
 
 def _season_picker(choices, form_id):
@@ -458,9 +469,9 @@ def _season_picker(choices, form_id):
                 f'<li class="season-row"><label class="checkbox-label"><input type="checkbox" class="season-check" '
                 f'name="season" value="{number}"{" checked disabled" if requested else ""}> '
                 f'{escape(str(row.get("name") or f"Season {number}"))}'
-                + (f' <span class="season-eps">{eps}</span>' if eps else "")
+                + (f' {eps}' if eps else "")
                 + (' <span class="muted">Requested</span>' if requested else "")
-                + f'{_season_state_badge(row)}</label></li>')
+                + (f' {_season_state_badge(row)}' if _season_state_badge(row) else "") + '</label></li>')
         out.append('<label class="season-mode"><input type="radio" name="seasons" value="pick"> Choose seasons</label>'
                    f'<ul class="season-list">{"".join(items)}</ul>')
     else:
@@ -573,8 +584,21 @@ def _meta_html(item):
         parts.append(f'<span class="badge cert">{escape(str(item["certification"]))}</span>')
     runtime = _runtime_text(item)
     if runtime:
-        parts.append(f'<span>{escape(runtime)}</span>')
-    return "".join(parts)
+        parts.append(f'<span class="runtime">{escape(runtime)}</span>')
+    return " ".join(parts)
+
+
+def _reason_html(item):
+    """The escaped reason; "Because you watched A and B" gets the names in <strong>. "" without a reason."""
+    reason = str(item.get("reason") or "")
+    if not reason:
+        return ""
+    because = [str(b) for b in item.get("because") or []]
+    for n in (2, 1):
+        names = because[:n]
+        if len(names) == n and reason == "Because you watched " + " and ".join(names):
+            return "Because you watched " + " and ".join(f"<strong>{escape(x)}</strong>" for x in names)
+    return escape(reason)
 
 
 def _detail_body(item):
@@ -583,7 +607,7 @@ def _detail_body(item):
     reason = escape(item.get("reason") or "")
     chips = "".join(f'<span class="chip">{escape(m)}</span>' for m in item.get("matches") or [])
     ext = (f'<a class="ext-link" href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">'
-           f'More on TMDB<span class="visually-hidden"> (opens in a new tab)</span> &#8599;</a>' if link else "")
+           f'More on TMDB<span class="visually-hidden"> (opens in a new tab)</span><span class="ext-icon" aria-hidden="true">&#8599;</span></a>' if link else "")
     meta = _meta_html(item)
     return ('<div class="detail-body">'
             + (f'<p class="card-meta">{meta}</p>' if meta else "")
@@ -628,13 +652,20 @@ def _row_card(item, return_to, can_act, rank=None):
     preview shows them); the poster links to the title page."""
     title = escape(_title_text(item))
     rank_html = f'<span class="rank" aria-hidden="true">{int(rank)}</span>' if rank is not None else ""
-    match = _meta_match(item)
-    return (f'<article class="card row-card" data-card="{_card_key(item)}">'
-            f'<div class="card-poster">{rank_html}{_poster_linked(item)}'
-            f'<div class="poster-top">{match}{_row_tag(item)}</div></div>'
-            f'<div class="card-info"><h4 class="title">{title}</h4>'
+    year = f'<span>{escape(str(item["year"]))}</span>' if item.get("year") else ""
+    facts = _facts(_match_int(item), year, _row_tag(item), short=True)
+    return (f'<article class="card row-card" data-card="{_card_key(item)}">{rank_html}'
+            f'<div class="card-poster">{_poster_linked(item)}</div>'
+            f'<div class="card-info"><h4 class="title">{escape(str(item["title"]))}</h4>{facts}'
             f'<details class="card-details"><summary>Details<span class="visually-hidden">: {title}</span></summary>'
             f'{_detail_body(item)}{_card_actions(item, return_to, can_act)}</details></div></article>')
+
+
+def _match_int(item):
+    try:
+        return int(item["match"]) if item.get("match") is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _meta_match(item, tag="span", cls="match"):
@@ -646,10 +677,10 @@ def _meta_match(item, tag="span", cls="match"):
 
 def _library_row_card(item, return_to="/"):
     """A "New in your library" card: poster link, tag, title, and the tools (hover preview; visible without JS)."""
-    title = _title_link(item, escape(_title_text(item)))
+    title = _title_link(item, escape(str(item["title"])))
+    year = f'<span>{escape(str(item["year"]))}</span>' if item.get("year") else ""
     return (f'<article class="card row-card lib-card" data-preview><div class="card-poster">{_poster_linked(item)}</div>'
-            f'<span class="lib-tag">In library</span>'
-            f'<div class="card-info"><h4 class="title">{title}</h4>{_card_tools(item, return_to)}</div></article>')
+            f'<div class="card-info"><h4 class="title">{title}</h4>{_facts(None, year)}{_card_tools(item, return_to)}</div></article>')
 
 
 def _row_html(row, return_to, can_act, extra_class=""):
@@ -675,15 +706,14 @@ def _hero_art(item):
         imgs += f'<img class="hero-backdrop" src="{escape(backdrop, quote=True)}" alt="" loading="lazy">'
     if poster:
         imgs += f'<img class="hero-poster" src="{escape(poster, quote=True)}" alt="" loading="lazy">'
-    if not imgs:
-        imgs = f'<span class="hero-glyph">{escape(str(item.get("title") or "?")[:1])}</span>'
     return f'<div class="hero-art" style="--h:{_hue(item)}" aria-hidden="true">{imgs}</div>'
 
 
 def _hero_slide(item, n, total, return_to, can_act):
     title = escape(str(item["title"]))
-    genres = " &middot; ".join(escape(str(g)) for g in (item.get("genres") or [])[:3])
-    reason = escape(item.get("reason") or "")
+    genres = ", ".join(escape(str(g)) for g in (item.get("genres") or [])[:3])
+    reason = _reason_html(item)
+    overview = escape(str(item.get("overview") or "").strip())
     if item.get("in_library"):
         primary = '<span class="lib-tag">In library</span>'
     else:
@@ -693,12 +723,13 @@ def _hero_slide(item, n, total, return_to, can_act):
     return (f'<article class="hero-slide{" on" if n == 1 else ""}" data-slide data-card="{_card_key(item)}" '
             f'aria-label="{n} of {total}: {escape(str(item["title"]), quote=True)}"{"" if n == 1 else " hidden"}>'
             f'{_hero_art(item)}'
-            f'<div class="hero-copy"><p class="kicker">Top pick for you</p>'
-            f'<h3 class="title hero-title">{title}</h3>'
-            f'<p class="hero-meta card-meta">{_meta_html(item)}'
-            + (f'<span class="hero-genres">{genres}</span>' if genres else "")
+            f'<div class="hero-copy">'
+            + (f'<p class="reason hero-reason">{reason}</p>' if reason else "")
+            + f'<h3 class="title hero-title">{title}</h3>'
+            f'<p class="hero-meta card-meta">'
+            + " ".join(x for x in (_meta_html(item), f'<span class="hero-genres">{genres}</span>' if genres else "") if x)
             + '</p>'
-            + (f'<p class="reason">{reason}</p>' if reason else "")
+            + (f'<p class="hero-overview">{overview}</p>' if overview else "")
             + f'<div class="hero-actions">{primary}{more}'
             f'{_card_tools(item, return_to, stars=False, extra_class="hero-tools", link=False)}</div></div></article>')
 
@@ -983,12 +1014,11 @@ def render_ai_page(msg="", undo=None):
 
 # --- Title detail page (GET /title/<movie|tv>/<id>) ---
 _IMDB_ID = re.compile(r"tt\d{1,10}\Z")
-_KIND_LABELS = {"movie": "Movie", "tv": "TV series"}
 
 
 def _ext_link(url, label):
     return (f'<a class="ext-link" href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">'
-            f'{escape(label)}<span class="visually-hidden"> (opens in a new tab)</span> &#8599;</a>')
+            f'{escape(label)}<span class="visually-hidden"> (opens in a new tab)</span><span class="ext-icon" aria-hidden="true">&#8599;</span></a>')
 
 
 def _title_status_badges(status):
@@ -1055,8 +1085,8 @@ def _season_section(view, ref, return_to, can_pick):
                 f'<label for="s-{number}" class="season-name">{name}</label>' if pick
                 else f'<span class="season-name">{name}</span>')
         items.append(f'<li class="season-row">{head}'
-                     + (f'<span class="season-eps">{eps}</span>' if eps else "")
-                     + f'{_season_state_badge(row)}</li>')
+                     + (f' {eps}' if eps else "")
+                     + (f' {_season_state_badge(row)}' if _season_state_badge(row) else "") + '</li>')
     actions = ""
     if selectable:
         dialog = "/add-dialog?" + urlencode({"type": "tv", "id": ref["tmdb_id"], "return_to": return_to})
@@ -1118,40 +1148,41 @@ def render_title(view, msg="", undo=None):
     backdrop_html = (f'<img class="title-backdrop" src="{escape(backdrop, quote=True)}" alt="">' if backdrop else "")
     poster = _poster_html({**ref, "poster_url": _web_url(item.get("poster_large_url")) or item.get("poster_url"),
                            "poster_key": None})
-    meta = ""
-    if rec and rec.get("match") is not None:
-        meta += _meta_match({"match": rec["match"]})
-    meta += _meta_html({k: item.get(k) for k in ("year", "certification", "runtime", "seasons")})
-    genres = " &middot; ".join(escape(str(g)) for g in (item.get("genres") or [])[:5])
-    if genres:
-        meta += f'<span class="title-genres">{genres}</span>'
+    genres = ", ".join(escape(str(g)) for g in (item.get("genres") or [])[:5])
+    meta = " ".join(x for x in (
+        _meta_match({"match": rec["match"]}) if rec and rec.get("match") is not None else "",
+        _meta_html({k: item.get(k) for k in ("year", "certification", "runtime", "seasons")}),
+        f'<span class="title-genres">{genres}</span>' if genres else "") if x)
     tagline = f'<p class="title-tagline">{escape(str(extras["tagline"]))}</p>' if extras.get("tagline") else ""
     badges = _title_status_badges(status)
     if view.get("on_watchlist"):
         badges += '<span class="badge">On Watchlist</span>'
 
-    actions = ""
+    primary = ""
     selectable = any(r.get("selectable") and not r.get("requested") for r in view.get("seasons") or [])
     if view.get("can_add") and _can_add(ref, can_act) and (status.get("status") or "none") == "none":
-        actions += _add_link(ref, return_to)
+        primary += _add_link(ref, return_to)
     elif media_type == "tv" and can_act and view.get("arr") and selectable and config.sonarr_configured():
-        actions += (f'<a class="btn-add" href="{escape(_add_dialog_url(ref, return_to), quote=True)}" data-add-dialog>'
+        primary += (f'<a class="btn-add" href="{escape(_add_dialog_url(ref, return_to), quote=True)}" data-add-dialog>'
                     f'Request more seasons</a>')
     elif (status.get("status") or "none") != "none":
-        actions += '<span class="lib-tag">In library</span>'
+        primary += '<span class="lib-tag">In library</span>'
     trailer = extras.get("trailer") if isinstance(extras.get("trailer"), dict) else None
     trailer_url = _web_url(trailer.get("url")) if trailer else None
+    trailer_html = ""
     if trailer_url:
-        actions += (f'<a class="btn-ghost trailer-link" href="{escape(trailer_url, quote=True)}" target="_blank" '
+        trailer_html = (f'<a class="btn-ghost trailer-link" href="{escape(trailer_url, quote=True)}" target="_blank" '
                     f'rel="noopener noreferrer">Watch trailer<span class="visually-hidden"> (opens YouTube in a new tab)</span></a>')
+    dismiss_html = ""
     if can_act:
         if status.get("dismissed"):
-            actions += (f'<form class="inline" method="post" action="/undismiss">{_hidden_fields(ref, return_to)}'
+            dismiss_html = (f'<form class="inline" method="post" action="/undismiss">{_hidden_fields(ref, return_to)}'
                         f'<button type="submit" class="btn-ghost">Show in recommendations again</button></form>')
         else:
-            actions += (f'<form class="inline" method="post" action="/dismiss">{_hidden_fields(ref, return_to)}'
+            dismiss_html = (f'<form class="inline" method="post" action="/dismiss">{_hidden_fields(ref, return_to)}'
                         f'<button type="submit" class="btn-ghost">Not interested</button></form>')
-    actions += _rate_form(ref, return_to) + _list_toggle(ref, return_to) + _list_link(ref, return_to, detail=True)
+    actions = (primary + _list_toggle(ref, return_to) + _list_link(ref, return_to, detail=True) + trailer_html
+               + dismiss_html + _rate_form(ref, return_to))
 
     in_lists = ""
     names = [e for e in view.get("list_names") or [] if isinstance(e, dict) and isinstance(e.get("id"), int)]
@@ -1161,7 +1192,7 @@ def render_title(view, msg="", undo=None):
 
     hero = (f'<section class="title-hero" style="--h:{_hue(ref)}">{backdrop_html}<div class="title-hero-inner">'
             f'<div class="title-poster">{poster}</div><div class="title-head">'
-            f'<p class="kicker">{_KIND_LABELS[media_type]}</p><h1 class="title title-name">{escape(title_plain)}</h1>'
+            f'<h1 class="title title-name">{escape(title_plain)}</h1>'
             f'{tagline}<p class="card-meta title-meta">{meta}</p>'
             + (f'<p class="title-status badges">{badges}</p>' if badges else "")
             + f'<div class="title-actions">{actions}</div>{in_lists}</div></div></section>')
@@ -1175,23 +1206,27 @@ def render_title(view, msg="", undo=None):
     imdb = str(extras.get("imdb_id") or "")
     if _IMDB_ID.match(imdb):
         ext += _ext_link(f"https://www.imdb.com/title/{imdb}/", "IMDb")
-    body = (f'{hero}{notes}{part}<section class="title-section title-overview"><h2>Overview</h2>'
-            f'<p class="overview">{overview}</p>{_title_facts(view, item, extras)}{ext}</section>')
+    main = (f'<section class="title-section title-overview"><h2>Overview</h2>'
+            f'<p class="overview">{overview}</p></section>')
+    facts_dl = _title_facts(view, item, extras)
+    details = (f'<section class="title-section title-details"><h2>Details</h2>{facts_dl}'
+               + (f'<p class="title-links">{ext}</p>' if ext else "") + '</section>') if facts_dl or ext else ""
     if rec:
         chips = "".join(f'<span class="chip">{escape(str(m))}</span>' for m in rec.get("matches") or [])
         because = [str(b) for b in rec.get("because") or []]
-        body += ('<section class="title-section why"><h2>Why Compass picked this</h2>'
+        main += ('<section class="title-section why"><h2>Why Compass picked this</h2>'
                  + _meta_match({"match": rec.get("match")}, "p", "why-match match")
                  + (f'<p class="reason">{escape(str(rec["reason"]))}</p>' if rec.get("reason") else "")
                  + (f'<div class="chips">{chips}</div>' if chips else "")
-                 + (f'<p class="muted">Because you watched {escape(", ".join(because))}</p>' if because else "")
+                 + (f'<p class="why-because">Because you watched {escape(", ".join(because))}</p>' if because else "")
                  + '</section>')
     elif view.get("fit") and (view["fit"].get("matches")):
         chips = "".join(f'<span class="chip">{escape(str(m))}</span>' for m in view["fit"]["matches"])
-        body += f'<section class="title-section why fit"><h2>How it fits your taste</h2><div class="chips">{chips}</div></section>'
+        main += f'<section class="title-section why fit"><h2>How it fits your taste</h2><div class="chips">{chips}</div></section>'
     if media_type == "tv":
-        body += _season_section(view, ref, return_to, can_act and config.sonarr_configured())
-    body += _cast_section(extras, item)
+        main += _season_section(view, ref, return_to, can_act and config.sonarr_configured())
+    body = (f'{hero}{notes}{part}<div class="title-body"><div class="title-main">{main}</div>'
+            f'<aside class="title-side" aria-label="Details and cast">{details}{_cast_section(extras, item)}</aside></div>')
     similar = [i for i in view.get("similar") or [] if isinstance(i, dict) and _has_id(i)]
     if similar:
         body += _row_html({"id": "similar", "title": "More like this", "items": similar}, return_to, can_act,
@@ -1302,6 +1337,7 @@ def _list_card(item, view, return_to):
         badges += '<span class="badge">Watched</span>'
     if item.get("dismissed"):
         badges += '<span class="badge">Not interested</span>'
+    badges_p = f'<p class="card-badges">{badges}</p>' if badges else ""
     arr_text = _arr_label(item.get("arr_state"), item.get("episodes"))
     arr_line = f'<p class="card-sub arr-line">{escape(arr_text)}</p>' if arr_text else ""
     ids = _hidden_fields(item, return_to) + f'<input type="hidden" name="list_id" value="{int(view["list"]["id"])}">'
@@ -1316,9 +1352,9 @@ def _list_card(item, view, return_to):
     remove = (f'<form class="inline list-remove" method="post" action="/lists/remove" data-enhance="list" data-remove-card>'
               f'{ids}<button type="submit" aria-label="Remove {escape(title_text, quote=True)} from this list">Remove</button></form>')
     return (f'<article class="card search-card list-card" data-card="{_card_key(item)}">'
-            f'<div class="card-poster">{_poster_linked(item)}<div class="poster-top">{_meta_match(item)}'
-            f'<span class="badges">{badges}</span></div><span class="kind">{kind}</span></div>'
-            f'<div class="card-info"><h3 class="title">{title}</h3>{arr_line}{_card_tools(item, return_to)}'
+            f'<div class="card-poster">{_poster_linked(item)}</div>'
+            f'<div class="card-info"><h3 class="title">{title}</h3>{_facts(_match_int(item), f"<span>{kind}</span>")}'
+            f'{badges_p}{arr_line}{_card_tools(item, return_to)}'
             f'{move}{remove}</div></article>')
 
 
@@ -1401,20 +1437,22 @@ def _search_card(item, return_to, can_act):
         badges += '<span class="badge">Watched</span>'
     if item.get("dismissed"):
         badges += '<span class="badge">Not interested</span>'
+    badges_p = f'<p class="card-badges">{badges}</p>' if badges else ""
     arr_text = _arr_label(item.get("arr_state"), item.get("episodes"))
     arr_line = f'<p class="card-sub arr-line">{escape(arr_text)}</p>' if arr_text else ""
-    meta = f"<span>{kind}</span>"
+    meta_parts = [f"<span>{kind}</span>"]
     if item.get("year"):
-        meta += f'<span>{escape(str(item["year"]))}</span>'
+        meta_parts.append(f'<span>{escape(str(item["year"]))}</span>')
     try:
         vote = float(item.get("vote_average") or 0)
     except (TypeError, ValueError):
         vote = 0.0
     if item.get("vote_count") and vote:
-        meta += f"<span>TMDB {vote:.1f}</span>"
+        meta_parts.append(f"<span>TMDB {vote:.1f}</span>")
+    meta = " ".join(meta_parts)
     link = _web_url(item.get("url"))
     ext = (f'<a class="ext-link" href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">'
-           f'More on TMDB<span class="visually-hidden"> (opens in a new tab)</span> &#8599;</a>' if link else "")
+           f'More on TMDB<span class="visually-hidden"> (opens in a new tab)</span><span class="ext-icon" aria-hidden="true">&#8599;</span></a>' if link else "")
     overview = escape(item.get("overview") or "No overview available.")
     details = (f'<details class="card-details"><summary>Details<span class="visually-hidden">: {title}</span></summary>'
                f'<div class="detail-body"><p class="card-meta">{meta}</p>'
@@ -1429,10 +1467,9 @@ def _search_card(item, return_to, can_act):
     if actions:
         actions = f'<div class="card-actions">{actions}</div>'
     return (f'<article class="card search-card" data-card="{_card_key(item)}" data-keep-on-add>'
-            f'<div class="card-poster">{_poster_linked(item)}'
-            f'<div class="poster-top"><span class="badges">{badges}</span></div>'
-            f'<span class="kind">{kind}</span></div>'
-            f'<div class="card-info"><h3 class="title">{title}</h3>{arr_line}{details}{actions}'
+            f'<div class="card-poster">{_poster_linked(item)}</div>'
+            f'<div class="card-info"><h3 class="title">{title}</h3>{_facts(None, f"<span>{kind}</span>")}{badges_p}'
+            f'{arr_line}{details}{actions}'
             f'{_card_tools(item, return_to)}</div></article>')
 
 
@@ -1563,8 +1600,8 @@ def render_appearance(msg=""):
         is_current = t["key"] == current
         pill = '<span class="theme-current">Current</span>' if is_current else ""
         options.append(
-            f'<label class="theme-option" data-theme="{escape(t["key"])}" data-meta-dark="{escape(t["bg"])}" '
-            f'data-meta-light="{escape(t["bg_light"])}" data-logo="{escape(t["logo"])}" '
+            f'<label class="theme-option" data-theme="{escape(t["key"])}" data-theme-color="{escape(t["bg"])}" '
+            f'data-logo="{escape(t["logo"])}" '
             f'data-favicon="{escape(_favicon_href(t))}">'
             f'<input class="theme-radio" type="radio" name="theme" value="{escape(t["key"])}"{" checked" if is_current else ""}>'
             '<span class="theme-swatch" aria-hidden="true"><span class="swatch-top"></span>'
@@ -1580,7 +1617,7 @@ def render_appearance(msg=""):
             '<form class="theme-form" method="post" action="/theme" data-enhance="theme">'
             '<input type="hidden" name="return_to" value="/appearance">'
             '<fieldset class="theme-picker"><legend>Colour theme</legend>'
-            '<p class="muted theme-help">Saved on this device only. Light or dark follows your device setting.</p>'
+            '<p class="muted theme-help">Saved on this device only.</p>'
             f'<div class="theme-grid">{"".join(options)}</div></fieldset>'
             '<button type="submit" class="btn-add theme-submit">Use this theme</button></form></div>')
     return _shell(body, "settings")
@@ -1630,10 +1667,11 @@ def _shell(body, section, subtitle="", show_refresh=False, return_to="/", status
     return (f'<!doctype html><html lang="en" data-theme="{escape(theme["key"])}"><head><meta charset="utf-8">'
             f'<title>{escape(heading)} - Compass</title>'
             f'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
-            f'<meta name="color-scheme" content="dark light">'
-            f'<meta name="theme-color" media="(prefers-color-scheme: dark)" content="{escape(theme["bg"])}">'
-            f'<meta name="theme-color" media="(prefers-color-scheme: light)" content="{escape(theme["bg_light"])}">'
+            f'<meta name="color-scheme" content="dark">'
+            f'<meta name="theme-color" content="{escape(theme["bg"])}">'
             f'<link rel="icon" type="image/svg+xml" href="{escape(_favicon_href(theme))}">'
+            f'<link rel="preload" href="/static/fonts/plus-jakarta-sans.woff2" as="font" type="font/woff2" crossorigin>'
+            f'<link rel="preload" href="/static/fonts/sofia-sans-condensed.woff2" as="font" type="font/woff2" crossorigin>'
             f'<link rel="stylesheet" href="/static/app.css"><script src="/static/app.js" defer></script>'
             f'{meta_refresh}</head><body{body_class}>'
             f'<a class="skip-link" href="#main">Skip to content</a>'

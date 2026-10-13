@@ -149,7 +149,7 @@ class TestWeb(unittest.TestCase):
         self.assertIn('class="cinematic"', html)
         self.assertEqual(html.count('<article class="hero-slide'), 5)
         self.assertEqual(html.count('data-slide'), 5)
-        for heading in ("Recommended for You", "Top 10 picks for you", "Because you watched Arrival",
+        for heading in ("Recommended for you", "Top 10 picks for you", "Because you watched Arrival",
                         "New in your library"):
             self.assertIn(heading, html)
         self.assertNotIn("Watched titles analyzed", html)  # stat tiles were dropped

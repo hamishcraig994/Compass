@@ -7,7 +7,7 @@ RUN useradd --create-home --uid 1000 app
 WORKDIR /app
 
 COPY --chown=app:app *.py ./
-# app.css / app.js, served by web.py's whitelisted /static/ route
+# app.css / app.js and fonts/*.woff2, served by web.py's whitelisted /static/ route
 COPY --chown=app:app static/ ./static/
 
 # The cache and "not interested" list live in /app/data. Creating it here (owned by "app") means a

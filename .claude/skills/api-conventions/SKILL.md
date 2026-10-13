@@ -22,7 +22,7 @@ Server: stdlib `http.server` - `Handler` in `web.py` (backend-owned). Pages are 
 | GET | `/settings?section=<settings_page.SECTIONS>` | |
 | GET | `/api/status` | `build_status()` JSON, always fast |
 | GET | `/health` | `ok`, text/plain (Docker healthcheck) |
-| GET | `/static/app.css`, `/static/app.js` | whitelist `Handler.STATIC_FILES` only; anything else gives 404 |
+| GET | `/static/app.css`, `/static/app.js`, `/static/fonts/{sofia-sans-condensed,plus-jakarta-sans,source-serif-4}.woff2` | exact whitelist `Handler.STATIC_FILES` only (binary read; fonts `font/woff2` cached 1 year immutable, CSS/JS `no-cache`); paths are parsed with `urlsplit`, so `;params` don't match; anything else gives 404 |
 | POST | `/refresh`, `/dismiss`, `/undismiss`, `/add`, `/ai/generate` | item routes take form fields `type`, `id`, `return_to` |
 | POST | `/theme` | `theme` (whitelist in `themes.py`), `return_to` (default `/appearance`); sets cookie `compass_theme` (Path=/, SameSite=Lax, 1 year), JSON or 303; works in sample mode; never touches db/cache |
 | POST | `/rate` | `type`, `id`, `stars` (0 clears, 1-5), `return_to`; works for any title incl. unwatched recommendations; sample mode answers "not saved" |

@@ -587,6 +587,41 @@ class TestStatic(AsyncCase):
             self.assertEqual(status, 404, path)
             self.assertNotIn("import", body)
 
+    def _raw(self, path):
+        try:
+            resp = urllib.request.build_opener(NoRedirect).open(self.base + path, timeout=5)
+            return resp.status, resp.headers, resp.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read()
+
+    def test_fonts_are_served_as_binary_with_a_year_immutable_cache(self):
+        for name in ("sofia-sans-condensed", "plus-jakarta-sans", "source-serif-4"):
+            status, headers, body = self._raw(f"/static/fonts/{name}.woff2")
+            self.assertEqual(status, 200, name)
+            self.assertEqual(headers.get("Content-Type"), "font/woff2")
+            self.assertEqual(headers.get("Cache-Control"), "public, max-age=31536000, immutable")
+            with open(os.path.join(os.path.dirname(web.__file__), "static", "fonts", f"{name}.woff2"), "rb") as f:
+                self.assertEqual(body, f.read())
+            self.assertEqual(body[:4], b"wOF2")
+            self.assertEqual(headers.get("Content-Length"), str(len(body)))
+
+    def test_css_and_js_stay_no_cache(self):
+        for name in ("app.css", "app.js"):
+            self.assertEqual(self._raw(f"/static/{name}")[1].get("Cache-Control"), "no-cache")
+
+    def test_font_paths_cannot_escape_or_guess(self):
+        for path in ("/static/fonts/../app.css", "/static/fonts/%2e%2e/app.css", "/static/fonts/..%2Fapp.css",
+                     "/static/fonts/", "/static/fonts", "/static/fonts/nope.woff2", "/static/fonts/OFL-sourceserif4.txt",
+                     "/static/fonts/source-serif-4.woff2/", "/static/fonts/SOURCE-SERIF-4.woff2",
+                     "/static/fonts//source-serif-4.woff2", "/static/fonts/../../web.py", "/static/plus-jakarta-sans.woff2",
+                     "/static/fonts/plus-jakarta-sans.WOFF2", "/static/fonts/OFL-plusjakartasans.txt",
+                     "/static/fonts/plus-jakarta-sans.woff2;x=1", "/static/fonts/plus-jakarta-sans.woff2;"):
+            self.assertEqual(self._raw(path)[0], 404, path)
+
+    def test_missing_font_file_is_a_404_not_a_500(self):
+        with mock.patch.object(web.Handler, "STATIC_DIR", tempfile.mkdtemp()):
+            self.assertEqual(self._raw("/static/fonts/source-serif-4.woff2")[0], 404)
+
     def test_missing_file_is_a_404_not_a_500(self):
         with mock.patch.object(web.Handler, "STATIC_DIR", tempfile.mkdtemp()):
             self.assertEqual(self.request("GET", "/static/app.js")[0], 404)

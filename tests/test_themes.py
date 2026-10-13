@@ -22,12 +22,18 @@ class TestRegistry(unittest.TestCase):
                 self.assertTrue(t[f])
                 self.assertIsNone(BRANDS.search(t[f]), t)
             self.assertRegex(t["bg"], r"^#[0-9a-f]{6}$")
-            self.assertRegex(t["bg_light"], r"^#[0-9a-f]{6}$")
+            self.assertNotIn("bg_light", t)
             self.assertRegex(t["logo"], r"^#[0-9a-f]{6}$")
 
+    def test_dark_bg_values(self):
+        self.assertEqual({t["key"]: t["bg"] for t in themes.THEMES},
+                         {"amber": "#0f1115", "crimson": "#101114", "lime": "#0f1011",
+                          "ocean": "#0d1220", "teal": "#0e161c", "mono": "#000000"})
+
     def test_tokens(self):
-        self.assertEqual(len(themes.TOKENS), 15)
-        self.assertEqual(len(set(themes.TOKENS)), 15)
+        self.assertEqual(themes.TOKENS, ("--bg", "--bg-2", "--surface", "--surface-2", "--line", "--text",
+                                         "--text-2", "--muted", "--accent", "--accent-ink", "--accent-hover", "--focus"))
+        self.assertEqual(len(set(themes.TOKENS)), 12)
         self.assertTrue(all(t.startswith("--") for t in themes.TOKENS))
 
     def test_is_valid_and_get(self):

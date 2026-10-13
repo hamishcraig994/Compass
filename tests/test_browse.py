@@ -63,7 +63,7 @@ class TestRecommendedAndTop10(unittest.TestCase):
         r = rows(v)["recommended"]
         self.assertEqual(ids(r), list(range(5, 25)))
         self.assertEqual((r["title"], r["subtitle"], r["numbered"], r["source"]),
-                         ("Recommended for You", "Based on your watch history", False, "recs"))
+                         ("Recommended for you", "Based on your watch history", False, "recs"))
 
     def test_recommended_with_five_or_fewer_items_repeats_them(self):
         v = browse.view({"items": [item(n) for n in range(5)]}, "all")
@@ -175,7 +175,7 @@ class TestGems(unittest.TestCase):
         more = items + [item(20 + n, votes=50, match=75) for n in range(3)]
         r = rows(browse.view({"items": more}, "movie"))["gems"]
         self.assertEqual(ids(r), [10, 11, 20, 21, 22])
-        self.assertEqual((r["title"], r["subtitle"]), ("Hidden Gems", "High match, less well known"))
+        self.assertEqual((r["title"], r["subtitle"]), ("Hidden gems", "High match, less well known"))
 
     def test_median_is_per_media_type(self):
         movies = [item(n, votes=100000, match=99) for n in range(10)] + \
@@ -292,7 +292,7 @@ class TestSampleView(unittest.TestCase):
         for kind in ("all", "movie"):
             titles, v = self.titles(kind)
             self.assertEqual(len(v["hero"]), 5)
-            for t in ("Recommended for You", "Because you watched Arrival", "Top 10 picks for you", "New in your library"):
+            for t in ("Recommended for you", "Because you watched Arrival", "Top 10 picks for you", "New in your library"):
                 self.assertIn(t, titles)
 
     def test_tv_has_no_arrival_row_and_no_movies(self):

@@ -9,7 +9,7 @@ import threading
 import time
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlsplit
 
 import arr_library
 import browse
@@ -1080,10 +1080,19 @@ def _parse_list_ref(form):
 
 
 class Handler(BaseHTTPRequestHandler):
-    # Served by name from this fixed list - the request path is never joined onto a filesystem
-    # path, so there's nothing to traverse.
+    # Served by exact name from this fixed list (CSS, JS and the three self-hosted fonts). The key is
+    # compared to the raw path after /static/ and only the whitelist's own constant is joined onto
+    # STATIC_DIR - never request text - so there's nothing to traverse. A changed font gets a new
+    # file name, because fonts are cached for a year.
     STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-    STATIC_FILES = {"app.css": "text/css; charset=utf-8", "app.js": "text/javascript; charset=utf-8"}
+    STATIC_FILES = {
+        "app.css": "text/css; charset=utf-8",
+        "app.js": "text/javascript; charset=utf-8",
+        "fonts/sofia-sans-condensed.woff2": "font/woff2",
+        "fonts/plus-jakarta-sans.woff2": "font/woff2",
+        "fonts/source-serif-4.woff2": "font/woff2",
+    }
+    FONT_CACHE = "public, max-age=31536000, immutable"
 
     def _send(self, status, body, content_type="text/html; charset=utf-8", headers=None):
         data = body if isinstance(body, bytes) else body.encode("utf-8")
@@ -1123,15 +1132,16 @@ class Handler(BaseHTTPRequestHandler):
         if content_type is None:
             return self._send(404, "Not found", "text/plain")
         try:
-            with open(os.path.join(self.STATIC_DIR, name), encoding="utf-8") as f:
+            with open(os.path.join(self.STATIC_DIR, *name.split("/")), "rb") as f:
                 body = f.read()
         except OSError:
             return self._send(404, "Not found", "text/plain")
-        return self._send(200, body, content_type, headers={"Cache-Control": "no-cache"})
+        cache = self.FONT_CACHE if content_type == "font/woff2" else "no-cache"
+        return self._send(200, body, content_type, headers={"Cache-Control": cache})
 
     def do_GET(self):
         _request.theme = themes.from_cookie(self.headers.get("Cookie"))
-        url = urlparse(self.path)
+        url = urlsplit(self.path)
         if url.path == "/health":
             return self._send(200, "ok", "text/plain")
         if url.path == "/api/status":
@@ -1231,7 +1241,7 @@ class Handler(BaseHTTPRequestHandler):
         length = min(int(self.headers.get("Content-Length") or 0), MAX_FORM_BYTES)
         form = parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
         return_to = form.get("return_to", ["/recommended"])[0]
-        path = urlparse(self.path).path
+        path = urlsplit(self.path).path
         as_json = self._wants_json()
         if path == "/refresh":
             # Starts a background rebuild rather than waiting for it - the page it redirects to

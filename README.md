@@ -44,8 +44,9 @@ background (a minute or two); after that the list is rebuilt hourly while you ke
 - **AI picks (optional, manual only):** an AI page that, only when you click Generate, asks any
   OpenAI-compatible endpoint for ideas grounded in your profile. Every suggestion is looked up on
   TMDB and scored by the same formula as everything else, with no bonus.
-- **Themes:** Crimson (default), Amber, Lime, Ocean, Teal Night and Mono, each with light and dark
-  variants, remembered per device. The logo follows the theme.
+- **Look:** a dark, cinematic interface with bundled fonts (Sofia Sans Condensed, Plus Jakarta Sans,
+  Source Serif 4), so nothing loads from outside. Six colour themes: Crimson (default), Amber, Lime,
+  Ocean, Teal Night and Mono, remembered per device. The logo follows the theme.
 - **Works without JavaScript:** every button is a plain form; JS only makes things happen in place.
 
 ## Setup
