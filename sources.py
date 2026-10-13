@@ -167,11 +167,12 @@ def run(sample_mode, limit=200):
     return result
 
 
-def generate_ai_recommendations(limit=50):
+def generate_ai_recommendations(limit=50, avoid=()):
     """Runs the recommender in AI-only mode: just the AI's own ideas, verified against real TMDB
     data and scored the normal way - none of the TMDB-linked/genre/trending/new-release candidates
     the main Recommended list also has. Meant to be triggered deliberately (the AI page's Generate
-    button) - unlike run(), every call here costs a real AI request. Never runs in sample mode."""
+    button) - unlike run(), every call here costs a real AI request. Never runs in sample mode.
+    avoid: labels of the titles the last Generate showed, so the AI doesn't repeat itself."""
     empty_profile = {c: {} for c in ("genre", "keyword", "director", "actor")}
     if not config.ai_configured():
         return {"items": [], "profile": empty_profile, "notes": ["AI isn't configured - add a token in "
@@ -180,7 +181,7 @@ def generate_ai_recommendations(limit=50):
     ratings = db.ratings()
     history = profile.apply_ratings(watched, ratings) + profile.rated_entries(watched, db.rating_rows())
     result = recommend.recommend(history, library_keys, tmdb.TmdbClient(config.TMDB_TOKEN),
-                                 dismissed=db.dismissed(), limit=limit, ai=ai_client(), ai_only=True,
+                                 dismissed=db.dismissed(), limit=limit, ai=ai_client(), ai_only=True, ai_avoid=avoid,
                                  disliked={k: s for k, s in ratings.items() if s <= profile.DISLIKE_MAX_STARS})
     result["notes"] = notes + result["notes"]
     result["sample"] = False

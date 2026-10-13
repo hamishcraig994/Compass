@@ -16,6 +16,8 @@ How a suggestion is found and scored:
      Taste dominates: a trending title that doesn't fit you can't outrank a strong match.
   5. Titles that are trending or came out in the last 6 months are flagged, for the "New & trending" tab."""
 import math
+import re
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 
 import profile
@@ -27,8 +29,11 @@ MIN_VOTES_NEW = 25                     # ...but brand-new and trending titles ha
 PRIOR_VOTES, PRIOR_RATING = 100, 6.5   # ratings with few votes are pulled towards this
 DISCOVER_GENRES = 2                    # how many top genres to add "popular in" and "new in" titles from
 MAX_DISCOVER, MAX_TRENDING, MAX_NEW = 20, 30, 30
-MAX_AI_REQUESTED = 15                  # how many ideas to ask the AI for; expect some not to resolve on TMDB
-MAX_AI = 15                            # how many resolved AI candidates to actually consider
+MAX_AI_REQUESTED = 25                  # how many ideas to ask the AI for; expect some not to resolve on TMDB
+MAX_AI = 25                            # how many resolved AI candidates to actually consider
+AI_TIER_CAPS = {"loved": 40, "liked": 40, "recent": 15, "disliked": 25, "abandoned": 15, "seen": 60,
+                "not_interested": 30, "previously_suggested": 40}   # titles per prompt section (~200 at most)
+AI_RECENT_DAYS = 60                    # watched within this many days = "recent" in the AI prompt
 NEW_DAYS = 180                         # released within this many days = "New"
 FRESH_SPAN_DAYS = 730                  # the recency boost fades to nothing over two years
 MIN_TASTE_FOR_BUZZ = 0.10              # trending/new titles need at least this much content match
@@ -88,8 +93,79 @@ def _details_or_none(tmdb, media_type, tmdb_id):
         return None
 
 
+def _ai_label(title, year, media_type):
+    """How a title appears in the AI prompt: "Arrival (2016)", "The Leftovers (2014, TV)"."""
+    bits = [str(year)] if year else []
+    if media_type == "tv":
+        bits.append("TV")
+    return f"{title} ({', '.join(bits)})" if bits else title
+
+
+def ai_label_for(item):
+    """_ai_label for a recommendation item (title, year and media_type keys)."""
+    return _ai_label(item.get("title") or "?", item.get("year"), item.get("media_type"))
+
+
+def _title_key(text):
+    """Loose match for a title the AI echoes back: no year suffix, accents, punctuation or case."""
+    text = re.sub(r"\s*\([^)]*\)\s*$", "", str(text or ""))
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def ai_taste(watched, details_by_key, features, now, dismissed_labels=(), previously_suggested=()):
+    """The AI prompt's view of the viewer: their history grouped by how they felt about it.
+    watched: history entries (ratings applied); details_by_key: {(media_type, id): tmdb details} for titles
+    and years where known. Returns {section: [labels]} (see ai.TASTE_SECTIONS) plus "patterns"."""
+    tiers = {k: [] for k in ("loved", "liked", "disliked", "abandoned", "seen")}
+    recent_pool = []
+    for item in watched:
+        key = (item["media_type"], item["tmdb_id"])
+        details = details_by_key.get(key) or {}
+        title = details.get("title") if details.get("title") not in (None, "?") else item.get("title")
+        if not title or title == "?":
+            continue
+        label = _ai_label(title, details.get("year") or item.get("year"), item["media_type"])
+        stars = item.get("personal_stars") or profile.stars_from_ten(item.get("user_rating"))
+        progress, views = item.get("progress"), item.get("view_count") or 1
+        if stars is not None and stars <= profile.DISLIKE_MAX_STARS:
+            tier = "disliked"
+        elif progress is not None and progress < 0.25 and (stars is None or stars < 4):
+            tier = "abandoned"
+        elif stars == 5 or (views >= 2 and (stars is None or stars >= 4)):
+            tier = "loved"
+        elif stars == 4:
+            tier = "liked"
+        else:
+            tier = "seen"
+        weight = profile.item_weight(item, now)
+        last = item.get("last_viewed")
+        tiers[tier].append((weight, last or "", label))
+        if tier in ("loved", "liked", "seen") and last:
+            try:
+                age = (now - profile._parse(last)).days
+            except (TypeError, ValueError):
+                age = None
+            if age is not None and age <= AI_RECENT_DAYS:
+                recent_pool.append((last, label, tier))
+    recent_pool.sort(key=lambda r: r[0], reverse=True)
+    recent = recent_pool[:AI_TIER_CAPS["recent"]]
+    in_recent = {label for _, label, tier in recent if tier == "seen"}   # loved/liked stay in their tier too
+    taste = {"recent": [label for _, label, _ in recent]}
+    for tier, rows in tiers.items():
+        order = (lambda r: r[1]) if tier == "disliked" else (lambda r: r[0])   # dislikes newest first
+        rows = sorted(rows, key=order, reverse=True)
+        taste[tier] = [label for _, _, label in rows if label not in in_recent][:AI_TIER_CAPS[tier]]
+    taste["not_interested"] = list(dismissed_labels)[:AI_TIER_CAPS["not_interested"]]
+    taste["previously_suggested"] = list(previously_suggested)[:AI_TIER_CAPS["previously_suggested"]]
+    summary = profile.summary(features)
+    taste["patterns"] = {"genre": summary.get("genre", []), "keyword": summary.get("keyword", [])}
+    return taste
+
+
 def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
-              max_profile_items=100, max_sources=40, max_candidates=150, ai=None, ai_only=False, disliked=None):
+              max_profile_items=100, max_sources=40, max_candidates=150, ai=None, ai_only=False, disliked=None,
+              ai_avoid=()):
     """watched: items from plex.py; library_keys: {(media_type, id)} of everything you already have;
     tmdb: object with details(), discover(), trending(), new_releases() and search() (see tmdb.TmdbClient).
     ai: optional object with suggest() (see ai.AiClient) - skipped entirely if not given.
@@ -98,6 +174,7 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
     costs a real AI request, unlike everything else here, which is why it isn't automatic).
     disliked: {(media_type, tmdb_id): stars} of titles you rated low. A candidate TMDB links to one
     of them has its score multiplied by the smallest matching DISLIKE_FACTORS entry (never excluded).
+    ai_avoid: labels of titles the AI suggested last time, so it doesn't repeat itself.
     Returns {"items": [...best first...], "profile": {...}, "notes": [...]}."""
     now = now or datetime.now(timezone.utc)
     today = now.date()
@@ -171,8 +248,15 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
     # look it up on TMDB ourselves (matching by year) before treating it as real.
     if ai is not None:
         try:
-            watched_titles = [item.get("title") or details.get("title") or "?" for item, details in pairs]
-            suggestions = ai.suggest(profile.summary(features), watched_titles, count=MAX_AI_REQUESTED)
+            details_by_key = {(i["media_type"], i["tmdb_id"]): d for i, d in pairs}
+            dismissed_labels = []
+            for d_type, d_id in list(dismissed)[:AI_TIER_CAPS["not_interested"]]:
+                d = _details_or_none(tmdb, d_type, d_id)
+                if d and d.get("title") not in (None, "?"):
+                    dismissed_labels.append(_ai_label(d["title"], d.get("year"), d_type))
+            taste = ai_taste(watched, details_by_key, features, now, dismissed_labels, ai_avoid)
+            anchors = {_title_key(label): label for sec in ("loved", "liked", "recent") for label in taste[sec]}
+            suggestions = ai.suggest(taste, count=MAX_AI_REQUESTED)
             unmatched = already = 0
             for raw in suggestions:
                 media_type = raw.get("media_type")
@@ -192,6 +276,9 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
                 c = candidate(key, "ai")
                 if raw.get("reason") and not c.get("ai_reason"):
                     c["ai_reason"] = raw["reason"]
+                if not c.get("ai_because"):   # only titles really in their lists; a name the AI made up is dropped
+                    named = [anchors.get(_title_key(b)) for b in (raw.get("because") or []) if isinstance(b, str)]
+                    c["ai_because"] = [re.sub(r"\s*\([^)]*\)$", "", n) for n in dict.fromkeys(n for n in named if n)][:2]
                 if key not in by_origin["ai"]:
                     by_origin["ai"].append(key)
             if not suggestions:
@@ -256,10 +343,14 @@ def recommend(watched, library_keys, tmdb, dismissed=(), limit=200, now=None,
         elif is_new:
             reason = "New release that fits your taste"
         elif "ai" in c["origin"]:
-            reason = f"AI pick: {c['ai_reason']}" if c.get("ai_reason") else "AI pick based on your taste profile"
+            if c.get("ai_because"):
+                lead = "Because you watched " + " and ".join(c["ai_because"])
+                reason = f"{lead}. {c['ai_reason']}" if c.get("ai_reason") else lead
+            else:
+                reason = f"AI pick: {c['ai_reason']}" if c.get("ai_reason") else "AI pick based on your taste profile"
         else:
             reason = f"Highly rated in {c['genre']}, one of your favourite genres"
-        because = []
+        because = list(c.get("ai_because") or [])
         for _, t in sorted(c["sources"], key=lambda s: -s[0]):
             if t not in because:
                 because.append(t)

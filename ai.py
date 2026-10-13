@@ -14,13 +14,19 @@ import json
 from http_util import post_json
 
 SYSTEM_PROMPT = (
-    'You are a movie and TV recommendation assistant. Given a viewer\'s taste profile, suggest '
-    'titles they have not seen that fit their taste. Never suggest a title already in their watch history. '
-    'Each suggestion has a title, its release year, media_type exactly "movie" or "tv", and a one-sentence reason.'
+    "You are a film and TV curator. Work out this viewer's taste from their ratings and history, then "
+    "recommend titles they haven't seen. Before choosing, privately identify what connects the titles they "
+    "loved (tone, pacing, themes, era, complexity) and what their disliked and abandoned titles have in "
+    "common, and steer away from the latter. Ground every pick in specific titles from their loved, liked "
+    "or recent lists. Prefer considered picks over the obvious blockbusters everyone is shown. Never suggest "
+    "anything from their history, their not-interested list or the previously suggested list, and only "
+    "suggest titles that have already been released."
 )
 JSON_FORMAT = (
     ' Reply with ONLY JSON, no other text and no markdown formatting, in this exact shape: '
-    '{"suggestions": [{"title": "...", "year": 2020, "media_type": "movie", "reason": "one short sentence"}]}.'
+    '{"suggestions": [{"title": "...", "year": 2020, "media_type": "movie", "because": ["a title from their '
+    'lists"], "reason": "one sentence, specific to this viewer", "novelty": "safe"}]}. media_type is exactly '
+    '"movie" or "tv"; novelty is exactly "safe" (a likely hit) or "discovery" (less known, more of a stretch).'
 )
 
 # Structured outputs (OpenAI's own API): the reply is guaranteed to match this, so it can't come back malformed.
@@ -30,25 +36,43 @@ SUGGESTIONS_SCHEMA = {
     "schema": {
         "type": "object", "additionalProperties": False, "required": ["suggestions"],
         "properties": {"suggestions": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False, "required": ["title", "year", "media_type", "reason"],
+            "type": "object", "additionalProperties": False,
+            "required": ["title", "year", "media_type", "because", "reason", "novelty"],
             "properties": {"title": {"type": "string"}, "year": {"type": ["integer", "null"]},
                            "media_type": {"type": "string", "enum": ["movie", "tv"]},
-                           "reason": {"type": "string"}}}}},
+                           "because": {"type": "array", "items": {"type": "string"}},
+                           "reason": {"type": "string"},
+                           "novelty": {"type": "string", "enum": ["safe", "discovery"]}}}}},
     },
 }
 
 # OpenAI reasoning models (o-series, gpt-5 and later, e.g. gpt-6-luna) think before answering, out of the same
-# token budget, and default to medium effort. Picking titles from a taste profile doesn't need deep thought,
-# so ask for low effort: faster, cheaper, and it leaves the budget for the answer.
+# token budget, and default to medium effort. Inferring taste from a rated history is exactly what that thinking
+# is for, so keep medium; the cap leaves room for the thinking plus 25 suggestions.
 REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5", "gpt-6", "gpt-7")
-REASONING_EFFORT = "low"
+REASONING_EFFORT = "medium"
+
+# What the prompt asks for. recommend.py verifies every pick on TMDB and filters it, so ask for more than it keeps.
+SUGGEST_COUNT = 25
+TV_SHARE = 0.4          # roughly 60% movies, 40% TV
+DISCOVERY_SHARE = 1 / 3  # at least this many lesser-known picks
+TASTE_SECTIONS = (      # (key in the taste dict, heading in the prompt)
+    ("loved", "Loved (5 stars, or rewatched)"),
+    ("liked", "Liked (4 stars)"),
+    ("recent", "Watched recently, newest first (their current mood)"),
+    ("disliked", "Disliked (1-2 stars): steer away from titles like these"),
+    ("abandoned", "Started but abandoned: also a sign of what doesn't work for them"),
+    ("seen", "Also seen, no strong opinion"),
+    ("not_interested", "Not interested: never suggest"),
+    ("previously_suggested", "Previously suggested by you: don't repeat"),
+)
 
 
 def is_reasoning_model(model):
     return model.lower().startswith(REASONING_PREFIXES)
 
 
-SUGGEST_MAX_TOKENS = 4000   # a cap, not a cost: reasoning models spend part of it thinking before they answer
+SUGGEST_MAX_TOKENS = 8000   # a cap, not a cost: reasoning models spend part of it thinking before they answer
 
 
 def _parse_suggestions(content):
@@ -70,6 +94,30 @@ def _parse_suggestions(content):
     if not isinstance(raw, list):
         raise ValueError("the reply wasn't a JSON list")
     return raw
+
+
+def build_prompt(taste, count=SUGGEST_COUNT):
+    """The user message: the viewer's history grouped by how they felt about it, then the ask."""
+    lines = []
+    for key, heading in TASTE_SECTIONS:
+        titles = taste.get(key) or []
+        if titles:
+            lines.append(f"{heading}:\n" + "; ".join(titles))
+    patterns = taste.get("patterns") or {}
+    hints = [f"{label}: {', '.join(patterns[k])}" for k, label in (("genre", "genres"), ("keyword", "themes"))
+             if patterns.get(k)]
+    if hints:
+        lines.append("Patterns in their history (for context; the titles above matter more): " + "; ".join(hints))
+    if not lines:
+        lines.append("They haven't watched or rated anything yet.")
+    tv = max(1, round(count * TV_SHARE))
+    discovery = max(1, round(count * DISCOVERY_SHARE))
+    lines.append(
+        f"Suggest {count} titles they haven't seen: about {count - tv} movies and {tv} TV shows, at least "
+        f"{discovery} of them lesser-known (novelty \"discovery\"), at most one per franchise or creator, all "
+        "already released. For each, \"because\" names one or two titles from their loved, liked or recent "
+        "lists above, exactly as written there.")
+    return "\n\n".join(lines)
 
 
 class AiClient:
@@ -125,21 +173,13 @@ class AiClient:
         except Exception as e:
             return False, str(e)
 
-    def suggest(self, profile_summary, watched_titles, count=15):
-        """profile_summary: profile.summary()'s shape ({"genre": [...], "keyword": [...], ...}).
-        Returns a list of {"title", "year", "media_type", "reason"} dicts - unverified leads, not
-        yet matched to a real TMDB entry (see recommend.py). Never raises; an empty list means
-        "couldn't get suggestions right now", not "the AI found nothing worth suggesting"."""
-        watched_text = ", ".join(watched_titles[:30]) or "nothing yet"
-        user_prompt = (
-            f"Taste profile:\n"
-            f"Genres: {', '.join(profile_summary.get('genre', [])) or 'none yet'}\n"
-            f"Themes: {', '.join(profile_summary.get('keyword', [])) or 'none yet'}\n"
-            f"Directors/creators: {', '.join(profile_summary.get('director', [])) or 'none yet'}\n"
-            f"Actors: {', '.join(profile_summary.get('actor', [])) or 'none yet'}\n"
-            f"Already watched (never suggest these): {watched_text}\n\n"
-            f"Suggest {count} movies and TV shows this person has not seen."
-        )
+    def suggest(self, taste, count=SUGGEST_COUNT):
+        """taste: {section: ["Title (year)", ...]} for the keys in TASTE_SECTIONS (recommend.ai_taste builds
+        it), plus optional "patterns": {"genre": [...], "keyword": [...]} from the taste profile.
+        Returns a list of {"title", "year", "media_type", "because", "reason", "novelty"} dicts - unverified
+        leads, not yet matched to a real TMDB entry (see recommend.py). Never raises; an empty list means
+        "couldn't get suggestions right now", and last_error says why."""
+        user_prompt = build_prompt(taste, count)
         self.last_error = None
         try:
             response = self._chat(

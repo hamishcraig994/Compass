@@ -249,7 +249,10 @@ def _ai_generate():
     try:
         with compute_lock:
             _start_job()
-            result = _hide_dismissed(sources.generate_ai_recommendations())
+            with _status_lock:
+                previous = (_ai_state["result"] or {}).get("items") or []
+            avoid = [recommend.ai_label_for(i) for i in previous]
+            result = _hide_dismissed(sources.generate_ai_recommendations(avoid=avoid))
             with _status_lock:
                 _ai_state["result"], _ai_state["time"] = _install("ai", result), time.time()
     except Exception as e:

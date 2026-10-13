@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -225,6 +226,57 @@ class TestAiIntegration(unittest.TestCase):
         result = recommend.recommend(WATCHED, set(), tmdb, ai=ai_client)
         items = {i["title"]: i for i in result["items"]}
         self.assertEqual(items["AI Movie"]["reason"], "AI pick based on your taste profile")
+
+    def test_taste_tiers(self):
+        now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        def entry(i, title, **kw):
+            return {"media_type": kw.pop("media_type", "movie"), "tmdb_id": i, "title": title, "year": 2000 + i,
+                    "last_viewed": kw.pop("last_viewed", "2025-01-01T00:00:00+00:00"), "user_rating": None,
+                    "view_count": 1, "progress": None, **kw}
+        watched = [entry(1, "Loved Film", personal_stars=5, user_rating=10),
+                   entry(2, "Rewatched Film", view_count=3),
+                   entry(3, "Liked Film", personal_stars=4, user_rating=8),
+                   entry(4, "Bad Film", personal_stars=1, user_rating=2),
+                   entry(5, "Dropped Show", media_type="tv", progress=0.1),
+                   entry(6, "Fresh Film", last_viewed="2026-09-20T00:00:00+00:00"),
+                   entry(7, "Old Unrated"),
+                   entry(8, "?")]
+        taste = recommend.ai_taste(watched, {}, {"genre": {"Drama": 1.0}, "keyword": {}}, now,
+                                   ["Nope (2022)"], ["Repeat (2010)"])
+        self.assertEqual(taste["loved"], ["Loved Film (2001)", "Rewatched Film (2002)"])
+        self.assertEqual(taste["liked"], ["Liked Film (2003)"])
+        self.assertEqual(taste["disliked"], ["Bad Film (2004)"])
+        self.assertEqual(taste["abandoned"], ["Dropped Show (2005, TV)"])
+        self.assertEqual(taste["recent"], ["Fresh Film (2006)"])
+        self.assertEqual(taste["seen"], ["Old Unrated (2007)"])   # Fresh Film moved to recent, "?" skipped
+        self.assertEqual(taste["not_interested"], ["Nope (2022)"])
+        self.assertEqual(taste["previously_suggested"], ["Repeat (2010)"])
+        self.assertEqual(taste["patterns"]["genre"], ["Drama"])
+
+    def test_because_titles_are_checked_against_the_history(self):
+        catalogue = self._catalogue({("movie", 2): _details("movie", 2, "AI Movie", genres=["Science Fiction"]),
+                                     ("movie", 3): _details("movie", 3, "Other Movie", genres=["Science Fiction"])})
+        tmdb = FakeTmdb(catalogue, {("movie", "AI Movie", 2020): 2, ("movie", "Other Movie", 2021): 3})
+        loved = [{**WATCHED[0], "personal_stars": 5, "user_rating": 10}]
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = [
+            {"title": "AI Movie", "year": 2020, "media_type": "movie", "because": ["watched movie (2001)"],
+             "reason": "same slow dread", "novelty": "discovery"},
+            {"title": "Other Movie", "year": 2021, "media_type": "movie", "because": ["A Film They Never Saw"],
+             "reason": "great pacing", "novelty": "safe"}]
+        result = recommend.recommend(loved, set(), tmdb, ai=ai_client, ai_only=True)
+        items = {i["title"]: i for i in result["items"]}
+        self.assertEqual(items["AI Movie"]["reason"], "Because you watched Watched Movie. same slow dread")
+        self.assertEqual(items["AI Movie"]["because"][0], "Watched Movie")
+        self.assertEqual(items["Other Movie"]["reason"], "AI pick: great pacing")   # made-up anchor dropped
+
+    def test_previous_batch_is_passed_on(self):
+        ai_client = mock.Mock()
+        ai_client.suggest.return_value = []
+        recommend.recommend(WATCHED, set(), FakeTmdb(self._catalogue()), ai=ai_client, ai_only=True,
+                            ai_avoid=["Old Pick (2019)"])
+        self.assertEqual(ai_client.suggest.call_args.args[0]["previously_suggested"], ["Old Pick (2019)"])
+        self.assertEqual(ai_client.suggest.call_args.kwargs["count"], 25)
 
     def test_empty_ai_result_says_why(self):
         ai_client = mock.Mock()
@@ -525,8 +577,11 @@ class TestRatedOnlyHistory(unittest.TestCase):
         fake_ai = mock.Mock()
         fake_ai.suggest.return_value = []
         recommend.recommend(watched + rated, library, sample.SampleTmdb(), ai=fake_ai)
-        self.assertIn("Edge of Tomorrow", fake_ai.suggest.call_args.args[1])
-        self.assertNotIn(None, fake_ai.suggest.call_args.args[1])
+        taste = fake_ai.suggest.call_args.args[0]
+        self.assertTrue(any(t.startswith("Edge of Tomorrow (") for t in taste["loved"]), taste["loved"])
+        for section, titles in taste.items():
+            if isinstance(titles, list):
+                self.assertNotIn(None, titles, section)
 
 
 if __name__ == "__main__":

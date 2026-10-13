@@ -10,7 +10,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ai
 from ai import AiClient
 
-PROFILE = {"genre": ["Science Fiction"], "keyword": ["time travel"], "director": ["Denis Villeneuve"], "actor": []}
+TASTE = {"loved": ["Arrival (2016)", "The Leftovers (2014, TV)"], "liked": ["Ex Machina (2014)"],
+         "recent": ["Shogun (2024, TV)"], "disliked": ["Tenet (2020)"], "abandoned": ["Westworld (2016, TV)"],
+         "seen": ["Heat (1995)"], "not_interested": ["Cats (2019)"], "previously_suggested": ["Sicario (2015)"],
+         "patterns": {"genre": ["Science Fiction"], "keyword": ["time travel"]}}
 
 
 def chat_response(content):
@@ -83,7 +86,7 @@ class TestModelTuning(unittest.TestCase):
             return chat_response(json.dumps({"suggestions": [{"title": "Arrival", "year": 2016,
                                                               "media_type": "movie", "reason": "x"}]}))
         with mock.patch.object(ai, "post_json", side_effect=fake_post):
-            result = client.suggest(PROFILE, [])
+            result = client.suggest(TASTE)
         return sent, result
 
     def test_reasoning_model_on_openai_gets_the_tuned_request(self):
@@ -91,13 +94,15 @@ class TestModelTuning(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         body = sent[0]
         self.assertNotIn("max_tokens", body)
-        self.assertGreaterEqual(body["max_completion_tokens"], 4000)
-        self.assertEqual(body["reasoning_effort"], "low")
+        self.assertGreaterEqual(body["max_completion_tokens"], 8000)
+        self.assertEqual(body["reasoning_effort"], "medium")
         self.assertEqual(body["response_format"]["type"], "json_schema")
         schema = body["response_format"]["json_schema"]
         self.assertTrue(schema["strict"])
-        self.assertEqual(schema["schema"]["properties"]["suggestions"]["items"]["properties"]["media_type"]["enum"],
-                         ["movie", "tv"])
+        item = schema["schema"]["properties"]["suggestions"]["items"]
+        self.assertEqual(item["properties"]["media_type"]["enum"], ["movie", "tv"])
+        self.assertEqual(item["properties"]["novelty"]["enum"], ["safe", "discovery"])
+        self.assertEqual(sorted(item["required"]), sorted(item["properties"]))
         self.assertEqual(result, [{"title": "Arrival", "year": 2016, "media_type": "movie", "reason": "x"}])
 
     def test_reasoning_prefixes(self):
@@ -129,7 +134,7 @@ class TestModelTuning(unittest.TestCase):
     def test_unrelated_errors_are_not_retried(self):
         client = AiClient("k", model="gpt-6-luna")
         with mock.patch.object(ai, "post_json", side_effect=RuntimeError("HTTP 401: invalid_api_key")) as post:
-            self.assertEqual(client.suggest(PROFILE, []), [])
+            self.assertEqual(client.suggest(TASTE), [])
         self.assertEqual(post.call_count, 1)
         self.assertIn("invalid_api_key", client.last_error)
 
@@ -155,38 +160,38 @@ class TestSuggest(unittest.TestCase):
     def test_parses_a_plain_json_array(self):
         raw = [{"title": "Arrival", "year": 2016, "media_type": "movie", "reason": "cerebral sci-fi"}]
         with mock.patch.object(ai, "post_json", return_value=chat_response(json.dumps(raw))):
-            result = self.client.suggest(PROFILE, ["Interstellar"])
+            result = self.client.suggest(TASTE)
         self.assertEqual(result, raw)
 
     def test_strips_markdown_code_fences(self):
         raw = [{"title": "Arrival", "year": 2016, "media_type": "movie", "reason": "x"}]
         fenced = "```json\n" + json.dumps(raw) + "\n```"
         with mock.patch.object(ai, "post_json", return_value=chat_response(fenced)):
-            result = self.client.suggest(PROFILE, [])
+            result = self.client.suggest(TASTE)
         self.assertEqual(result, raw)
 
     def test_filters_out_entries_missing_a_title_or_with_a_bad_media_type(self):
         raw = [{"title": "Arrival", "media_type": "movie"}, {"media_type": "movie"},  # no title
               {"title": "X", "media_type": "podcast"}]  # not movie/tv
         with mock.patch.object(ai, "post_json", return_value=chat_response(json.dumps(raw))):
-            result = self.client.suggest(PROFILE, [])
+            result = self.client.suggest(TASTE)
         self.assertEqual(result, [{"title": "Arrival", "media_type": "movie"}])
 
     def test_returns_empty_list_on_invalid_json_instead_of_raising(self):
         with mock.patch.object(ai, "post_json", return_value=chat_response("not json at all")):
-            result = self.client.suggest(PROFILE, [])
+            result = self.client.suggest(TASTE)
         self.assertEqual(result, [])
 
     def test_returns_empty_list_when_the_request_itself_fails(self):
         with mock.patch.object(ai, "post_json", side_effect=RuntimeError("down")):
-            result = self.client.suggest(PROFILE, [])
+            result = self.client.suggest(TASTE)
         self.assertEqual(result, [])
 
     def test_finds_the_array_inside_surrounding_text_or_a_wrapping_object(self):
         raw = [{"title": "Arrival", "year": 2016, "media_type": "movie"}]
         for content in ("Here you go:\n" + json.dumps(raw) + "\nEnjoy!", json.dumps({"recommendations": raw})):
             with mock.patch.object(ai, "post_json", return_value=chat_response(content)):
-                self.assertEqual(self.client.suggest(PROFILE, []), raw, content)
+                self.assertEqual(self.client.suggest(TASTE), raw, content)
             self.assertIsNone(self.client.last_error)
 
     def test_last_error_explains_an_empty_result(self):
@@ -202,22 +207,41 @@ class TestSuggest(unittest.TestCase):
         ]
         for kwargs, expected in cases:
             with mock.patch.object(ai, "post_json", **kwargs):
-                self.assertEqual(self.client.suggest(PROFILE, []), [])
+                self.assertEqual(self.client.suggest(TASTE), [])
             self.assertIn(expected, self.client.last_error)
 
     def test_asks_for_enough_tokens_for_reasoning_models(self):
         with mock.patch.object(ai, "post_json", return_value=chat_response("[]")) as post:
-            self.client.suggest(PROFILE, [])
-        self.assertGreaterEqual(post.call_args.kwargs["body"]["max_tokens"], 4000)
+            self.client.suggest(TASTE)
+        self.assertGreaterEqual(post.call_args.kwargs["body"]["max_tokens"], 8000)
 
-    def test_prompt_includes_the_profile_and_watch_history(self):
+    def test_prompt_groups_the_history_by_how_they_felt(self):
         with mock.patch.object(ai, "post_json", return_value=chat_response("[]")) as post:
-            self.client.suggest(PROFILE, ["Interstellar", "Arrival"], count=5)
+            self.client.suggest(TASTE, count=5)
         user_message = post.call_args.kwargs["body"]["messages"][1]["content"]
-        self.assertIn("Science Fiction", user_message)
-        self.assertIn("Denis Villeneuve", user_message)
-        self.assertIn("Interstellar", user_message)
-        self.assertIn("5", user_message)
+        order = [user_message.index(h) for h in ("Loved (5 stars", "Liked (4 stars)", "Watched recently",
+                                                 "Disliked (1-2 stars)", "Started but abandoned", "Also seen",
+                                                 "Not interested", "Previously suggested")]
+        self.assertEqual(order, sorted(order))
+        for title in ("Arrival (2016)", "The Leftovers (2014, TV)", "Tenet (2020)", "Westworld (2016, TV)",
+                      "Cats (2019)", "Sicario (2015)", "Science Fiction"):
+            self.assertIn(title, user_message)
+        self.assertIn("Suggest 5 titles", user_message)
+        self.assertIn("about 3 movies and 2 TV shows", user_message)
+
+    def test_empty_sections_are_left_out(self):
+        prompt = ai.build_prompt({"loved": ["Arrival (2016)"]})
+        self.assertIn("Loved", prompt)
+        for heading in ("Liked", "Disliked", "abandoned", "Not interested", "Patterns"):
+            self.assertNotIn(heading, prompt)
+        self.assertIn("haven't watched or rated anything", ai.build_prompt({}))
+
+    def test_system_prompt_asks_for_taste_inference_and_grounded_picks(self):
+        with mock.patch.object(ai, "post_json", return_value=chat_response("[]")) as post:
+            self.client.suggest(TASTE)
+        system = post.call_args.kwargs["body"]["messages"][0]["content"]
+        for phrase in ("privately identify what connects", "steer away", "Ground every pick", '"because"', '"novelty"'):
+            self.assertIn(phrase, system)
 
 
 if __name__ == "__main__":
